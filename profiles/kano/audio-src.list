@@ -1,0 +1,5 @@
+# KANO audio sources from chromiumos/overlays/board-overlays (https://chromium.googlesource.com/chromiumos/overlays/board-overlays)
+# at commit f394295b0b0f6a0516ed4cdf0370425abcf518f5 (2026-10-12). Fetched by builder/fetch-inputs.sh, not stored here.
+# <file> <path in board-overlays> <sha256>
+HiFi.conf overlay-brya/chromeos-base/chromeos-bsp-brya/files/kano/audio/ucm-config/sof-nau8825.kano/HiFi.conf a955b4a953c634c687dd6ec0eace7bfb0c8206e6bf3cffce1b95a70a0602677c
+sof-nau8825.card_settings overlay-brya/chromeos-base/chromeos-bsp-brya/files/kano/audio/cras-config/sof-nau8825.card_settings f4be86efd2b1f2425cc8084b8be0f485441e938a6f0e6007907a37e218ff0aa9

@@ -1,0 +1,98 @@
+#!/usr/bin/env python3
+"""Fake `ssh` for the harness tests: runs the remote command in a simulated KANO maintenance OS.
+
+It never opens a network connection. The remote command (the argv after user@host, joined by spaces like real ssh)
+runs under the local bash with:
+- PATH = $FAKE_ROOT/bin/remote (stub lsblk, findmnt, dd, blkdiscard, sgdisk, mount, ... see remote.py)
+         + $FAKE_ROOT/bin/safe (symlinks to harmless real tools); nothing else is reachable;
+- /proc/, /sys/, /mnt/, /root/, /etc/ path literals in the command (and in a `bash -s` script on stdin) rewritten to
+  $FAKE_ROOT/proc/... etc.; /dev/... is left alone and mapped to $FAKE_ROOT/dev/... by the stubs.
+Every call is appended to $FAKE_ROOT/log/ssh.jsonl (command, script, stdin length).
+
+$FAKE_ROOT/rules.json (optional) is a list of fault rules, tried in order; a rule applies when its "when" substring
+occurs in the command or script ("when" may be omitted = every call):
+  {"when": "...", "files": {"rel/path": "content"}}   write files into FAKE_ROOT, then run normally (state flip)
+  {"when": "...", "remove": ["rel/path"]}              remove a file or an empty dir, then run normally
+  {"when": "...", "overwrite": {"rel/src": "rel/dst"}} write src's bytes over the start of dst, then run normally
+  {"when": "...", "exit": 255}                        do not run; exit with that status, no output (ssh failure)
+  {"when": "...", "truncate": 1000}                   run, but pass on only the first N bytes of stdout
+  {"when": "...", "corrupt": true}                    run, but flip one byte of stdout
+"once": true makes a rule apply to its first match only.
+"""
+import json, os, re, subprocess, sys
+from pathlib import Path
+
+root = os.environ.get("FAKE_ROOT")
+if not root or not Path(root, "bin", "remote").is_dir():
+    sys.exit("fake ssh: FAKE_ROOT is not a prepared fake KANO; refusing to run")
+R = Path(root)
+
+args, i, host = sys.argv[1:], 0, None
+while i < len(args):
+    a = args[i]
+    if a in ("-i", "-o", "-p", "-l", "-F", "-E", "-c", "-m", "-J", "-b", "-e", "-L", "-R", "-D", "-W", "-w"):
+        i += 2
+    elif a.startswith("-"):
+        i += 1
+    else:
+        host = a
+        i += 1
+        break
+cmd = " ".join(args[i:])
+stdin = sys.stdin.buffer.read()
+script = stdin.decode(errors="replace") if cmd.strip() == "bash -s" else None
+text = cmd + "\n" + (script or "")
+
+log = R / "log" / "ssh.jsonl"
+log.parent.mkdir(exist_ok=True)
+with log.open("a") as f:
+    f.write(json.dumps({"host": host, "cmd": cmd, "script": script, "stdin_len": len(stdin)}) + "\n")
+
+rules_file = R / "rules.json"
+rules = json.loads(rules_file.read_text()) if rules_file.exists() else []
+truncate = corrupt = None
+for n, rule in enumerate(rules):
+    if rule.get("used") or ("when" in rule and rule["when"] not in text):
+        continue
+    if rule.get("once"):
+        rule["used"] = True
+    for rel, content in rule.get("files", {}).items():
+        p = R / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(content)
+    for src, dst in rule.get("overwrite", {}).items():
+        with open(R / dst, "r+b") as f:
+            f.write((R / src).read_bytes())
+    for rel in rule.get("remove", []):
+        p = R / rel
+        if p.is_dir():
+            p.rmdir()
+        elif p.exists():
+            p.unlink()
+    if "exit" in rule:
+        rules_file.write_text(json.dumps(rules))
+        sys.exit(rule["exit"])
+    truncate = rule.get("truncate", truncate)
+    corrupt = rule.get("corrupt", corrupt)
+if rules_file.exists():
+    rules_file.write_text(json.dumps(rules))
+
+PATHS = re.compile(r"(?<![\w.~/-])/(proc|sys|mnt|root|etc)(?=/)")
+
+
+def rewrite(s):
+    return PATHS.sub(lambda m: f"{R}/{m.group(1)}", s)
+
+
+env = {"PATH": f"{R}/bin/remote:{R}/bin/safe", "FAKE_ROOT": str(R), "HOME": str(R / "root"), "LC_ALL": "C"}
+bash = str(R / "bin" / "safe" / "bash")
+r = subprocess.run([bash, "-c", rewrite(cmd)], input=rewrite(script).encode() if script is not None else stdin,
+                   env=env, capture_output=True, cwd=str(R / "root"))
+out = r.stdout
+if truncate is not None:
+    out = out[:truncate]
+if corrupt and out:
+    out = bytes([out[0] ^ 0xFF]) + out[1:]
+sys.stdout.buffer.write(out)
+sys.stderr.buffer.write(r.stderr)
+sys.exit(r.returncode)

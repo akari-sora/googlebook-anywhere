@@ -1,0 +1,14 @@
+# build outputs and anything image-sized
+*.img
+*.bin
+*.zip
+*.tar
+*.tar.*
+*.pem
+out/
+work/
+extract/
+__pycache__/
+.omc/
+.omx/
+.octo-continue.md

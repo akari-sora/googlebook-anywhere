@@ -1,0 +1,98 @@
+# Fast checks on every push (seconds to minutes, no network inputs, no images, never a real disk), and the installer
+# archive on tags. The containers have no loop devices, so tests/install/run.sh skips its fake-disk cases here; those run
+# on a Linux developer host. The full build (official zip -> image -> QEMU) needs about 80 GB, KVM and 7.7 GB of download, so it
+# runs on a developer host (tests/builder/e2e.sh) and its result is recorded in the release notes.
+stages: [test, package, release]
+
+default:
+  image: debian:trixie-slim
+  interruptible: true
+
+variables:
+  DEBIAN_FRONTEND: noninteractive
+  PYTHONDONTWRITEBYTECODE: "1"
+  PYTHONPYCACHEPREFIX: /tmp/pycache   # py_compile writes .pyc even with PYTHONDONTWRITEBYTECODE; keep it out of the repo
+
+.deps: &deps
+  before_script:
+    - apt-get update -qq
+    - apt-get install -y -qq --no-install-recommends bash coreutils util-linux procps python3 mtools zstd shellcheck git file gdisk > /dev/null
+
+lint:
+  stage: test
+  <<: *deps
+  script:
+    # research/ holds research notes and one-off analysis scripts, not product code
+    - shellcheck -S warning $(git ls-files '*.sh' ':!research/')
+    - for f in $(git ls-files '*.py' ':!research/'); do python3 -m py_compile "$f"; done
+
+builder:
+  stage: test
+  <<: *deps
+  script:
+    - bash tests/builder/run.sh
+
+stick:
+  stage: test
+  <<: *deps
+  script:
+    - python3 tests/stick/selftest.py "$(mktemp -d)/w"
+
+# Docker executor jobs run as root; some guards differ for normal users, and the harness tests refuse root on purpose
+install-tools:
+  stage: test
+  <<: *deps
+  script:
+    - bash tests/install/run.sh
+    - useradd -m tester && chown -R tester:tester "$CI_PROJECT_DIR"
+    - runuser -u tester -- bash tests/install/run.sh
+    - runuser -u tester -- bash tests/install/install-sh-test.sh
+    - runuser -u tester -- bash tests/install/kano-check-test.sh
+
+harness:
+  stage: test
+  <<: *deps
+  script:
+    - useradd -m tester && chown -R tester:tester "$CI_PROJECT_DIR"
+    - runuser -u tester -- bash tests/harness/run.sh
+
+package:
+  stage: package
+  <<: *deps
+  rules:
+    - if: $CI_COMMIT_TAG
+  script:
+    # the release notes must be written for this tag (their first line names it); a later tag must not ship old notes
+    - head -n 1 docs/RELEASE-NOTES.md | tr " " "\n" | grep -qxF "$CI_COMMIT_TAG" || { echo "docs/RELEASE-NOTES.md is not for $CI_COMMIT_TAG"; exit 1; }
+    - apt-get install -y -qq --no-install-recommends curl ca-certificates > /dev/null
+    - bash tools/release/make-release.sh "$CI_COMMIT_TAG" "$CI_COMMIT_SHA"
+    - |
+      for f in out/release/*; do
+        curl --fail --silent --show-error --header "JOB-TOKEN: $CI_JOB_TOKEN" --upload-file "$f" \
+          "$CI_API_V4_URL/projects/$CI_PROJECT_ID/packages/generic/installer/$CI_COMMIT_TAG/$(basename "$f")"
+      done
+  artifacts:
+    paths: [out/release/]
+    expire_in: 30 days
+
+release:
+  stage: release
+  image: registry.gitlab.com/gitlab-org/release-cli:latest
+  rules:
+    - if: $CI_COMMIT_TAG
+  needs: [package]
+  script:
+    - head -n 1 docs/RELEASE-NOTES.md | tr " " "\n" | grep -qxF "$CI_COMMIT_TAG" || { echo "docs/RELEASE-NOTES.md is not for $CI_COMMIT_TAG"; exit 1; }
+    - echo "release $CI_COMMIT_TAG"
+  release:
+    tag_name: $CI_COMMIT_TAG
+    name: $CI_COMMIT_TAG
+    description: ./docs/RELEASE-NOTES.md
+    assets:
+      links:
+        - name: googlebook-anywhere-$CI_COMMIT_TAG.tar.gz (installer scripts; no images)
+          url: $CI_API_V4_URL/projects/$CI_PROJECT_ID/packages/generic/installer/$CI_COMMIT_TAG/googlebook-anywhere-$CI_COMMIT_TAG.tar.gz
+          link_type: package
+        - name: SHA-256
+          url: $CI_API_V4_URL/projects/$CI_PROJECT_ID/packages/generic/installer/$CI_COMMIT_TAG/googlebook-anywhere-$CI_COMMIT_TAG.tar.gz.sha256
+          link_type: other

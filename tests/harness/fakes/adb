@@ -1,0 +1,26 @@
+#!/usr/bin/env python3
+"""Fake adb for the harness tests: logs every call to $FAKE_ROOT/log/adb.log and answers from $FAKE_ROOT/adb.json:
+  {"connect": true, "props": {"init.svc.kano_bootfix": "stopped", "sys.boot_completed": "1"}, "ui": "<hierarchy/>"}
+`connect` false makes every `-s` call fail as if the device were unreachable; `ui` is what `exec-out cat` of the
+uiautomator dump prints. No network access."""
+import json, os, sys
+from pathlib import Path
+
+R = Path(os.environ["FAKE_ROOT"])
+(R / "log").mkdir(exist_ok=True)
+with open(R / "log" / "adb.log", "a") as f:
+    f.write(" ".join(sys.argv[1:]) + "\n")
+cfg = json.loads((R / "adb.json").read_text()) if (R / "adb.json").exists() else {}
+args = sys.argv[1:]
+if args[:1] == ["connect"]:
+    print(f"connected to {args[1]}" if cfg.get("connect") else f"failed to connect to {args[1]}")
+    sys.exit(0)
+if args[:1] == ["-s"]:
+    if not cfg.get("connect"):
+        print(f"adb: device '{args[1]}' not found", file=sys.stderr)
+        sys.exit(1)
+    args = args[2:]
+if args[:2] == ["shell", "getprop"] and len(args) == 3:
+    print(cfg.get("props", {}).get(args[2], ""))
+if args[:2] == ["exec-out", "cat"]:
+    print(cfg.get("ui", ""))
