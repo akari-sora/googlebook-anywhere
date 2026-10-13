@@ -1,0 +1,73 @@
+# generic-x86: any x86-64 UEFI machine whose GPU has no driver in the Googlebook kernel (AMD, older Intel, QEMU).
+# EXPERIMENTAL. Display through the firmware's GOP framebuffer (builder/kmod/gbos_efifb.c) and SwiftShader (CPU Vulkan,
+# from the public Cuttlefish build; builder/fetch-generic-inputs.sh): no GPU acceleration, no device firmware, no audio
+# configuration, no machine-specific Wi-Fi. Verified in QEMU only (research/amd/PLAN.md section 8).
+schema = 1
+kmods = ["gbos_efifb"]
+
+[model]
+id = "generic-x86"
+name = "Generic x86-64 UEFI (GOP framebuffer, SwiftShader)"
+status = "experimental"              # verified | experimental | probe-only
+image_name = "googlebook-generic-x86.img"
+dmi = {}
+
+[entries]                            # systemd-boot menu titles
+quiet = "Googlebook generic x86 quiet"
+debug = "Googlebook generic x86 serial-debug"
+
+[cmdline]
+stock_drop = []
+# serial-debug: the legacy COM1 port only (no machine-specific MMIO UART); quiet drops the console and log level again
+add = ["loglevel=8", "ignore_loglevel", "console=ttyS0,115200n8"]
+tail = []
+debug_drop = []
+pci_stub_ids = []
+first_stage_drop = []
+
+[blacklist]
+# the same EC/TPM/SPI/firmware-path list as the KANO profile: blacklisting a module a machine does not have costs nothing
+modules = ["cros_ec_debugfs", "tpm_tis_i2c_cr50", "cros_ec_lpcs", "cros_ec_usb", "spi_intel_pci", "spi_intel", "i2c_dev",
+           "thunderbolt", "tpm", "tpm_tis", "tpm_tis_core", "tpm_tis_spi", "cros_ec", "cros_ec_dev", "cros_ec_chardev",
+           "gsmi", "chromeos_acpi", "nvram", "mtd", "spi_nor", "spidev", "intel_quicki2c", "intel_quickspi",
+           "at24", "cros_hps_i2c", "i2c_cros_ec_tunnel", "cros_peripheral_charger",
+           "cros_ec_spi", "cros_ec_i2c", "cros_ec_ishtp", "cros_ec_sysfs", "cros_ec_vbc", "cros_ec_typec", "cros_typec_switch",
+           "cros_usbpd_notify", "cros_usbpd_charger", "cros_usbpd_logger", "cros_charge_control", "cros_ec_ucsi", "cros_ec_keyb",
+           "cros_ec_sensorhub", "cros_ec_sensors_core", "cros_ec_sensors", "cros_ec_accel_legacy", "cros_ec_baro",
+           "cros_ec_lid_angle", "cros_ec_light_prox", "cros_ec_lightbar", "cros_ec_pwrmon", "cros_ec_cec", "leds_cros_ec",
+           "hid_google_hammer", "wilco_ec", "wilco_charger", "wilco_ec_debugfs", "wilco_ec_telem", "rtc_wilco_ec",
+           "cros_ec_proto", "cros_kbd_led_backlight"]
+debug_add = []
+allow = []
+
+[firmware_sources]
+linux_firmware_tag = ""
+sof_bin_url = ""
+sof_bin_sha256 = ""
+
+[audio]
+card = ""
+config_dir = ""
+sources = ""
+
+[wifi]
+modprobe = []
+
+[display]
+stack = "gop-swiftshader"
+# the GOP framebuffer device has one plane and no colour pipeline: SurfaceFlinger composes everything (client), and the
+# drm_hwcomposer colour pipeline, HDR and log gamma LUT are off (the settings the QEMU proof ran with)
+hwc_backend = "client"
+build_prop_set = [["vendor.hwc.drm.enable_color_pipeline", "true", "false"],
+                  ["vendor.hwc.drm.force_color_mode", "13", "0"],
+                  ["vendor.hwc.drm.persistent_hdr", "true", "false"],
+                  ["vendor.hwc.use_log_gamma_lut", "true", "false"],
+                  ["ro.surface_flinger.has_wide_color_display", "true", "false"],
+                  ["ro.surface_flinger.has_HDR_display", "true", "false"]]
+
+[input]
+kbd_backlight_leds = ""
+power_button = "stock"
+
+[hooks]
+vendor = "vendor.py"                  # display() only

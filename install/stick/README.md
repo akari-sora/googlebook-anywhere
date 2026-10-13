@@ -27,7 +27,7 @@
    （direct I/O）再核對 SHA-256。隨身碟自己的 /data、metadata 等執行期狀態一概不複製。
 6. userdata 放到碟尾（保留 manifest 裡的 type 與屬性）、清空開頭，第一次開機時 Android 自己格式化
    （從歡迎畫面開始，需要重新登入 Google 帳號）。
-7. 重新產生所有分割區 GUID（隨身碟與內建碟不會重複），ESP 的 initrd 指向內建碟的 boot_a，三個開機選項只拿掉
+7. 重新產生所有分割區 GUID（隨身碟與內建碟不會重複），ESP 的 initrd 指向內建碟的 boot_a，每個開機選項只拿掉
    `nvme_init` 的封鎖（`module_blacklist`、`efi=noruntime` 不變），預設 quiet、選單編輯器關閉、`auto-firmware no`；
    隨身碟 XBOOTLDR 上的「Googlebook (internal disk)」改指向新的安裝，隨身碟選單的預設改成它。
 8. **最後整體核對**才印 `INSTALL OK`：主、備兩份 GPT（CRC、備份在碟尾且與主表相同）、每個分割區的起點／大小／type／
@@ -41,7 +41,7 @@
 
 安裝程式只在開機參數有 `gbos.install=1` 時啟動（只有那個選單項目有）。選單項目由 `gbos-install.entry.template` 產生：
 
-- `module_blacklist`：Android 開機選項封鎖的所有模組（`builder/image.py` 的 `BL`，另含 `cros_ec_proto`），再加上
+- `module_blacklist`：Android 開機選項封鎖的所有模組（`profiles/kano/profile.toml` 的 `blacklist.modules`，另含 `cros_ec_proto`），再加上
   `mei_me`、`8250_dw`、`intel_lpss_pci`、`intel_lpss`、`intel_lpss_acpi`、`i915`、`tpm_crb`。`nvme` 不封鎖。
 - `initcall_blacklist`：由 `builtin-initcalls.txt` 產生（見下面）。
 - `efi=noruntime`：不呼叫 EFI runtime services（不寫 EFI 變數）。
@@ -57,8 +57,8 @@
 
 - `setup-stick.sh` 讀 XBOOTLDR 上那個核心的 `/usr/lib/modules/<版本>/modules.builtin`：封鎖名單上的模組若是 built-in，
   而 `builtin-initcalls.txt` 沒有涵蓋，就拒絕；選單項目的 `initcall_blacklist` 由這個檔案產生，檔案本身也裝到
-  `/usr/local/share/gbos-install/` 給安裝程式用。它也會核對映像本身三個選項封鎖的模組都在名單裡
-  （`builder/image.py` 以後加了模組，這裡會擋下來），再把選項的整份 `module_blacklist` 寫成同一個目錄的
+  `/usr/local/share/gbos-install/` 給安裝程式用。它也會核對映像本身每個選項封鎖的模組都在名單裡
+  （機型設定以後加了模組，這裡會擋下來），再把選項的整份 `module_blacklist` 寫成同一個目錄的
   `module-blacklist.txt`。
 - `gbos-install.sh` 執行時再檢查一次（第 1 步）：lockdown、`efi=noruntime`、整份 `module_blacklist`、每一個 initcall、
   這些模組都沒有載入，以及 TPM、nvram、cros_ec、MTD、spidev 的裝置都不存在；任何一項不符就拒絕執行。
@@ -85,17 +85,38 @@
 關機後開回內建碟。**真的寫入內建 NVMe 的完整安裝只在 QEMU 驗證過**（真隨身碟的 dump、
 模擬的 NVMe），沒有在 KANO 的內建碟上實際跑過。
 
+## 更新內建碟（保留資料）
+
+`setup-stick.sh` 也會加上選單項目「Update Googlebook on the internal disk (keep data)」。它就是安裝程式的選項，多一個 `gbos.update=1`，所以開機防護與第 1 步的檢查完全相同。
+
+接著 `gbos-install.sh` 進入更新模式，依序：
+
+1. 核對安裝資料；
+2. 顯示內建碟目前的版本與 slot（`gbos-update.py inspect`）；
+3. 要你輸入序號最後 4 碼；
+4. 執行 `gbos-update.py apply --mode nvme`：
+   - 新版本寫進另一個 slot，/data 保留；
+   - 寫入任何 slot 之前，隨身碟選單的「Googlebook (internal disk)」與「(previous version)」都先改開正在用的版本（從內建碟複製到隨身碟的副本），沒有項目開正在寫的 slot；寫完、讀回之後「Googlebook (internal disk)」才改開新版本；
+   - 中途停下時，隨身碟的「Googlebook (internal disk)」仍開一個完整的版本；再選一次這個項目就會寫完；
+   - 完成後，隨身碟選單的預設設成「Googlebook (internal disk)」；
+   - 內建碟的 ESP 放不下兩個版本時（Google 換 kernel 的新 build），更新期間內建碟自己的選單開不了任何版本，只能從這支
+     安裝碟開機；
+   - 有兩支安裝碟時，另一支上的內建碟選項在這次更新後就過時了：先用它跑一次更新再開那兩個選項（見 docs/UPGRADE.md）。
+
+原理、退回與限制見 [docs/UPGRADE.md](../../docs/UPGRADE.md)。這個模式還沒有在 KANO 實機上跑過，只在合成碟上的 `tests/update/selftest.py` 與 QEMU（`tests/stick/qemu-install.py` 的更新情境，用真隨身碟的維護系統）驗證過。
+
 ## 建立安裝碟（開發者）
 
 ```sh
-# 1. 隨身碟的 Googlebook 分割區要先是某個映像（例如用 tools/harness/kano-delta-push.py 推上去）
+# 1. 隨身碟的 Googlebook 分割區要先是某個映像：用 git repo 裡的 tools/harness/kano-delta-push.py 推上去（發行包沒有這個工具；
+#    write-usb.sh --keep-data 會拒絕安裝碟，因為它的分割區多了維護系統與 XBOOTLDR）
 # 2. 從同一個映像做 pristine 資料（在主機上）
 install/stick/make-pristine.py googlebook-kano.img pristine/
-# 3. 把 install/stick/ 與 pristine/ 複製到維護系統，在維護系統上以 root 執行
+# 3. 把 install/stick/、install/gbos-update.py 與 pristine/ 複製到維護系統（保持 install/ 的目錄結構），在維護系統上以 root 執行
 install/stick/setup-stick.sh pristine/
 ```
 
-`setup-stick.sh`（要和 `gbos-install.entry.template`、`builtin-initcalls.txt` 放在同一個目錄）用 `gbos-install` 自己的核對程式檢查 pristine 資料，確認隨身碟上的 super 來自同一個映像，做上一節的
+`setup-stick.sh`（要和 `gbos-install.entry.template`、`builtin-initcalls.txt` 放在同一個目錄；`gbos-update.py` 放在同一個目錄或上一層，即 repo 的 `install/`）用 `gbos-install` 自己的核對程式檢查 pristine 資料，確認隨身碟上的 super 來自同一個映像，做上一節的
 核心檢查，再安裝 `gbos-install`、systemd 服務與 `module-blacklist.txt`（複製後的 pristine 資料再核對一次）並加上選單項目。
 隨身碟上「Googlebook (internal disk)」的選項，只有在隨身碟裡那份內建碟的 kernel 與 initrd（`/gbos-nvme/`，安裝程式寫的）
 就是這個映像的（initrd 只差內建碟自己的 boot_a GUID）時，才用這個映像的選項重寫；否則保持原樣並印出說明，

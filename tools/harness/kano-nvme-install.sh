@@ -125,11 +125,19 @@ PY
 log "run dir $RUN"
 log "0. local inputs from $SRC (KANO_NVME_SRC), copied and checked before anything is sent"
 [ -d "$SRC" ] || die "no source directory $SRC (KANO_NVME_SRC)"
-for f in initrd.img lapis.conf lapis-debug.conf lapis-quiet.conf; do
+# boot entries: quiet + serial-debug; builds made before the plain entry was dropped also have lapis.conf
+ENTRIES=""
+for f in lapis.conf lapis-debug.conf lapis-quiet.conf; do [ -e "$SRC/$f" ] && ENTRIES="$ENTRIES $f"; done
+ENTRIES=${ENTRIES# }
+case "$ENTRIES" in
+  "lapis-debug.conf lapis-quiet.conf" | "lapis.conf lapis-debug.conf lapis-quiet.conf") ;;
+  *) die "entries in $SRC: '$ENTRIES'; expected lapis-debug.conf and lapis-quiet.conf (plus lapis.conf in older builds)" ;;
+esac
+for f in initrd.img $ENTRIES; do
   cp "$SRC/$f" "$RUN/src-$f" || die "cannot copy $SRC/$f"
 done
 initrd_nvme "$RUN/src-initrd.img" - - || die "initrd $SRC/initrd.img: bootconfig unusable"
-for f in lapis.conf lapis-debug.conf lapis-quiet.conf; do
+for f in $ENTRIES; do
   [ "$(grep -c "initcall_blacklist=nvme_init,mei_me_driver_init " "$RUN/src-$f")" = 1 ] || die "entry $f: no single initcall_blacklist=nvme_init,mei_me_driver_init"
   grep -qE '^options (.* )?module_blacklist=[^ ]' "$RUN/src-$f" && grep -qE '^options .* efi=noruntime( |$)' "$RUN/src-$f" ||
     die "entry $f: module_blacklist= or efi=noruntime missing"
@@ -152,14 +160,17 @@ guard
 mkdir -p /mnt/sesp
 mount -o ro /dev/sda12 /mnt/sesp
 trap 'umount /mnt/sesp 2>/dev/null || true' EXIT
-for f in initrd.img loader/entries/lapis.conf loader/entries/lapis-debug.conf loader/entries/lapis-quiet.conf; do
-  sum=$(sha256sum "/mnt/sesp/$f" | cut -c1-64)
+for f in /mnt/sesp/initrd.img /mnt/sesp/loader/entries/*.conf; do
+  sum=$(sha256sum "$f" | cut -c1-64)
   echo "SUM $sum ${f##*/}"
 done
 umount /mnt/sesp
 trap - EXIT
 EOF
-for f in initrd.img lapis.conf lapis-debug.conf lapis-quiet.conf; do
+[ "$(sed -n 's/^SUM [0-9a-f]\{64\} \(.*\)$/\1/p' "$RUN/01-source.out" | LC_ALL=C sort | tr '\n' ' ')" = \
+  "$(printf '%s\n' initrd.img $ENTRIES | LC_ALL=C sort | tr '\n' ' ')" ] ||
+  die "the stick's ESP does not hold the same boot entries as $SRC ($ENTRIES)"
+for f in initrd.img $ENTRIES; do
   [ "$(sed -n "s/^SUM \([0-9a-f]\{64\}\) $f\$/\1/p" "$RUN/01-source.out")" = "$(sha256 "$RUN/src-$f")" ] ||
     die "$SRC/$f is not what the stick's ESP holds; KANO_NVME_SRC must be the build of the image on the stick"
 done
@@ -248,7 +259,10 @@ mount /dev/nvme0n1p12 /mnt/nesp
 mount /dev/sda32 /mnt/xb
 mkdir -p /mnt/xb/gbos-nvme
 EOF
-for f in initrd-nvme.img:/mnt/nesp/initrd.img lapis.conf:/mnt/nesp/loader/entries/lapis.conf lapis-debug.conf:/mnt/nesp/loader/entries/lapis-debug.conf lapis-quiet.conf:/mnt/nesp/loader/entries/lapis-quiet.conf initrd-nvme.img:/mnt/xb/gbos-nvme/initrd.img gbos-nvme.conf:/mnt/xb/loader/entries/gbos-nvme.conf; do
+COPIES=(initrd-nvme.img:/mnt/nesp/initrd.img)
+for f in $ENTRIES; do COPIES+=("$f:/mnt/nesp/loader/entries/$f"); done
+COPIES+=(initrd-nvme.img:/mnt/xb/gbos-nvme/initrd.img gbos-nvme.conf:/mnt/xb/loader/entries/gbos-nvme.conf)
+for f in "${COPIES[@]}"; do
   s=${f%%:*}; t=${f#*:}
   "$HERE/kano-ssh.sh" "cat > $t" < "$RUN/$s" || die "copy $s -> $t"
   [ "$(K "sha256sum $t" | cut -c1-64)" = "$(sha256 "$RUN/$s")" ] || die "copy $s -> $t: sha256 differs"

@@ -1,20 +1,14 @@
 """kano-gbos-watch.py / kano-gbos-watch-nvme.py: "unobservable" instead of a false all-clear, the full guard set of
-builder/image.py on this boot's command line, danger handling with a confirmed EC power cut (fake pyserial), and a hung
-camera grab that cannot stall the watch."""
-import ast, json, shutil, subprocess, threading, time, unittest
+the device profile (profiles/kano/profile.toml) on this boot's command line, danger handling with a confirmed EC power
+cut (fake pyserial), and a hung camera grab that cannot stall the watch."""
+import json, shutil, subprocess, threading, time, tomllib, unittest
 from helpers import HARNESS, REPO, HarnessCase, harness_copy
 
 
 def image_blacklist():
-    """BL of builder/image.py, read here independently of the watcher's own parser."""
-    bl, removed = None, []
-    for node in ast.parse((REPO / "builder" / "image.py").read_text()).body:
-        if isinstance(node, ast.Assign) and getattr(node.targets[0], "id", None) == "BL":
-            bl = ast.literal_eval(node.value)
-        elif (isinstance(node, ast.Expr) and isinstance(node.value, ast.Call)
-              and getattr(node.value.func, "attr", None) == "remove" and getattr(node.value.func.value, "id", None) == "BL"):
-            removed.append(ast.literal_eval(node.value.args[0]))
-    return [m for m in bl if m not in removed]
+    """The module_blacklist of profiles/kano/profile.toml, read here independently of the watcher's own loader."""
+    with open(REPO / "profiles" / "kano" / "profile.toml", "rb") as f:
+        return tomllib.load(f)["blacklist"]["modules"]
 
 
 BL = image_blacklist()

@@ -5,6 +5,11 @@
 #        install/write-usb.sh --check-only <image> <disk>   every check, nothing written. --check-only runs the same
 #            re-check that follows the serial prompt in a real run (without the prompt). As a normal user it skips the
 #            one probe that needs root (the exclusive open) and says so.
+#        sudo install/write-usb.sh --keep-data [--without-fallback] <image> <disk>   update a stick that already holds
+#            Googlebook (built with the same AVB key) instead of erasing it: install/gbos-update.py writes the image
+#            into the stick's other slot and keeps /data; the running version stays on the boot menu as "(previous
+#            version)" (--without-fallback: when the ESP has no room for both, as the update says). Same guards and
+#            serial confirmation; the image's checksum is checked by gbos-update.py.
 #
 # Every guard fails closed: a query that fails or answers oddly is a refusal.
 #  - the target is a whole disk (lsblk TYPE disk, listed in /sys/block) on the USB transport, with 512-byte logical
@@ -29,13 +34,23 @@
 # Test hook: GBOS_WUSB_TEST_SYSFS=<dir> stands in for /sys. It is honoured only together with --check-only (anything
 # else refuses), so it can never steer a write. tests/install/run.sh uses it.
 set -euo pipefail
-USAGE="usage: sudo write-usb.sh <googlebook-kano.img> /dev/disk/by-id/usb-...   or   write-usb.sh --check-only <image> <disk>"
+USAGE="usage: sudo write-usb.sh [--keep-data [--without-fallback]] <googlebook-kano.img> /dev/disk/by-id/usb-...   or   write-usb.sh --check-only <image> <disk>"
 PHASE=
 refuse() { echo "refusing${PHASE:+ ($PHASE)}: $*"; exit 2; }
 
-CHECK_ONLY=0
-if [ "${1:-}" = --check-only ]; then CHECK_ONLY=1; shift; fi
+CHECK_ONLY=0 KEEP=0 NOFALLBACK=0
+while [ $# -gt 2 ]; do
+    case "$1" in
+        --check-only) CHECK_ONLY=1; shift ;;
+        --keep-data) KEEP=1; shift ;;
+        --without-fallback) NOFALLBACK=1; shift ;;
+        *) break ;;
+    esac
+done
 if [ $# -ne 2 ]; then echo "$USAGE"; exit 2; fi
+[ "$NOFALLBACK" = 0 ] || [ "$KEEP" = 1 ] || { echo "--without-fallback goes with --keep-data"; exit 2; }
+case ${BASH_SOURCE[0]} in */*) HERE=${BASH_SOURCE[0]%/*} ;; *) HERE=. ;; esac
+ENGINE=$HERE/gbos-update.py
 IMG=$1 ARG=$2
 SYS=/sys
 if [ -n "${GBOS_WUSB_TEST_SYSFS:-}" ]; then
@@ -579,8 +594,26 @@ if [ -e "$IMG.not-self-tested" ]; then
     echo "WARNING: $IMG was built with --no-selftest ($IMG.not-self-tested): it was never booted in QEMU, so nothing"
     echo "         has shown that it starts. Prefer an image built on a Linux host with KVM."
 fi
+if [ "$KEEP" = 1 ]; then
+    [ -f "$ENGINE" ] || refuse "--keep-data needs $ENGINE"
+    for c in lz4 mdir mmd mdel minfo mtype mcopy; do command -v "$c" >/dev/null 2>&1 || refuse "--keep-data needs $c (lz4, mtools)"; done
+    echo "== what is on $I_NODE now"
+    if [ "$IS_ROOT" = 1 ]; then
+        python3 -I "$ENGINE" inspect "$I_NODE" || refuse "$I_NODE holds no Googlebook that can be updated (above); write it without --keep-data instead"
+    else
+        echo "note: not root, so $I_NODE was not read (gbos-update.py inspect needs root)"
+    fi
+fi
 if [ "$CHECK_ONLY" = 1 ]; then
     echo "== check only: no prompt"
+elif [ "$KEEP" = 1 ]; then
+    if [ "$UNTESTED" = 1 ]; then
+        read -r -p "Type untested to install this image anyway: " ANSWER || { echo; echo "no answer, nothing written"; exit 1; }
+        [ "$ANSWER" = untested ] || { echo "not acknowledged, nothing written"; exit 1; }
+    fi
+    read -r -p "Googlebook on $I_NODE gets this image; /data stays. Type its serial ($I_SERIAL) to continue: " ANSWER \
+        || { echo; echo "no answer, nothing written"; exit 1; }
+    [ "$ANSWER" = "$I_SERIAL" ] || { echo "serial not confirmed, nothing written"; exit 1; }
 else
     if [ "$UNTESTED" = 1 ]; then
         read -r -p "Type untested to write this image anyway: " ANSWER || { echo; echo "no answer, nothing written"; exit 1; }
@@ -605,6 +638,25 @@ in_use
 PHASE=
 if [ "$CHECK_ONLY" = 1 ]; then echo "CHECKS OK: $I_NODE (serial $I_SERIAL) could take the image; nothing written"; exit 0; fi
 
+if [ "$KEEP" = 1 ]; then
+    echo "== updating $I_NODE (install/gbos-update.py)"
+    NF=()
+    if [ "$NOFALLBACK" = 1 ]; then NF=(--without-fallback); fi
+    if python3 -I "$ENGINE" apply "$I_NODE" --image "$IMG" --mode stick --rdev "$I_RDEV" --syspath "$I_SYSPATH" --bytes "$I_BYTES" \
+            ${NF[@]+"${NF[@]}"}; then :; else
+        rc=$?
+        if [ "$rc" = 2 ]; then echo "nothing was written to $I_NODE"; exit 2; fi
+        echo "FAIL: the update of $I_NODE stopped halfway (above); run the same command again to finish it"
+        exit 1
+    fi
+    identity || gpt_fail_keep=1
+    if [ -n "${gpt_fail_keep:-}" ] || [ "$IDENT" != "$CONFIRMED" ]; then echo "FAIL: $ARG is no longer the disk that was updated"; exit 3; fi
+    if ! OUT=$(sgdisk -v "$I_NODE" 2>&1) || ! grep -q 'No problems found' <<< "$OUT"; then
+        printf '%s\n' "$OUT"; echo "FAIL: sgdisk -v reports problems on $I_NODE (the update does not change the GPT)"; exit 3
+    fi
+    echo "PASS: $I_NODE updated (read back and compared); /data kept; GPT unchanged and verified"
+    exit 0
+fi
 echo "== writing $SIZE bytes to $I_NODE"
 if wusb_py write "$IMG" "$SHA" "$I_NODE" "$I_RDEV" "$I_BYTES" "$I_SYSPATH"; then :; else
     rc=$?

@@ -10,6 +10,8 @@
 #    maintenance kernel (module_blacklist cannot stop those) is covered by builtin-initcalls.txt, whose initcalls go into
 #    the entry's initcall_blacklist; the mapping and the entry's whole module_blacklist (module-blacklist.txt) are
 #    installed for gbos-install's runtime check of the kernel command line;
+# 3b. installs gbos-update.py (next to this script or in install/) and writes the entry "Update Googlebook on the
+#    internal disk (keep data)": the installer entry with gbos.update=1 added (gbos-install runs gbos-update.py then);
 # 4. the entries for the internal disk (gbos-nvme*.conf) are rewritten from this image's entries only when the stick's
 #    copy of the internal disk's kernel and initrd (/gbos-nvme, written by gbos-install) is this image's (the initrd
 #    with its own boot_a GUID); otherwise they stay as they are. The stick's menu starts the internal disk by default
@@ -38,11 +40,19 @@ trap 'echo "setup-stick: failed at line $LINENO: $BASH_COMMAND" >&2' ERR
 trap cleanup EXIT
 pdev() { case "$1" in *[0-9]) echo "${1}p$2" ;; *) echo "$1$2" ;; esac; }
 blacklist() { { grep '^options ' "$1" || true; } | tr ' ' '\n' | sed -n 's/^module_blacklist=//p' | tr ',' '\n' | tr '-' '_' | sort -u; }
+# esp_entries <FAT image>: the names in its loader/entries, sorted, space-separated (empty on any error); same as gbos-install
+esp_entries() { { mdir -b -i "$1" ::/loader/entries || true; } | tr -d '\r' | sed -n 's|^::/loader/entries/\([^/]*\)$|\1|p' |
+    LC_ALL=C sort | tr '\n' ' '; }
 [ "$(id -u)" = 0 ] || { echo "run as root"; exit 2; }
 SRC=/dev/$(lsblk -no PKNAME "$(findmnt -nvo SOURCE /)")
 [ "$(lsblk -dno TRAN "$SRC" | tr -d ' ')" = usb ] || { echo "not running from a USB stick"; exit 2; }
 [ "$(cat "/sys/block/$(basename "$SRC")/queue/logical_block_size")" = 512 ] || fail "the stick does not use 512-byte sectors"
 [ -f "$M" ] && [ -f "$TPL" ] && [ -f "$MAP" ] || fail "need $M, $TPL and $MAP"
+ENG=""
+for c in "$HERE/gbos-update.py" "$HERE/../gbos-update.py"; do if [ -f "$c" ]; then ENG=$c; break; fi; done
+[ -n "$ENG" ] || fail "need gbos-update.py (install/gbos-update.py) next to setup-stick.sh or in its parent directory"
+ENGDST=/usr/local/share/gbos-install/gbos-update.py
+for c in lz4 mdir mmd mdel minfo; do command -v "$c" > /dev/null || fail "the maintenance system needs $c for updates (pacman -S lz4 mtools)"; done
 W=$(mktemp -d)
 # gbos-install's own verifier (the Python block it writes to $W/gbos.py), so both check the data the same way
 awk '/^cat > "\$W\/gbos\.py" << .PY.$/ {f = 1; next} /^PY$/ {f = 0} f' "$HERE/gbos-install.sh" > "$W/gbos.py"
@@ -102,7 +112,12 @@ UNCOVERED=$(comm -23 "$W/built" "$W/covered")
 [ -z "$UNCOVERED" ] || fail "kernel $KVER has these built in and $MAP does not block them: $(echo "$UNCOVERED" | tr '\n' ' ')"
 EEN=$(awk '$1 == "part" && $3 == "EFI-SYSTEM" {print $2}' "$M")
 zstd -q -dc "$PR/p$EEN.img.zst" > "$W/esp.img"
-for f in lapis.conf lapis-debug.conf lapis-quiet.conf; do
+ENTRIES=$(esp_entries "$W/esp.img")
+case "$ENTRIES" in
+    "lapis-debug.conf lapis-quiet.conf " | "lapis-debug.conf lapis-quiet.conf lapis.conf ") ;;
+    *) fail "the image's ESP has unexpected boot entries: ${ENTRIES:-none readable}" ;;
+esac
+for f in $ENTRIES; do
     mtype -i "$W/esp.img" "::/loader/entries/$f" > "$W/$f.orig"
     blacklist "$W/$f.orig" > "$W/$f.bl"
     [ -s "$W/$f.bl" ] || fail "the image's entry $f has no module_blacklist"
@@ -116,6 +131,9 @@ else
 fi
 sed -e "s/@ROOT_PARTUUID@/$ROOTUUID/" -e "s/@INITCALL_BLACKLIST@/$INITCALLS/" "$TPL" > "$W/gbos-install.conf"
 if grep -q '@[A-Z_]*@' "$W/gbos-install.conf"; then fail "template not rendered"; fi
+sed -e 's/^title .*/title Update Googlebook on the internal disk (keep data)/' -e '/^options /s/ gbos\.install=1$/ gbos.install=1 gbos.update=1/' \
+    "$W/gbos-install.conf" > "$W/gbos-update.conf"
+[ "$(grep -c ' gbos\.install=1 gbos\.update=1$' "$W/gbos-update.conf")" = 1 ] || fail "cannot derive the update entry"
 [ "$(grep '^options ' "$W/gbos-install.conf" | wc -c)" -lt 1900 ] || fail "kernel command line too long"
 echo "   kernel $KVER: built in and blocked by initcall_blacklist ($INITCALLS): $(tr '\n' ' ' < "$W/built")"
 echo "   the entry blocks everything the image's entries block"
@@ -128,6 +146,8 @@ install -D -m 0755 "$HERE/gbos-install.sh" /usr/local/sbin/gbos-install
 install -D -m 0644 "$HERE/gbos-installer.service" /etc/systemd/system/gbos-installer.service
 install -D -m 0644 "$MAP" "$MAPDST"
 install -D -m 0644 "$W/module-blacklist.txt" "$MODDST"
+install -D -m 0644 "$ENG" "$ENGDST"
+cmp -s "$ENG" "$ENGDST" || fail "installed gbos-update.py differs"
 cmp -s "$HERE/gbos-install.sh" /usr/local/sbin/gbos-install && cmp -s "$HERE/gbos-installer.service" /etc/systemd/system/gbos-installer.service \
     && cmp -s "$MAP" "$MAPDST" && cmp -s "$W/module-blacklist.txt" "$MODDST" || fail "installed files differ"
 systemctl enable gbos-installer.service
@@ -139,6 +159,7 @@ rm -rf /var/lib/gbos-install/pristine; mv /var/lib/gbos-install/pristine.new /va
 echo "== boot entries"
 mkdir -p "$MNT/xb/loader/entries"
 cp "$W/gbos-install.conf" "$MNT/xb/loader/entries/gbos-install.conf"
+cp "$W/gbos-update.conf" "$MNT/xb/loader/entries/gbos-update.conf"
 # the internal disk's kernel and initrd as gbos-install leaves them for this image: its kernel, its initrd with the
 # boot_a GUID that the stick's copy of the internal disk's initrd carries
 SAME=0
@@ -168,6 +189,8 @@ sync; ls "$MNT/xb/loader/entries"; umount "$MNT/xb"
 X=$(pdev "$SRC" "$XN"); blockdev --flushbufs "$X"
 mtype -i "$X" ::/loader/entries/gbos-install.conf > "$W/rb.entry"
 cmp -s "$W/gbos-install.conf" "$W/rb.entry" || fail "XBOOTLDR entry read-back differs"
+mtype -i "$X" ::/loader/entries/gbos-update.conf > "$W/rb.uentry"
+cmp -s "$W/gbos-update.conf" "$W/rb.uentry" || fail "XBOOTLDR update entry read-back differs"
 mount "$(pdev "$SRC" "$EN")" "$MNT/esp"
 CUR=$( { sed -n 's/^default[[:space:]]\{1,\}//p' "$MNT/esp/loader/loader.conf" 2>/dev/null || true; } | tail -n 1 | tr -d '\r')
 if [ "$HAVE_NVME" = 1 ]; then DEF=gbos-nvme.conf; else DEF=$CUR; fi

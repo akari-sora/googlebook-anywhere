@@ -48,7 +48,15 @@ other=$(find "$TREE" ! -type f ! -type d)
 nfiles=$(find "$TREE" -type f | wc -l | tr -d ' ')
 [ "$nfiles" = "${#paths[@]}" ] || { echo "refusing: exported $nfiles files, expected ${#paths[@]}"; exit 1; }
 while IFS= read -r -d '' f; do
-    if ! LC_ALL=C tr -d '\000' < "$f" | cmp -s - "$f"; then echo "refusing: binary file (contains NUL bytes): ${f#"$TREE"/}"; exit 1; fi
+    if ! LC_ALL=C tr -d '\000' < "$f" | cmp -s - "$f"; then
+        # the only binary files allowed: plain PNG screenshots in docs/images (no text/EXIF chunks; png-ok.py)
+        case "${f#"$TREE"/}" in
+            docs/images/*.png)
+                why=$(python3 "$ROOT/tools/release/png-ok.py" --pinned "$ROOT/tools/release/published-images.sha256" --as "${f#"$TREE"/}" "$f") \
+                    || { echo "refusing: ${f#"$TREE"/}: ${why#*: }"; exit 1; } ;;
+            *) echo "refusing: binary file (contains NUL bytes): ${f#"$TREE"/}"; exit 1 ;;
+        esac
+    fi
 done < <(find "$TREE" -type f -print0)
 for x in "${EXCLUDE[@]}"; do [ ! -e "$TREE/$x" ] || { echo "excluded path present: $x"; exit 1; }; done
 

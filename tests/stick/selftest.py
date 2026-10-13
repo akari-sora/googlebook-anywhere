@@ -163,12 +163,13 @@ tpl = (STICKSRC / "gbos-install.entry.template").read_text()
 ent = tpl.replace("@ROOT_PARTUUID@", str(uuid.uuid4())).replace("@INITCALL_BLACKLIST@", ics)
 opts = next(l for l in ent.splitlines() if l.startswith("options ")).split()[1:]
 tbl = set(next(o for o in opts if o.startswith("module_blacklist=")).split("=", 1)[1].split(","))
-bl_src = (REPO / "builder/image.py").read_text()
-bl_img = set(re.findall(r'"([^"]+)"', re.search(r"(?ms)^BL = \[(.*?)\]\n", bl_src).group(1)))
+import tomllib
+with open(REPO / "profiles/kano/profile.toml", "rb") as f:
+    bl_img = set(tomllib.load(f)["blacklist"]["modules"])
 check("rendered entry: no placeholder left, initcall_blacklist = the mapping, lockdown + efi=noruntime, nvme allowed",
       "@" not in ent and f"initcall_blacklist={ics}" in opts and {"lockdown=integrity", "efi=noruntime"} <= set(opts)
       and not {"nvme", "nvme_core"} & tbl and "nvme" not in ics)
-check("entry's module_blacklist covers builder/image.py BL and every mapped module", bl_img <= tbl and set(imap) <= tbl)
+check("entry's module_blacklist covers the profile's blacklist.modules and every mapped module", bl_img <= tbl and set(imap) <= tbl)
 check("entry's options line is short enough (< 1900 bytes)", len(next(l for l in ent.splitlines() if l.startswith("options "))) < 1900)
 
 # --- check-cmdline: the installer's runtime check of the kernel command line, against module-blacklist.txt made by
@@ -234,6 +235,31 @@ in_use("/proc/swaps unreadable -> refuses", lambda env: (FX / "swaps").unlink(),
 in_use("/sys/block/<disk> gone -> refuses", lambda env: shutil.rmtree(FX / "sys/block/nvme0n1"), "cannot check")
 in_use("another device number -> refuses", w("sys/block/nvme0n1/dev", "259:7\n"), "cannot check")
 in_use("lsblk failing -> refuses", lambda env: env.update(LSBLK_FAIL="1"), "cannot read the mount points")
+
+# --- the image's boot entries: esp_entries() of gbos-install.sh and setup-stick.sh (the same code) on a fake mdir, and
+#     the entry sets both accept: quiet + serial-debug, plus the plain lapis.conf of images built before it was dropped
+efun = [re.search(r"(?ms)^esp_entries\(\) \{.*?; \}$", t) for t in (src, setup_src)]
+check("gbos-install.sh and setup-stick.sh define the same esp_entries()", all(efun) and efun[0].group(0) == efun[1].group(0))
+acc = [re.search(r'(?m)^case "\$ENTRIES" in\n\s*(.*?)\) ;;$', t) for t in (src, setup_src)]
+check("gbos-install.sh and setup-stick.sh accept the same entry sets", all(acc) and acc[0].group(1) == acc[1].group(1))
+FB = W / "fakebin"; FB.mkdir()
+(FB / "mdir").write_text('#!/bin/sh\n[ -z "$MDIR_FAIL" ] || { echo "mdir: cannot open" >&2; exit 1; }\nprintf "%b" "$MDIR_OUT"\n')
+(FB / "mdir").chmod(0o755)
+def ee(out, fail=""):
+    sh = efun[0].group(0) + "\nE=$(esp_entries x.img)\necho \"[$E]\"\ncase \"$E\" in\n    " + acc[0].group(1) + ") echo ACCEPT ;;\n    *) echo REFUSE ;;\nesac"
+    r = subprocess.run(["bash", "-c", sh], capture_output=True, text=True,
+                       env={"PATH": f"{FB}:/usr/bin:/bin", "LC_ALL": "C", "MDIR_OUT": out, "MDIR_FAIL": fail})
+    return r.stdout.strip().splitlines()
+L = "::/loader/entries/"
+check("esp_entries: quiet + serial-debug (current images) accepted",
+      ee(f"{L}lapis-quiet.conf\\r\\n{L}lapis-debug.conf\\r\\n") == ["[lapis-debug.conf lapis-quiet.conf ]", "ACCEPT"])
+check("esp_entries: with the plain lapis.conf (older images) accepted",
+      ee(f"{L}lapis.conf\\n{L}lapis-debug.conf\\n{L}lapis-quiet.conf\\n") == ["[lapis-debug.conf lapis-quiet.conf lapis.conf ]", "ACCEPT"])
+check("esp_entries: a subdirectory line is not an entry", ee(f"{L}sub/\\n{L}lapis-debug.conf\\n{L}lapis-quiet.conf\\n")[-1] == "ACCEPT")
+check("esp_entries: serial-debug missing -> refused", ee(f"{L}lapis-quiet.conf\\n{L}lapis.conf\\n")[-1] == "REFUSE")
+check("esp_entries: an extra unknown entry -> refused",
+      ee(f"{L}lapis-debug.conf\\n{L}lapis-quiet.conf\\n{L}other.conf\\n")[-1] == "REFUSE")
+check("esp_entries: mdir failing -> empty, refused", ee("", fail="1") == ["[]", "REFUSE"])
 
 # --- optional: a GPT written by another tool
 if len(sys.argv) > 2:

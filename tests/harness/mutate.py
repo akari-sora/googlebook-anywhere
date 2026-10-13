@@ -9,8 +9,8 @@ usage: mutate.py [-j N] [--classify] [ID ...]      (default: all mutations, 4 in
 assertions. "effect" = still red: the mutant really sends/writes/discards/powers off something it must not, or exits
 wrongly. "message" = only the refusal reason changed: another guard layer still prevented the effect.
 
-The copy sits at <tmp>/tools/harness next to a link <tmp>/builder -> the repo's builder/, the layout the watcher reads
-its guard list from. The personal-data mutations plant a real value into the copy, taken at run time from the private
+The copy sits at <tmp>/tools/harness next to links <tmp>/builder and <tmp>/profiles to the repo's builder/ and
+profiles/, the layout the watcher reads its guard list from (profiles/kano/profile.toml through builder/lib/devprofile.py). The personal-data mutations plant a real value into the copy, taken at run time from the private
 files (tools/release/private-patterns.txt, tools/harness/kano-env.local.sh), so this file holds none; without those
 files (the public export) they are skipped, as is the test that would catch them.
 """
@@ -48,6 +48,8 @@ MUTATIONS = [
     ("ser-argument-shapes", "Codex C2", "kano-ser.py",
      [("if len(shape) == len(args) and all(ARG[kind](a) for kind, a in zip(shape, args)):", "if True:")],
      ["test_ser.Allowlist.test_refused_with_the_right_reason"]),
+    ("ser-lid-arguments", "lid commands take no arguments", "kano-ser.py",
+     [('"lidclose": [()],', '"lidclose": [(), ("gpio",)],')], ["test_ser.Allowlist.test_refused_with_the_right_reason"]),
     ("ser-prefix-match", "Opus M1", "kano-ser.py",
      [("shapes = EC_ALLOW.get(name)", "shapes = next((v for k, v in EC_ALLOW.items() if k.startswith(name)), None)")],
      ["test_ser.Allowlist.test_no_prefix_or_abbreviation_passes"]),
@@ -166,6 +168,13 @@ MUTATIONS = [
     ("install-source-binding", "Codex I2 (source bound to the stick)", "kano-nvme-install.sh",
      [("""    die "$SRC/$f is not what the stick's ESP holds""", """    true "$SRC/$f is not what the stick's ESP holds""")],
      ["test_nvme_install.Install.test_source_that_is_not_the_stick_image"]),
+    ("install-entry-set-unbound", "plain entry dropped (the stick holds the source's entry set)", "kano-nvme-install.sh",
+     [("""  die "the stick's ESP does not hold the same boot entries as $SRC ($ENTRIES)\"""",
+       """  true "the stick's ESP does not hold the same boot entries as $SRC ($ENTRIES)\"""")],
+     ["test_nvme_install.Install.test_stick_with_other_entries_than_the_source"]),
+    ("install-entry-set-any", "plain entry dropped (known entry sets only)", "kano-nvme-install.sh",
+     [("""  *) die "entries in $SRC: '$ENTRIES'; expected""", """  *) true "entries in $SRC: '$ENTRIES'; expected""")],
+     ["test_nvme_install.Install.test_missing_entry"]),
     ("install-bootconfig-checked-late", "Codex I2 (inputs before the discard)", "kano-nvme-install.sh",
      [("""initrd_nvme "$RUN/src-initrd.img" - - || die""", """true || die""")],
      ["test_nvme_install.Install.test_bad_bootconfig", "test_nvme_install.Install.test_bootconfig_without_a_vbmeta_digest"]),
@@ -250,7 +259,7 @@ MUTATIONS = [
     ("watch-nvme-init-on-nvme", "Codex I4 (watcher)", "kano-gbos-watch.py",
      [('    if profile == "nvme" and "nvme_init" in ic:', '    if False:')], ["test_watch.Watch.test_nvme_profile"]),
     ("watch-guard-source-fail-open", "Codex I4 (watcher)", "kano-gbos-watch.py",
-     [('        bad(f"cannot read the expected command line guards from {IMAGE_PY}: {e}")', "        guards = (set(), [], [])")],
+     [('        bad(f"cannot read the expected command line guards from {GUARD_SOURCE}: {e}")', "        guards = (set(), [], [])")],
      ["test_watch.Watch.test_unreadable_guard_source_does_not_start"]),
     ("watch-window-end-success", "Codex I7 / Opus m1", "kano-gbos-watch.py",
      [("    if not verified:\n        print(f\"UNOBSERVABLE: the", "    if False:\n        print(f\"UNOBSERVABLE: the")],
@@ -339,6 +348,7 @@ def run_one(m, work, classify=False):
     copy = top / "tools" / "harness"
     shutil.copytree(HARNESS, copy)
     (top / "builder").symlink_to(REPO / "builder")
+    (top / "profiles").symlink_to(REPO / "profiles")
     f = copy / name
     text = f.read_text()
     for old, new in edits:

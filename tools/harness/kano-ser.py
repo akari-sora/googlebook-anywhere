@@ -16,8 +16,8 @@
                                             kernel parameter) drawn at column 2 of the menu's status row. Exit 0 seen,
                                             3 not seen, 4 no menu in the log. No port.
 
-EC console: only the commands in EC_ALLOW are sent (power button, AP shutdown, keyboard-matrix presses and read-only
-queries). The line is checked before any port is opened: control characters (CR, LF, NUL, TAB, ...), non-ASCII
+EC console: only the commands in EC_ALLOW are sent (power button, AP shutdown, keyboard-matrix presses, simulated lid
+close/open and read-only queries). The line is checked before any port is opened: control characters (CR, LF, NUL, TAB, ...), non-ASCII
 characters, any command not on the allowlist and malformed arguments are refused with exit status 2. Command names
 are compared exactly (case-insensitively); the EC itself would accept unique prefixes, so a prefix never passes.
 
@@ -67,6 +67,11 @@ EC_ALLOW = {
     "powerinfo": [()],
     "kblight": [()],                 # read-only form only: `kblight <percent>` would set it
     "gpioget": [(), ("gpio",)],
+    # simulated lid close/open: the EC's debounced lid state in RAM plus the same hook and host event as the real lid
+    # switch (common/lid_switch.c); no flash, CBI or power-sequencing write. Always end a session with lidopen.
+    "lidclose": [()],
+    "lidopen": [()],
+    "lidstate": [()],
 }
 ARG = {
     "ms": lambda t: re.fullmatch(r"[0-9]{1,5}", t) is not None and 1 <= int(t) <= 20000,

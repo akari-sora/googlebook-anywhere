@@ -62,7 +62,8 @@ shell 腳本從自己所在的目錄 source `kano-env.sh`，它會先讀 `kano-e
 ## 防呆（實際做了什麼，沒做什麼）
 
 **`kano-ser.py`**：`ec` 子指令只送 allowlist 裡的指令：`apshutdown`、`powerbtn [ms]`、`kbpress <col> <row> [0|1]`、
-`version`、`battery`、`powerinfo`、`kblight`（只有不帶參數的讀取形式）、`gpioget [名稱]`。在開序列埠之前就檢查：
+`version`、`battery`、`powerinfo`、`kblight`（只有不帶參數的讀取形式）、`gpioget [名稱]`、`lidclose`／`lidopen`／`lidstate`
+（模擬闔上／打開上蓋：只改 EC RAM 裡的上蓋狀態並送出和實體上蓋相同的事件，見 EC 原始碼 `common/lid_switch.c`；用完一定要 `lidopen`）。在開序列埠之前就檢查：
 任何控制字元（CR、LF、NUL、TAB…）、非 ASCII、不在清單的指令、不合格式的參數都拒絕，exit 2。指令名稱要完全相同
 （不分大小寫）；EC 本身接受唯一前綴縮寫，所以前綴一律不放行。pyserial 只在真的開序列埠時才載入。
 `ap-send`、`ap-type`、`ap-keys`、`ap-spam` 寫到 AP UART（韌體、bootloader 選單、維護 shell），**沒有過濾**，送什麼就執行什麼。
@@ -121,14 +122,15 @@ NVMe 不是根目錄碟；NVMe 上沒有任何分割被掛載、當 swap 或被�
   30 秒（`--stall-timeout`），否則 exit 4。過了這段時間後的安靜只會記一筆提示（Android 開完機本來就會變安靜）。
   整個觀察時間（第二個參數）比這更短、結束時還沒看到命令列，也是 exit 4，不會印「沒有危險」。所有時間參數都必須是
   大於 0 的有限數字（`--camera-every` 可以是 0 = 關閉），否則不啟動（exit 5）。
-- 檢查的防呆參數來自 `builder/image.py`（唯一來源，用 ast 讀，不執行）：`BL` 的每一個模組（扣掉 `BL.remove()` 的）
+- 檢查的防呆參數來自 builder 用的機型設定 `profiles/kano/profile.toml`（加上全專案的 `profiles/_safety.toml`，用
+  `builder/lib/devprofile.py` 讀取並核對，不執行 builder）：`blacklist.modules` 的每一個模組
   都要在這次開機最後一個 `module_blacklist=` 裡（核心只用最後一個）；`initcall_blacklist` 的每一個 initcall
   （NVMe 版除了 `nvme_init`，而且 `nvme_init` 不可以被封鎖）；`efi=noruntime`；不可以有 `spi-intel.*`。
-  分段印出的長命令列（每段結尾 `\`）會先接起來。讀不到 `builder/image.py`（harness 不在 repo 的 `tools/harness/`
-  裡）就不啟動（exit 5）。
+  分段印出的長命令列（每段結尾 `\`）會先接起來。讀不到機型設定（harness 不在 repo 的 `tools/harness/` 裡，
+  或設定不合法）就不啟動（exit 5）。
 - 攝影機截圖在背景跑，超過 `--camera-timeout` 就殺掉，不會卡住偵測；EC 呼叫有 timeout，斷電後用 `powerinfo`
   確認 AP 已在 G3/S5。exit status：0 正常、2 危險字串（已斷電）、3 命令列缺防呆參數（已斷電）、4 unobservable、
-  5 沒有啟動（參數不合法、沒設 `KANO_EC_TTY` 所以無法斷電，或讀不到 `builder/image.py`）、6 偵測到危險但無法確認斷電
+  5 沒有啟動（參數不合法、沒設 `KANO_EC_TTY` 所以無法斷電，或讀不到機型設定）、6 偵測到危險但無法確認斷電
   （請手動斷電）。
 
 **ssh 主機金鑰沒有固定**：`kano-ssh.sh` 仍是 `StrictHostKeyChecking=no` 加 `UserKnownHostsFile=/dev/null`，因為維護系統

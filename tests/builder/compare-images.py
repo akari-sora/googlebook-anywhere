@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 """Compare two Googlebook disk images and check the new one's boot binding.
 
-usage: compare-images.py <reference.img> <new.img> [--allow-esp-diff path,path,...]
+usage: compare-images.py <reference.img> <new.img> [--allow-esp-diff=path,path,...] [--allow-esp-removed=path,...]
 
 - both GPTs: valid header and entries CRC32; the same disk GUID and, for every partition, the same name, start, end,
   type GUID, unique GUID and attributes
 - every partition except the ESP: same SHA-256
 - the ESP file by file (FAT timestamps and cluster placement ignored); --allow-esp-diff lists files whose content is
-  allowed to differ (intentional changes since the reference)
+  allowed to differ (intentional changes since the reference); --allow-esp-removed lists files of the reference that
+  the new image intentionally no longer has (every other missing or extra file is a difference)
 - the new image's ESP initrd bootconfig names the new image's own boot_a GUID and the SHA-256 of its vbmeta_a struct
 Exit 0 only when everything matches.
 """
@@ -15,10 +16,12 @@ import hashlib, re, struct, subprocess, sys, tempfile, uuid, zlib
 from pathlib import Path
 
 args = [a for a in sys.argv[1:] if not a.startswith("--")]
-allowed = set()
+allowed, removed = set(), set()
 for a in sys.argv[1:]:
     if a.startswith("--allow-esp-diff"):
         allowed |= set(filter(None, a.split("=", 1)[1].split(","))) if "=" in a else set()
+    elif a.startswith("--allow-esp-removed"):
+        removed |= set(filter(None, a.split("=", 1)[1].split(","))) if "=" in a else set()
 if len(args) != 2: sys.exit(__doc__)
 ref, new = args
 
@@ -87,6 +90,8 @@ for k in sorted(set(fa) | set(fb)):
     same = fa.get(k) == fb.get(k)
     if not same and k in allowed and k in fa and k in fb:
         print("allowed-diff ESP", k); continue
+    if k in removed and k in fa and k not in fb:
+        print("allowed-removal ESP", k); continue
     report(same, f"ESP {k}")
 initrd = fb.get("initrd.img", b"")
 m = re.search(rb"androidboot\.boot_part_uuid=([0-9a-f-]{36})", initrd)

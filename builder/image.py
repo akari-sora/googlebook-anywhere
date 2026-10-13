@@ -1,14 +1,24 @@
 #!/usr/bin/env python3
-"""Stage 2 of the Googlebook-on-KANO build: ESP initrd with pci-stub loaded first, three systemd-boot entries
-(quiet, serial-debug, plain) with the KANO safety blacklist, and two QEMU self-tests of the finished USB image:
+"""Stage 2 of the Googlebook build for one device profile (GBOS_PROFILE, builder/lib/devprofile.py): ESP initrd with the
+profile's first-stage changes (KANO: pci-stub loaded first), two systemd-boot entries (quiet, serial-debug) made
+from the stock vendor_boot options, the profile and the safety rules (profiles/_safety.toml), and two QEMU self-tests
+of the finished USB image:
   1. functional: kernel + initrd + the serial-debug options handed to QEMU directly, Android checked on the serial log;
   2. boot chain: firmware -> the image's own ESP -> systemd-boot -> the default entry, checked by disk writes.
 The image is built as <name>.partial and renamed to <name> only when every check passes."""
 import hashlib, json, os, re, shutil, socket, struct, subprocess, sys, tempfile, time, uuid
 from pathlib import Path
+if not __debug__:
+    sys.exit("builder/image.py checks the safety options with assert: run it without python -O / PYTHONOPTIMIZE")
+sys.path.insert(0, str(Path(__file__).resolve().parent / "lib"))
+import devprofile
 GBOS_OUT = Path(os.environ["GBOS_OUT"])
 SRC = GBOS_OUT / "vendor/stage-vendor.img"
-NAME = os.environ.get("GBOS_IMAGE_NAME", "googlebook-kano.img")
+PROF = devprofile.load(os.environ.get("GBOS_PROFILE") or Path(__file__).resolve().parent.parent / "profiles/kano")
+if PROF["model"]["status"] != "verified":
+    print(f"WARNING: profile {PROF['model']['id']} is {PROF['model']['status']!r}, not verified on its hardware "
+          "(profiles/<model>/profile.toml model.status)", flush=True)
+NAME = os.environ.get("GBOS_IMAGE_NAME") or PROF["model"]["image_name"]
 if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*\.img", NAME):
     sys.exit(f"GBOS_IMAGE_NAME must be a plain file name ending in .img, not {NAME!r}")
 OUT = GBOS_OUT / "image"; OUT.mkdir(parents=True, exist_ok=True)
@@ -24,9 +34,19 @@ DEFAULT_ENTRY = os.environ.get("GBOS_DEFAULT_ENTRY", "lapis-quiet.conf")
 EDITOR = os.environ.get("GBOS_LOADER_EDITOR", "no")
 ADB = bool(os.environ.get("GBOS_ADB_PUBKEY"))
 SKIP_SELFTEST = os.environ.get("GBOS_SKIP_SELFTEST") == "1"
+GENERIC = PROF["display"]["stack"] == "gop-swiftshader"   # GOP framebuffer + SwiftShader (profiles/generic-x86)
+# Opt-in EC features (default: none, and then every byte below is as without this switch). Each one releases an
+# audited set of ChromeOS EC kernel drivers (docs/SAFETY.md, "EC 功能變體"); the EC userspace channels and every EC
+# writer stay blocked in every variant. KANO only (its hooks.vendor has the ec() hook).
+EC_FEATURES = [f for f in os.environ.get("GBOS_EC", "").split(",") if f]
+assert set(EC_FEATURES) <= {"sensors", "typec", "buttons"} and len(set(EC_FEATURES)) == len(EC_FEATURES), EC_FEATURES
+assert not EC_FEATURES or PROF["model"]["id"] == "kano", "GBOS_EC is audited for the KANO only"
+KMOD_AC = "ac" in PROF["kmods"]   # vendor carries ac.ko (builder/kmod/build-ac.sh; builder/vendor.sh checks the pin)
+KMOD_WAKEFILTER = "gbos_wakefilter" in PROF["kmods"]   # vendor carries gbos_wakefilter.ko (build-gbos_wakefilter.sh)
 if FINAL.exists():
     sys.exit(f"refusing: {FINAL} already exists")
-assert DEFAULT_ENTRY in ("lapis.conf", "lapis-debug.conf", "lapis-quiet.conf"), DEFAULT_ENTRY
+ENTRIES = ("lapis-debug.conf", "lapis-quiet.conf")
+assert DEFAULT_ENTRY in ENTRIES, DEFAULT_ENTRY
 assert EDITOR in ("yes", "no"), EDITOR
 
 def run(*a):
@@ -67,7 +87,8 @@ size, _ = struct.unpack("<II", src[-20:-12]); bc = src[-20 - size:]; body = src[
 digest = (GBOS_OUT / "vendor/logs/vbmeta.digest.txt").read_text().split()[0]
 assert re.fullmatch(r"[0-9a-f]{64}", digest) and f"androidboot.vbmeta.digest={digest}\n".encode() in bc, \
     "ESP bootconfig must carry the re-signed vbmeta digest"
-DROP = {"8250_dw.ko", "intel-lpss-pci.ko", "intel-lpss.ko"}
+DROP = set(PROF["cmdline"]["first_stage_drop"])
+STUB = bool(PROF["cmdline"]["pci_stub_ids"])
 out = bytearray(); off = 0; changed = 0; added = 0; depchanged = 0
 while off < len(body):
     if body[off:off+6] != b"070701":
@@ -78,9 +99,11 @@ while off < len(body):
     nend = (off + 110 + ns + 3) & ~3; name = body[off+110:off+110+ns-1].decode(); data = body[nend:nend+fs]
     nxt = (nend + fs + 3) & ~3
     if name == "lib/modules/modules.load":
-        data = ("\n".join(["pci-stub.ko"] + [l for l in data.decode().splitlines() if l and l not in DROP]) + "\n").encode()
+        data = ("\n".join((["pci-stub.ko"] if STUB else []) + [l for l in data.decode().splitlines() if l and l not in DROP]) + "\n").encode()
         h[54:62] = b"%08X" % len(data); changed += 1
         out += h + body[off+110:nend] + data + b"\0" * ((-len(data)) % 4)
+        if not STUB:
+            off = nxt; continue
         # new entry: lib/modules/pci-stub.ko (first stage loads it before ueventd can load intel-lpss-pci)
         ko = PCI_STUB.read_bytes()
         nm = b"lib/modules/pci-stub.ko\0"
@@ -88,80 +111,103 @@ while off < len(body):
         hdr = b"070701" + b"".join(b"%08X" % v for v in fields)
         out += hdr + nm + b"\0" * ((-(110 + len(nm))) % 4) + ko + b"\0" * ((-len(ko)) % 4)
         added += 1
-    elif name == "lib/modules/modules.dep":
+    elif name == "lib/modules/modules.dep" and STUB:
         data = data + b"/lib/modules/pci-stub.ko:\n"
         h[54:62] = b"%08X" % len(data); depchanged += 1
         out += h + body[off+110:nend] + data + b"\0" * ((-len(data)) % 4)
     else:
         out += body[off:nxt]
     off = nxt
-assert changed == 1 and added == 1 and depchanged == 1, (changed, added, depchanged)
+assert changed == 1 and added == depchanged == (1 if STUB else 0), (changed, added, depchanged)
 (OUT / "initrd.img").write_bytes(bytes(out) + bc)
 
-# entries
-orig = mtype(IMG, "::/loader/entries/lapis.conf")
-opts = re.search(r"^options (.*)$", orig, re.M).group(1).split()
-drop = {"kvm-intel.pkvm=1", "fred=on", "spi-intel.writeable=1", "spi-intel.ignore_protection_status=1",
-        "softlockup_panic=1", "nmi_watchdog=panic", "pm.dpm_watchdog_enabled=1", "cpufreq.default_governor=performance",
-        "snd_intel_sdw_acpi.sdw_link_mask=0x5",
-        # superseded later on the line (xe.enable_psr=0, snd_sof_pci.ipc_type=0); dropped to keep the line short
-        "xe.enable_psr=1", "snd_sof_pci.ipc_type=1"}
-opts = [o for o in opts if o not in drop and not o.startswith(("module_blacklist=", "initcall_blacklist="))]
-BL = ["cros_ec_debugfs", "tpm_tis_i2c_cr50", "cros_ec_lpcs", "cros_ec_usb", "spi_intel_pci", "spi_intel", "i2c_dev",
-      "thunderbolt", "tpm", "tpm_tis", "tpm_tis_core", "tpm_tis_spi", "cros_ec", "cros_ec_proto",
-      "cros_ec_dev", "cros_ec_chardev", "gsmi", "chromeos_acpi", "nvram", "mtd", "spi_nor", "spidev",
-      "intel_quicki2c", "intel_quickspi",
-      # with LPSS I2C live: EEPROM writer, HPS, EC I2C tunnel, peripheral charger stay unbound
-      "at24", "cros_hps_i2c", "i2c_cros_ec_tunnel", "cros_peripheral_charger",
-      # cros_ec_proto (library only) is allowed so cros_kbd_led_backlight binds ACPI GOOG0002; every other module that
-      # depends on it stays out, transports first (no EC device is ever registered, so no EC host command can be sent)
-      "cros_ec_spi", "cros_ec_i2c", "cros_ec_ishtp", "cros_ec_sysfs", "cros_ec_vbc", "cros_ec_typec", "cros_typec_switch",
-      "cros_usbpd_notify", "cros_usbpd_charger", "cros_usbpd_logger", "cros_charge_control", "cros_ec_ucsi", "cros_ec_keyb",
-      "cros_ec_sensorhub", "cros_ec_sensors_core", "cros_ec_sensors", "cros_ec_accel_legacy", "cros_ec_baro",
-      "cros_ec_lid_angle", "cros_ec_light_prox", "cros_ec_lightbar", "cros_ec_pwrmon", "cros_ec_cec", "leds_cros_ec",
-      "hid_google_hammer", "wilco_ec", "wilco_charger", "wilco_ec_debugfs", "wilco_ec_telem", "rtc_wilco_ec"]
-BL.remove("cros_ec_proto")
-tail = ["initcall_blacklist=nvme_init,mei_me_driver_init", "efi=noruntime", "efi_pstore.pstore_disable=1", "panic=0",
-        "softlockup_panic=0", "nmi_watchdog=0", "pm.dpm_watchdog_enabled=0", "cpufreq.default_governor=schedutil",
-        # xe on 6.18.21 faults scanning tiled framebuffers through a DPT in stolen memory (CVE-2026-80915, upstream fc648757908304aedbad74f74bf58192aec383db)
-        "xe.enable_dpt=0", "xe.enable_psr=0", "xe.enable_fbc=0",
-        # KANO is max98373 + nau8825 on SOF; that topology ships for IPC3 only
-        "snd_sof_pci.ipc_type=0"]
-normal = opts + ["module_blacklist=" + ",".join(BL)] + tail
-debug = [o for o in opts if o != "8250.nr_uarts=4"] + \
-        ["module_blacklist=" + ",".join(BL + ["8250_dw", "intel_lpss_acpi"])] + tail + ["keep_bootcon", "printk.devkmsg=on",
-        # LPSS UART 00:1e.0 (51a8-51aa) and fingerprint GSPI (51ab) go to pci-stub, so intel-lpss-pci binds only the I2C functions
-        "pci-stub.ids=8086:51a8,8086:51a9,8086:51aa,8086:51ab"]
+# entries: the stock vendor_boot options of lapis build 16452207 (the only build the base supports), the profile's
+# additions and the project-wide safety options (builder/lib/devprofile.py make_entries)
+VBOOT = PARTS["vendor_boot_a"]
+with open(SRC, "rb") as f:
+    f.seek(VBOOT["start"]); vh = f.read(4096)
+assert vh[:8] == b"VNDRBOOT" and struct.unpack_from("<I", vh, 8)[0] == 4, "vendor_boot_a: not a v4 vendor boot image"
+vcmd = vh[28:28 + 2048].split(b"\0")[0]
+assert hashlib.sha256(vcmd).hexdigest() == "311e95df564037a863af096fb6265f15e8340e4b60e2736676e43d81d876aee7", \
+    "vendor_boot_a command line is not the one of lapis build 16452207"
+E = devprofile.make_entries(PROF, vcmd.decode())
+normal, debug, quiet = E["normal"], E["debug"], E["quiet"]
+# GBOS_EC: the EC transport/core plus each feature's drivers leave the blacklist; nothing they send writes EC flash,
+# CBI, I2C, firmware or reboots the EC (audit: docs/SAFETY.md). cros_ec_dev still adds the cros-ec-chardev, -sysfs,
+# -debugfs, -hwmon, -lightbar, -vbc, -charge-control, -usbpd-charger/-logger, -pchg, -led and -gpio/-rtc/-wdt cells; their
+# drivers stay blacklisted, so /dev/cros_ec and every EC write interface stay absent. Two drivers outside the released
+# set then send EC commands too: cros_kbd_led_backlight (allowed in every entry for the keyboard backlight) binds the
+# cros-keyboard-leds cell when the EC reports EC_FEATURE_PWM_KEYB and sends PWM_GET/SET_KEYBOARD_BACKLIGHT (EC RAM only;
+# the cell cannot be blocked on its own), and cros_ec_typec's VDM code sends TYPEC_VDM_RESPONSE (a read).
+EC_CORE = ["cros_ec", "cros_ec_lpcs", "cros_ec_dev"]
+EC_RELEASE = {"sensors": ["cros_ec_sensorhub", "cros_ec_sensors_core", "cros_ec_sensors", "cros_ec_lid_angle"],
+              "typec": ["cros_ec_typec", "cros_usbpd_notify"],
+              "buttons": ["cros_ec_keyb"]}
+# not in this lapis build's vendor_dlkm; blocked in the EC variants so a future vendor_dlkm cannot add an EC writer
+EC_EXTRA_BLOCK = ["gpio_cros_ec", "cros_ec_hwmon", "cros_ec_wdt", "rtc_cros_ec", "cros_ec_uart", "cros_ec_rpmsg"]
+# must stay blocked in every variant: EC userspace channels, EC writers, other MCUs, TPM, SPI flash, firmware NVRAM
+EC_NEVER = ("cros_ec_chardev", "cros_ec_debugfs", "cros_ec_sysfs", "cros_ec_vbc", "cros_ec_lightbar", "i2c_cros_ec_tunnel",
+            "cros_charge_control", "leds_cros_ec", "cros_ec_spi", "cros_ec_i2c", "cros_ec_ishtp", "cros_ec_usb",
+            "cros_peripheral_charger", "cros_usbpd_charger", "cros_usbpd_logger", "cros_typec_switch", "cros_ec_ucsi",
+            "tpm", "tpm_tis", "tpm_tis_core", "tpm_tis_i2c_cr50", "spi_intel_pci", "spi_intel", "thunderbolt", "i2c_dev",
+            "gsmi", "nvram", "mtd", "spi_nor", "spidev", "chromeos_acpi")
+released = set(EC_CORE + [m for f in EC_FEATURES for m in EC_RELEASE[f]]) if EC_FEATURES else set()
+assert released <= set(PROF["blacklist"]["modules"]) and not released & set(EC_NEVER), released
+def ec_blacklist(o):
+    if not EC_FEATURES:
+        return o
+    out = []
+    for x in o:
+        if x.startswith("module_blacklist="):
+            ms = x.split("=", 1)[1].split(",")
+            x = "module_blacklist=" + ",".join([m for m in ms if m not in released] + [m for m in EC_EXTRA_BLOCK if m not in ms])
+        out.append(x)
+    return out
+normal, debug, quiet = ec_blacklist(normal), ec_blacklist(debug), ec_blacklist(quiet)
 def entry(title, o): return f"title {title}\nlinux /kernel.efi\ninitrd /initrd.img\noptions {' '.join(o)}\n"
-# quiet: the debug entry's hardware set without any serial console (the 115200-baud console is synchronous)
-SERIAL = ("console=", "earlycon=")
-quiet = [o for o in debug if not o.startswith(SERIAL) and o not in ("keep_bootcon", "printk.devkmsg=on", "ignore_loglevel", "loglevel=8")] + ["loglevel=4"]
-assert "pci-stub.ids=8086:51a8,8086:51a9,8086:51aa,8086:51ab" in quiet and not any(o.startswith(SERIAL) for o in quiet)
+SERIAL = devprofile.SERIAL
+STUB_OPT = "pci-stub.ids=" + ",".join(PROF["cmdline"]["pci_stub_ids"])
+assert (not STUB or STUB_OPT in quiet) and not any(o.startswith(SERIAL) for o in quiet)
 # quiet differs from the QEMU-tested serial-debug options only by the serial console/log-level parameters
 assert sorted(set(debug) ^ set(quiet)) == sorted(set(o for o in debug if o.startswith(SERIAL)) |
        {"keep_bootcon", "printk.devkmsg=on", "loglevel=4"} | (set(debug) & {"ignore_loglevel", "loglevel=8"})), set(debug) ^ set(quiet)
-for name, o in (("normal", normal), ("debug", debug), ("quiet", quiet)):
+SAFE = PROF["_safety"]
+# EC_NEVER is part of the project-wide required blacklist, so every entry of every profile and variant blocks it
+assert set(EC_NEVER) <= set(SAFE["blacklist"]["required"]), set(EC_NEVER) - set(SAFE["blacklist"]["required"])
+# a profile for other machines must not carry a machine-specific MMIO console (it would write that address)
+assert not GENERIC or not any(o.split("=", 1)[0] in ("console", "earlycon") and "mmio" in o for o in normal + debug + quiet)
+for name, o in (("debug", debug), ("quiet", quiet)):
     n = len(" ".join(o)) + len("initrd=\\initrd.img ")
     print(name, "command line length", n); assert n < 2000, name
     bl = [x for x in o if x.startswith("module_blacklist=")]; assert len(bl) == 1
     bls = bl[0].split("=", 1)[1].split(",")
-    for m in ("cros_ec", "cros_ec_lpcs", "cros_ec_dev", "cros_ec_chardev", "cros_ec_debugfs", "cros_ec_sysfs", "cros_ec_vbc", "tpm", "spi_intel_pci", "thunderbolt", "i2c_dev", "gsmi", "nvram"):
-        assert m in bls, (name, m)
-    assert "cros_ec_proto" not in bls and "cros_kbd_led_backlight" not in bls
+    for m in SAFE["blacklist"]["required"]:
+        assert m in bls or m in released, (name, m)
+    assert set(EC_NEVER) <= set(bls), (name, set(EC_NEVER) - set(bls))
+    assert not EC_FEATURES or (not released & set(bls) and set(EC_EXTRA_BLOCK) <= set(bls)), name
+    for m in PROF["blacklist"]["allow"]:
+        assert m not in bls, (name, m)
     assert "efi=noruntime" in o and not any(x.startswith("spi-intel.") for x in o), name
-(OUT / "lapis.conf").write_text(entry("Googlebook KANO plain (no pci-stub, for comparison)", normal))
-(OUT / "lapis-quiet.conf").write_text(entry("Googlebook KANO quiet", quiet))
-(OUT / "lapis-debug.conf").write_text(entry("Googlebook KANO safe serial-debug", debug))
+    assert [x for x in o if x.startswith("efi=")] == ["efi=noruntime"], name
+(OUT / "lapis-quiet.conf").write_text(entry(PROF["entries"]["quiet"], quiet))
+(OUT / "lapis-debug.conf").write_text(entry(PROF["entries"]["debug"], debug))
 # editor no (default): the menu cannot edit an entry's options, so the blacklist cannot be removed by a stray key;
 # auto-firmware no: no "Reboot Into Firmware" menu item (it sets the OsIndications EFI variable)
 (OUT / "loader.conf").write_text(f"default {DEFAULT_ENTRY}\ntimeout 5\neditor {EDITOR}\nauto-firmware no\n")
 run("mcopy", "-o", "-i", f"{IMG}{ESP}", OUT / "initrd.img", "::/initrd.img")
-run("mcopy", "-o", "-i", f"{IMG}{ESP}", OUT / "lapis.conf", "::/loader/entries/lapis.conf")
+# the base ESP's own lapis.conf (Google's options, without the safety blacklist) is deleted: only the two entries built
+# here can be started. The former "plain" entry (no pci-stub) left the KANO panel dark while Android ran (its serial log
+# stops when the LPSS UART is taken over; docs/JOURNAL.md, research/kano-compat/PLAN.md 2.5-E), so it is not built any more
+run("mdel", "-i", f"{IMG}{ESP}", "::/loader/entries/lapis.conf")
 run("mcopy", "-o", "-i", f"{IMG}{ESP}", OUT / "lapis-debug.conf", "::/loader/entries/lapis-debug.conf")
 run("mcopy", "-o", "-i", f"{IMG}{ESP}", OUT / "lapis-quiet.conf", "::/loader/entries/lapis-quiet.conf")
 run("mcopy", "-o", "-i", f"{IMG}{ESP}", OUT / "loader.conf", "::/loader/loader.conf")
-for f in ("lapis.conf", "lapis-debug.conf", "lapis-quiet.conf"):
+for f in ENTRIES:
     assert mtype(IMG, f"::/loader/entries/{f}") == (OUT / f).read_text(), f
+listing = subprocess.run(["mdir", "-b", "-i", f"{IMG}{ESP}", "::/loader/entries"], check=True, capture_output=True,
+                         text=True).stdout.split("\n")
+present = sorted(l.strip().replace("\r", "").rsplit("/", 1)[-1] for l in listing if l.strip() and not l.strip().endswith("/"))
+assert present == sorted(ENTRIES), f"ESP loader/entries holds {present}, expected exactly {sorted(ENTRIES)}"
 assert mtype(IMG, "::/loader/loader.conf") == (OUT / "loader.conf").read_text()
 run("mcopy", "-o", "-i", f"{IMG}{ESP}", "::/initrd.img", OUT / "readback-initrd.img")
 assert (OUT / "readback-initrd.img").read_bytes() == (OUT / "initrd.img").read_bytes()
@@ -175,19 +221,39 @@ with open(blank, "wb") as fh: fh.truncate(1 << 30)
 def qmp_query(path, *cmds):
     s = socket.socket(socket.AF_UNIX); s.settimeout(30); s.connect(str(path)); f = s.makefile("rwb")
     def call(cmd):
-        f.write(json.dumps({"execute": cmd}).encode() + b"\n"); f.flush()
+        cmd, args = cmd if isinstance(cmd, tuple) else (cmd, None)
+        f.write(json.dumps({"execute": cmd, **({"arguments": args} if args else {})}).encode() + b"\n"); f.flush()
         while True:
             r = json.loads(f.readline())
             if "return" in r or "error" in r: return r
     json.loads(f.readline()); call("qmp_capabilities")
-    res = [call(c) for c in cmds]; s.close(); return res
+    res = [call(c) for c in cmds]; f.close(); s.close(); return res   # QMP takes one client at a time
 QMP_DIR = Path(tempfile.mkdtemp(prefix="gbos-qmp-"))   # unix socket paths are limited to about 108 bytes
+def ac_ssdt(path):
+    """An SSDT with one ACPI AC adapter, \\_SB.AC (ACPI0003, _PSR = 1: on line), for the functional test of ac.ko;
+    QEMU's own ACPI tables have no AC device."""
+    def pkg(body):   # PkgLength of a body shorter than 4096 bytes, counting the length bytes themselves
+        n = len(body) + 1
+        if n < 64: return bytes([n]) + body
+        n += 1; assert n < 4096
+        return bytes([0x40 | (n & 0xF), n >> 4]) + body
+    hid = b"\x08_HID\x0dACPI0003\x00"                       # Name (_HID, "ACPI0003")
+    psr = b"\x14" + pkg(b"_PSR\x00\xa4\x01")                  # Method (_PSR) { Return (One) }
+    sta = b"\x14" + pkg(b"_STA\x00\xa4\x0a\x0f")              # Method (_STA) { Return (0x0F) }
+    dev = b"\x5b\x82" + pkg(b"AC__" + hid + psr + sta)       # Device (AC)
+    body = b"\x10" + pkg(b"\\_SB_" + dev)                    # Scope (\_SB)
+    hdr = bytearray(b"SSDT" + struct.pack("<IBB", 36 + len(body), 2, 0) + b"GBOS  " + b"KANOAC  " + struct.pack("<I", 1)
+                    + b"GBOS" + struct.pack("<I", 1))
+    t = bytearray(hdr + body); t[9] = (-sum(t)) & 0xFF
+    Path(path).write_bytes(bytes(t))
 def qemu(tag, extra):
     serial, sock, vars_fd = OUT / f"{tag}-serial.log", QMP_DIR / f"{tag}.qmp", OUT / f"{tag}-vars.fd"
     for p in (serial, sock): p.unlink(missing_ok=True)
     shutil.copy(OVMF_VARS, vars_fd)
     cmd = [QEMU, "-machine", "q35,accel=kvm", "-cpu", "host", "-m", "8192",
            "-smp", "4", "-no-reboot", "-vga", "none", "-display", "none",
+           # gop-swiftshader: a plain GOP framebuffer (OVMF drives bochs-display; romfile= because no VGA BIOS is needed)
+           *(["-device", "bochs-display,id=gfx,romfile=,bus=pcie.0,addr=0x5"] if GENERIC else []),
            "-drive", f"if=pflash,format=raw,readonly=on,file={OVMF_CODE}",
            "-drive", f"if=pflash,format=raw,file={vars_fd}",
            "-device", "qemu-xhci,id=xhci,bus=pcie.0,addr=0x3",
@@ -204,7 +270,11 @@ def qemu(tag, extra):
     alive, stats = p.poll() is None, None
     if alive:
         try:
-            r = qmp_query(sock, "query-blockstats")[0]["return"]
+            # gop-swiftshader: the screen of the GOP framebuffer first, on the same QMP connection
+            shot = [("screendump", {"filename": str(OUT / f"{tag}-screen.png"), "format": "png", "device": "gfx"})] if GENERIC else []
+            res = qmp_query(sock, *shot, "query-blockstats")
+            if GENERIC: print(tag, "screendump", res[0])
+            r = res[-1]["return"]
             stats = next(d["stats"] for d in r if d.get("device") == "usbdisk" or d.get("qdev", "").endswith("usbdisk"))
         except Exception as e:
             print(tag, "QMP query failed:", e)
@@ -231,7 +301,28 @@ if SKIP_SELFTEST:
     sys.exit(0)
 # 1. functional: the debug entry's options with the console on COM1
 q = [o for o in debug if not o.startswith(("console=", "earlycon="))] + ["console=ttyS0,115200n8", "earlycon=uart8250,io,0x3f8,115200n8"]
-alive, _stats, log = qemu("functional", ["-kernel", OUT / "kernel.efi", "-initrd", OUT / "initrd.img", "-append", " ".join(q)])
+def ec_ssdt():
+    """GBOS_EC self-test only: an SSDT with the KANO's EC ACPI devices (\\_SB.CREC = GOOG0004 with GOOG0014, GOOG0007 and
+    GOOG0003 below it) and no EC behind them, so ueventd loads the released drivers under this kernel and they must
+    give up cleanly. Plain AML, assembled here (no iasl)."""
+    def pkg(c):
+        if len(c) + 1 <= 0x3F: return bytes([len(c) + 1]) + c
+        n = len(c) + 2; assert n < 1 << 12
+        return bytes([0x40 | (n & 0xF), n >> 4]) + c
+    def hid(h): return b"\x08_HID\x0d" + h.encode() + b"\x00"
+    def dev(seg, body): return b"\x5b\x82" + pkg(seg + body)
+    crec = dev(b"CREC", hid("GOOG0004") + b"\x08_UID\x01" + dev(b"TYPC", hid("GOOG0014")) + dev(b"CKSC", hid("GOOG0007"))
+               + dev(b"USBC", hid("GOOG0003")))
+    aml = b"\x10" + pkg(b"\\_SB_" + crec)
+    t = bytearray(struct.pack("<4sIBB6s8sI4sI", b"SSDT", 36 + len(aml), 2, 0, b"GBOS  ", b"ECVARNT ", 1, b"GBOS", 1) + aml)
+    t[9] = -sum(t) & 0xFF
+    return bytes(t)
+extra_acpi = []
+if KMOD_AC:
+    ac_ssdt(OUT / "ac-ssdt.aml"); extra_acpi = ["-acpitable", f"file={OUT / 'ac-ssdt.aml'}"]
+if EC_FEATURES:
+    (OUT / "ec-ssdt.aml").write_bytes(ec_ssdt()); extra_acpi += ["-acpitable", f"file={OUT / 'ec-ssdt.aml'}"]
+alive, _stats, log = qemu("functional", ["-kernel", OUT / "kernel.efi", "-initrd", OUT / "initrd.img", "-append", " ".join(q)] + extra_acpi)
 has = lambda p: re.search(p, log) is not None
 checks.update({
     "QEMU still running at the end (functional)": alive,
@@ -244,20 +335,56 @@ checks.update({
     "no rollforward": not has(r"kernel_max_rollforward"),
     "no gsmi": not has(r"gsmi:"),
     "no kernel panic": not has(r"Kernel panic"),
-    "first stage did not load LPSS UART": not has(r"Loading module /lib/modules/(8250_dw|intel-lpss|intel-lpss-pci)\.ko"),
+    "first stage did not load the profile's dropped modules (KANO: LPSS UART)": not DROP or not has(r"Loading module /lib/modules/(" + "|".join(re.escape(x[:-3]) for x in sorted(DROP)) + r")\.ko"),
     "split policy compiled (no failure)": has(r"No precompiled sepolicy at /vendor") and not has(r"(?i)(failed to compile|could not load selinux policy|secilc: (?!.*linker: )[^\n]*(error|failed))"),
     "kano-logcat on serial": has(r"kano-logcat: "),
     "data mounted as f2fs": has(r"target=/data,type=f2fs\)=0"),
     "IWeaver not declared": not has(r"Found android.hardware.weaver.IWeaver/default in device VINTF manifest"),
     "kano_bootfix ran": has(r"Service .kano_bootfix. .*exited with status 0"),
     "kano_diag started": has(r"starting service .kano_diag."),
-    "iwlmvm modprobe ran": has(r"modprobe --dirname=/vendor/lib/modules iwlmvm"),
-    "first stage loads pci-stub": has(r"Loading module /lib/modules/pci-stub.ko"),
-    "no EC transport/core/chardev module loaded": not has(r"Loaded kernel module \S*/(cros_ec|cros_ec_lpcs|cros_ec_dev|cros_ec_chardev|cros_ec_sysfs|cros_ec_vbc|cros-ec-typec|cros_typec_switch)\.ko"),
+    "Wi-Fi modules of the profile modprobed (KANO: iwlmvm)": all(has(r"modprobe --dirname=/vendor/lib/modules " + re.escape(m)) for m in PROF["wifi"]["modprobe"]),
+    "first stage loads pci-stub (if the profile uses it)": not STUB or has(r"Loading module /lib/modules/pci-stub.ko"),
+    **({"no EC transport/core/chardev module loaded": not has(r"Loaded kernel module \S*/(cros_ec|cros_ec_lpcs|cros_ec_dev|cros_ec_chardev|cros_ec_sysfs|cros_ec_vbc|cros-ec-typec|cros_typec_switch)\.ko")}
+       if not EC_FEATURES else {
+       # GBOS_EC: the SSDT above declares the EC's ACPI devices with no EC behind them; the released drivers are loaded
+       # by ueventd and must give up cleanly (the boot checks above still pass); the EC channels/writers never load
+       "EC variant: no EC channel/writer module loaded": not has(r"Loaded kernel module \S*/(cros_ec_chardev|cros_ec_debugfs|cros_ec_sysfs|cros_ec_vbc|cros_ec_lightbar|i2c-cros-ec-tunnel|cros_charge-control|leds-cros_ec|cros_ec_spi|cros_ec_i2c|cros_ec_ishtp|cros-ec-usb|cros_peripheral_charger|cros_usbpd-charger|cros_usbpd_logger|cros_typec_switch|cros_ec_ucsi)\.ko"),
+       "EC variant: cros_ec_lpcs loaded, probed GOOG0004, gave up (no EC in QEMU)": has(r"cros_ec_lpcs GOOG0004:00: EC ID not detected"),
+       "EC variant: cros-ec-typec loaded, waits for the EC": has(r"cros-ec-typec GOOG0014:00: couldn't find parent EC device") if "typec" in EC_FEATURES else True,
+       "EC variant: no /dev/cros_ec": not has(r"/dev/cros_(ec|fp|ish)\b")}),
     "kano audiotest rc parsed": has(r"init: Parsing file /vendor/etc/init/kano-audiotest.rc"),
     "kano-services rc parsed": has(r"init: Parsing file /vendor/etc/init/kano-services.rc"),
     "no vendor rc rejections": not has(r"(?i)init: .*(kano-services|kano-audiotest|kano-hw|kano-diag|kano-adb).*(error|invalid|failed to parse|not allowed)"),
 })
+if GENERIC:
+    checks.update({
+        "generic: GOP framebuffer handed to gbos_efifb": has(r"gbos-efifb: GOP \d+x\d+ depth 32"),
+        "generic: gbos_efifb registered as vkms": has(r"gbos_efifb: \d+x\d+ stride \d+ at 0x[0-9a-f]+ \((?:XRGB|XBGR)\), registered as vkms \(scanout\)"),
+        "generic: no execmem denial": not has(r"avc: +denied +\{ execmem \}"),
+        "generic: graphics allocator stays up": not has(r"Service 'vendor\.graphics\.allocator' \(pid \d+\) exited"),
+        "generic: surfaceflinger not restarted": not has(r"Sending SIGKILL to service 'surfaceflinger'|Service 'surfaceflinger' \(pid \d+\) received SIG"),
+        "generic: boot completed": has(r"sys\.boot_completed=1"),
+        "generic: composer is DRM master": not has(r"Failed to set drm master|DRM/KMS master access required"),
+    })
+    # a uniform frame (black, or the firmware logo on black) compresses to a few KB; the setup wizard is over 40 KB
+    shot = OUT / "functional-screen.png"
+    checks["generic: GOP screen shows Android (screendump over 20 KB)"] = shot.exists() and shot.stat().st_size > 20000
+if KMOD_AC:
+    checks.update({
+        "ac.ko modprobe ran (profile kmods: ac)": has(r"Service 'exec \d+ \(/vendor/bin/modprobe --dirname=/vendor/lib/kano ac\)' \(pid \d+\) exited with status 0"),
+        "AC adapter bound, on line": has(r"AC Adapter \[\w+\] \(on-line\)"),
+        "healthd sees the charger (chg=a)": has(r"healthd: battery .*chg=a"),
+        "no SELinux denial on the AC power supply": not has(r'avc:  denied .*(power_supply|ACPI0003)'),
+    })
+else:
+    checks["no ac.ko (profile has no kmods: ac)"] = not has(r"modprobe --dirname=/vendor/lib/kano ac\)")
+if KMOD_WAKEFILTER:
+    checks.update({
+        "gbos_wakefilter modprobe ran (profile kmods: gbos_wakefilter)": has(r"Service 'exec \d+ \(/vendor/bin/modprobe --dirname=/vendor/lib/kano gbos_wakefilter\)' \(pid \d+\) exited with status 0"),
+        "gbos_wakefilter watches the ACPI Power Button": has(r"gbos_wakefilter: watching Power Button \(LNXPWRBN/button/input0\)"),
+    })
+else:
+    checks["no gbos_wakefilter (profile has no kmods: gbos_wakefilter)"] = not has(r"gbos_wakefilter")
 if ADB:
     checks["kano-adb rc parsed (GBOS_ADB_PUBKEY set)"] = has(r"init: Parsing file /vendor/etc/init/kano-adb.rc")
 else:
@@ -271,6 +398,9 @@ if DEFAULT_ENTRY == "lapis-quiet.conf":
     wrote = (stats or {}).get("wr_bytes", 0); top = (stats or {}).get("wr_highest_offset", 0)
     checks["QEMU still running at the end (chain)"] = alive
     checks["chain: default entry keeps the serial console silent"] = "Linux version" not in clog and "Boot in" in clog
+    if GENERIC:
+        cshot = OUT / "chain-screen.png"
+        checks["chain (generic): GOP screen shows Android (screendump over 20 KB)"] = cshot.exists() and cshot.stat().st_size > 20000
     checks["chain: Android wrote /data (>= 16 MiB, into userdata)"] = wrote >= (16 << 20) and USERDATA["start"] <= top <= USERDATA["end"]
     print("chain: usbdisk wr_bytes", wrote, "wr_highest_offset", top, "userdata", USERDATA["start"], "-", USERDATA["end"])
     template = Path(OVMF_VARS).read_bytes(); after_vars = (OUT / "chain-vars.fd").read_bytes()

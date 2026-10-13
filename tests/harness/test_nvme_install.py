@@ -124,7 +124,22 @@ class Install(HarnessCase):
 
     def test_missing_entry(self):
         (self.src / "lapis-quiet.conf").unlink()
-        self.assert_stopped_before_any_ssh(self.install(), "cannot copy")
+        self.assert_stopped_before_any_ssh(self.install(), "expected lapis-debug.conf and lapis-quiet.conf")
+
+    def test_build_without_the_plain_entry(self):
+        # builds after the plain entry was dropped: quiet + serial-debug only, on both sides
+        (self.src / "lapis.conf").unlink()
+        (self.fk.root / "mnt/sesp/loader/entries/lapis.conf").unlink()
+        r = self.install()
+        self.assertEqual(r.returncode, 0, self.explain(r))
+        entries = self.fk.root / "mnt/nesp/loader/entries"
+        self.assertEqual(sorted(p.name for p in entries.iterdir()), ["lapis-debug.conf", "lapis-quiet.conf"])
+        self.assertIn("initcall_blacklist=mei_me_driver_init ", (entries / "lapis-quiet.conf").read_text())
+
+    def test_stick_with_other_entries_than_the_source(self):
+        # the source dropped the plain entry, the stick's ESP still has it: not the same image
+        (self.src / "lapis.conf").unlink()
+        self.assert_nothing_destroyed(self.install(), "does not hold the same boot entries")
 
     def test_entry_without_the_guards(self):
         (self.src / "lapis.conf").write_text("title x\noptions initcall_blacklist=nvme_init,mei_me_driver_init quiet\n")

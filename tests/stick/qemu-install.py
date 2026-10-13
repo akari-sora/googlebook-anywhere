@@ -8,7 +8,9 @@ usage: qemu-install.py <work dir> <final image> <stick head 1 MiB> <stick tail 1
   XBOOTLDR dump     image of the stick's XBOOTLDR partition (FAT, holds vmlinuz-linux and initramfs-linux.img)
   maint root dump   image of the stick's kano-maint partition (ext4, the maintenance Arch root)
 env: GBOS_QEMU, GBOS_QEMU_LIB, GBOS_OVMF_CODE, GBOS_OVMF_VARS (as for builder/build.sh); GBOS_STICK_KEEP=1 keeps the
-     NVMe images. Host tools: qemu-system-x86_64 with KVM, OVMF, mtools, e2fsprogs (debugfs, e2fsck). No root needed.
+     NVMe images; GBOS_STICK_SCENARIOS=<comma list> runs only some of refusals, super-mismatch, cancel, install-flex,
+     install-blank, update (update: after install-blank, the update mode puts the image into slot b, then a second
+     update puts it into slot a while slot b runs). Host tools: qemu-system-x86_64 with KVM, OVMF, mtools, e2fsprogs (debugfs, e2fsck). No root needed.
 
 The stick copy runs the CURRENT repo installer, not whatever the maint root dump holds: gbos-install.sh
 (-> /usr/local/sbin/gbos-install), gbos-installer.service with its multi-user.target.wants link, builtin-initcalls.txt
@@ -56,10 +58,11 @@ VARS = os.environ.get("GBOS_OVMF_VARS", "/usr/share/edk2/x64/OVMF_VARS.4m.fd")
 NVME_SERIAL = "GBOSTEST7Q4Z"
 NVME_BYTES = 128 * 1000 ** 3
 LIFT = "initcall_blacklist=nvme_init,mei_me_driver_init"
-ENTRIES = ("lapis.conf", "lapis-debug.conf", "lapis-quiet.conf")
+# boot entries of the image: quiet + serial-debug; images built before the plain entry was dropped also have lapis.conf
+ENTRY_SETS = ({"lapis-debug.conf", "lapis-quiet.conf"}, {"lapis.conf", "lapis-debug.conf", "lapis-quiet.conf"})
 BUILTIN_OK = r"ok +built-in drivers blocked"
 CMDLINE_OK = r"ok +kernel command line: module_blacklist has all \d+ modules of the installer entry, none loaded"
-for tool in ("debugfs", "e2fsck", "mtype", "mcopy", "mdel", "mdeltree"):
+for tool in ("debugfs", "e2fsck", "mtype", "mcopy", "mdel", "mdeltree", "mdir"):
     if not shutil.which(tool): sys.exit(f"needs {tool} (mtools, e2fsprogs)")
 for p in (W, PR, STICKSRC):
     if re.search(r"\s", str(p.resolve())): sys.exit(f"path must not contain spaces (debugfs commands): {p}")
@@ -77,6 +80,9 @@ def mtools(cmd, img, off, *args, ok=True):
     r = subprocess.run([cmd, "-i", f"{img}@@{off}", *map(str, args)], capture_output=True, env=env)
     if ok and r.returncode: raise SystemExit(f"{cmd} {args}: {r.stderr.decode(errors='replace').strip()}")
     return r.stdout
+def esp_entries(img, off):
+    out = mtools("mdir", img, off, "-b", "::/loader/entries").decode().replace("\r", "").split("\n")
+    return sorted(l.rsplit("/", 1)[-1] for l in (x.strip() for x in out) if l.startswith("::/loader/entries/") and not l.endswith("/"))
 def options(entry):
     return next(l for l in entry.splitlines() if l.startswith("options ")).split()[1:]
 def blacklist(entry):
@@ -165,6 +171,8 @@ put(cmds, STICKSRC / "gbos-install.sh", "/usr/local/sbin/gbos-install", 0o755)
 put(cmds, STICKSRC / "builtin-initcalls.txt", "/usr/local/share/gbos-install/builtin-initcalls.txt", 0o644)
 put(cmds, MODLIST, "/usr/local/share/gbos-install/module-blacklist.txt", 0o644)
 put(cmds, STICKSRC / "gbos-installer.service", "/etc/systemd/system/gbos-installer.service", 0o644)
+ENGINE = REPO / "install/gbos-update.py"
+put(cmds, ENGINE, "/usr/local/share/gbos-install/gbos-update.py", 0o644)
 cmds += ["cd /etc/systemd/system/multi-user.target.wants/.", "rm gbos-installer.service",
          "symlink gbos-installer.service /etc/systemd/system/gbos-installer.service", "cd /"]
 cmds += rmtree_cmds(maint, PRISTINE) + rmtree_cmds(maint, PRISTINE + ".new") + [f"mkdir {PRISTINE}"]
@@ -174,7 +182,8 @@ inj = []
 for host, path, mode in ((STICKSRC / "gbos-install.sh", "/usr/local/sbin/gbos-install", "0755"),
                          (STICKSRC / "builtin-initcalls.txt", "/usr/local/share/gbos-install/builtin-initcalls.txt", "0644"),
                          (MODLIST, "/usr/local/share/gbos-install/module-blacklist.txt", "0644"),
-                         (STICKSRC / "gbos-installer.service", "/etc/systemd/system/gbos-installer.service", "0644")):
+                         (STICKSRC / "gbos-installer.service", "/etc/systemd/system/gbos-installer.service", "0644"),
+                         (ENGINE, "/usr/local/share/gbos-install/gbos-update.py", "0644")):
     stat = debugfs(maint, f"stat {path}").decode(errors="replace")
     inj.append(debugfs(maint, f"cat {path}") == host.read_bytes() and re.search(rf"Type: regular\s+Mode:\s+0*{mode[1:]}\b", stat)
                and re.search(r"User:\s+0\s+Group:\s+0\b", stat))
@@ -233,14 +242,19 @@ noic_entry = re.sub(r"(?m)^title .*$", "title gbos-install-noinitcall", test_ent
 if noic_entry.count("initcall_blacklist=mei_me_driver_init ") != 1: sys.exit("cannot build the noinitcall entry")
 nomod_entry = re.sub(r"(?m)^title .*$", "title gbos-install-nomodule", test_entry).replace(",spi_intel_pci,", ",")
 if test_entry.count(",spi_intel_pci,") != 1 or "spi_intel_pci" in nomod_entry: sys.exit("cannot build the nomodule entry")
+upd_entry = re.sub(r"(?m)^title .*$", "title gbos-update-test", test_entry)
+upd_entry = re.sub(r"(?m)^(options .*)$", lambda m: m.group(1) + " gbos.update=1", upd_entry)
 for name, text in (("gbos-install-test.conf", test_entry), ("gbos-install-nolockdown.conf", nold_entry),
-                   ("gbos-install-noinitcall.conf", noic_entry), ("gbos-install-nomodule.conf", nomod_entry)):
+                   ("gbos-install-noinitcall.conf", noic_entry), ("gbos-install-nomodule.conf", nomod_entry),
+                   ("gbos-update-test.conf", upd_entry)):
     (W / name).write_text(text); mtools("mcopy", STICK, XBOFF, "-o", W / name, f"::/loader/entries/{name}")
 def stick_default(name):
     (W / "loader.conf").write_text(f"default {name}\ntimeout 1\neditor no\n")
     mtools("mcopy", STICK, ESPOFF, "-o", W / "loader.conf", "::/loader/loader.conf")
 
 # --- static checks of the installer entry against the image and the maintenance kernel
+ENTRIES = esp_entries(IMG, ESPOFF)
+check(f"the image's ESP holds a known entry set ({' '.join(ENTRIES)})", set(ENTRIES) in ENTRY_SETS, ENTRIES)
 img_entries = {e: mtools("mtype", IMG, ESPOFF, f"::/loader/entries/{e}").decode() for e in ENTRIES}
 tbl = blacklist(entry)
 missing = sorted(set().union(*(blacklist(t) or set() for t in img_entries.values())) - (tbl or set()))
@@ -466,6 +480,7 @@ def installed(tag, nv, r):
         ok &= orig.count(LIFT) == 1 and got == orig.replace(LIFT, "initcall_blacklist=mei_me_driver_init") and "nvme_init" not in got \
             and "efi=noruntime" in o and blacklist(got) == blacklist(orig)
     check(f"{tag}: NVMe entries = the image's with only nvme_init lifted (module_blacklist, efi=noruntime kept)", ok)
+    check(f"{tag}: NVMe ESP holds exactly the image's entries", esp_entries(nv, eoff) == ENTRIES, esp_entries(nv, eoff))
     loader = mtools("mtype", nv, eoff, "::/loader/loader.conf").decode()
     check(f"{tag}: NVMe loader.conf exact", loader == "default lapis-quiet.conf\ntimeout 5\neditor no\nauto-firmware no\n", repr(loader))
     xk = mtools("mtype", STICK, XBOFF, "::/gbos-nvme/kernel.efi", ok=False)
@@ -492,44 +507,115 @@ def nvme_boot(tag, nv, ud):
     check(f"{tag}: Android wrote /data (>= 16 MiB), highest write inside userdata",
           st.get("wr_bytes", 0) >= 16 << 20 and ud["first"] * 512 < hi <= (ud["last"] + 1) * 512)
 
+ONLY = set(filter(None, os.environ.get("GBOS_STICK_SCENARIOS", "").split(",")))
+want = lambda name: not ONLY or name in ONLY
+if ONLY: print("scenarios:", ",".join(sorted(ONLY)))
+
+def update_ranges(nv, ud, slot):
+    """byte ranges an update into the other slot must not change: GPT copies, a userdata marker, the data partitions
+    and the running slot's boot partitions"""
+    nh, ng = gptlib.read_gpt(nv, backup=True)
+    rng = {"head": (0, 1 << 20), "tail": (NVME_BYTES - (1 << 20), 1 << 20),
+           "userdata-marker": (ud["first"] * 512 + (64 << 20), 1 << 20)}
+    for name in ("metadata", "misc", "frp_persist", "desktop_security_persist", "desktop_security_storage",
+                 f"boot_{slot}", f"init_boot_{slot}", f"vendor_boot_{slot}", f"vbmeta_{slot}"):
+        e = ng[mnum[name]]; rng[name] = (e["first"] * 512, (e["last"] + 1 - e["first"]) * 512)
+    return {"ranges": rng, "sha": {k: gptlib.sha(nv, a, n) for k, (a, n) in rng.items()}}
+
+def updated(tag, nv, r, before, t="b", c="a", c_initrd="/initrd.img"):
+    """after the update mode of gbos-install: slot t holds the image, slot c and every data partition unchanged, both
+    menus start t with c as the previous version (c_initrd: slot c's initrd on the NVMe's ESP)"""
+    txt = r["text"]
+    check(f"{tag}: update mode reports UPDATE OK", f"UPDATE OK: slot {t}" in txt and "Update done" in txt and not re.search(r"(?m)^(ERROR|FAILED|REFUSED): ", txt))
+    check(f"{tag}: runtime checks passed in the update boot", re.search(BUILTIN_OK, txt) and re.search(CMDLINE_OK, txt))
+    # (the answer is sent as soon as the prompt starts, so the transcript may split the prompt line)
+    check(f"{tag}: the updater showed the installed slot before asking", f"current slot {c}" in txt and re.search(CONFIRM, txt)
+          and "to update, or just Enter to cancel" in txt and txt.index(f"current slot {c}") < re.search(CONFIRM, txt).start())
+    check(f"{tag}: the stick's menu was prepared before any slot was written",
+          "ok   stickprep:" in txt and txt.index("ok   stickprep:") < txt.index("ok   removed:") < txt.index("ok   dynamic:"))
+    check(f"{tag}: zero writes to the NVMe before the confirmation (QMP)", no_writes(r["stats"].get("prompt")), r["stats"].get("prompt"))
+    after = {k: gptlib.sha(nv, a, n) for k, (a, n) in before["ranges"].items()}
+    check(f"{tag}: GPT, userdata marker, metadata, misc, frp and slot {c} unchanged byte for byte",
+          after == before["sha"], [k for k in after if after[k] != before["sha"][k]])
+    ins = run(sys.executable, ENGINE, "inspect", nv, capture_output=True, text=True)
+    check(f"{tag}: inspect: current slot {t}, previous version slot {c}", f"current slot {t}" in ins.stdout and f"previous slot on the menu: {c}" in ins.stdout, ins.stdout[-400:])
+    nh, ng = gptlib.read_gpt(nv, backup=True)
+    eoff = ng[mnum["EFI-SYSTEM"]]["first"] * 512
+    q = mtools("mtype", nv, eoff, "::/loader/entries/lapis-quiet.conf").decode()
+    pq = mtools("mtype", nv, eoff, "::/loader/entries/prev-lapis-quiet.conf", ok=False).decode()
+    check(f"{tag}: NVMe menu: current entries start slot {t} (lifted), previous version slot {c}",
+          f"initrd /gbos/{t}/initrd.img" in q and "initcall_blacklist=mei_me_driver_init" in q and "nvme_init" not in q
+          and f"initrd {c_initrd}" in pq and "(previous version)" in pq)
+    xq = mtools("mtype", STICK, XBOFF, "::/loader/entries/gbos-nvme.conf", ok=False).decode()
+    xd = mtools("mtype", STICK, XBOFF, "::/loader/entries/gbos-nvme-debug.conf", ok=False).decode()
+    xp = mtools("mtype", STICK, XBOFF, "::/loader/entries/gbos-nvme-prev.conf", ok=False).decode()
+    check(f"{tag}: stick menu: internal disk (and serial-debug) = slot {t}, a previous-version entry with copies of slot {c}'s files",
+          f"initrd /gbos-nvme/{t}/initrd.img" in xq and f"initrd /gbos-nvme/{t}/initrd.img" in xd and f"initrd /gbos-nvme/{c}/initrd.img" in xp
+          and mtools("mtype", STICK, XBOFF, f"::/gbos-nvme/{c}/initrd.img", ok=False) == mtools("mtype", nv, eoff, "::" + c_initrd)
+          and mtools("mtype", STICK, XBOFF, f"::/gbos-nvme/{t}/initrd.img", ok=False) == mtools("mtype", nv, eoff, f"::/gbos/{t}/initrd.img"))
+    check(f"{tag}: the stick's menu starts the internal disk by default",
+          mtools("mtype", STICK, ESPOFF, "::/loader/loader.conf", ok=False).decode().startswith("default gbos-nvme.conf\n"))
+
 # 1. no lockdown: refused at once
-stick_default("gbos-install-nolockdown.conf")
-refused("nolockdown", BLANK, [(r"Press Enter to poweroff", "\r", "stop")], "kernel lockdown is off")
-check("nolockdown: NVMe still has no data blocks", os.stat(BLANK).st_blocks == 0)
-stick_default("gbos-install-noinitcall.conf")
-refused("noinitcall", BLANK, [(r"Press Enter to poweroff", "\r", "stop")], "built-in drivers are not blocked")
-check("noinitcall: NVMe still has no data blocks", os.stat(BLANK).st_blocks == 0)
-stick_default("gbos-install-nomodule.conf")
-refused("nomodule", BLANK, [(r"Press Enter to poweroff", "\r", "stop")], "module_blacklist lacks spi_intel_pci")
-check("nomodule: NVMe still has no data blocks", os.stat(BLANK).st_blocks == 0)
+if want("refusals"):
+    stick_default("gbos-install-nolockdown.conf")
+    refused("nolockdown", BLANK, [(r"Press Enter to poweroff", "\r", "stop")], "kernel lockdown is off")
+    check("nolockdown: NVMe still has no data blocks", os.stat(BLANK).st_blocks == 0)
+    stick_default("gbos-install-noinitcall.conf")
+    refused("noinitcall", BLANK, [(r"Press Enter to poweroff", "\r", "stop")], "built-in drivers are not blocked")
+    check("noinitcall: NVMe still has no data blocks", os.stat(BLANK).st_blocks == 0)
+    stick_default("gbos-install-nomodule.conf")
+    refused("nomodule", BLANK, [(r"Press Enter to poweroff", "\r", "stop")], "module_blacklist lacks spi_intel_pci")
+    check("nomodule: NVMe still has no data blocks", os.stat(BLANK).st_blocks == 0)
 
 # 2. one byte of the stick's super changed: refused before the serial prompt; the Flex NVMe is untouched
-stick_default("gbos-install-test.conf")
-BAD = SUPER["start"] + (1 << 20) + 7
-with open(STICK, "r+b") as f:
-    f.seek(BAD); orig = f.read(1); f.seek(BAD); f.write(bytes([orig[0] ^ 0xFF]))
-try:
-    refused("super-mismatch", FLEX, [(r"Press Enter to poweroff", "\r", "stop")], "super on this stick does not match")
-finally:
-    with open(STICK, "r+b") as f: f.seek(BAD); f.write(orig)
-check("super-mismatch: stick super restored", gptlib.sha(STICK, SUPER["start"], SUPER["len"]) == SUPER["sha"])
+if want("super-mismatch"):
+    stick_default("gbos-install-test.conf")
+    BAD = SUPER["start"] + (1 << 20) + 7
+    with open(STICK, "r+b") as f:
+        f.seek(BAD); orig = f.read(1); f.seek(BAD); f.write(bytes([orig[0] ^ 0xFF]))
+    try:
+        refused("super-mismatch", FLEX, [(r"Press Enter to poweroff", "\r", "stop")], "super on this stick does not match")
+    finally:
+        with open(STICK, "r+b") as f: f.seek(BAD); f.write(orig)
+    check("super-mismatch: stick super restored", gptlib.sha(STICK, SUPER["start"], SUPER["len"]) == SUPER["sha"])
 
 # 3. cancel on the blank NVMe
-stick_default("gbos-install-test.conf")
-r = qemu("cancel", STICK_DRV + nvme_drv(BLANK), [(CONFIRM, "ZZZZ\r", "prompt"), (r"Press Enter to poweroff", "\r", "stop")], 1800)
-check("cancel: installer shows the NVMe and asks for its serial", NVME_SERIAL in r["text"] and re.search(CONFIRM, r["text"]))
-check("cancel: wrong answer cancels", "Cancelled. Nothing was written." in r["text"])
-check("cancel: installer's runtime check of the built-in drivers passed", re.search(BUILTIN_OK, r["text"]))
-check("cancel: installer's runtime check of the whole module_blacklist passed", re.search(CMDLINE_OK, r["text"]))
-check("cancel: zero writes to the NVMe (QMP)", no_writes(r["stats"].get("stop")), r["stats"].get("stop"))
-check("cancel: NVMe still has no data blocks", os.stat(BLANK).st_blocks == 0)
+if want("cancel"):
+    stick_default("gbos-install-test.conf")
+    r = qemu("cancel", STICK_DRV + nvme_drv(BLANK), [(CONFIRM, "ZZZZ\r", "prompt"), (r"Press Enter to poweroff", "\r", "stop")], 1800)
+    check("cancel: installer shows the NVMe and asks for its serial", NVME_SERIAL in r["text"] and re.search(CONFIRM, r["text"]))
+    check("cancel: wrong answer cancels", "Cancelled. Nothing was written." in r["text"])
+    check("cancel: installer's runtime check of the built-in drivers passed", re.search(BUILTIN_OK, r["text"]))
+    check("cancel: installer's runtime check of the whole module_blacklist passed", re.search(CMDLINE_OK, r["text"]))
+    check("cancel: zero writes to the NVMe (QMP)", no_writes(r["stats"].get("stop")), r["stats"].get("stop"))
+    check("cancel: NVMe still has no data blocks", os.stat(BLANK).st_blocks == 0)
 
 # 4. install over the Flex-like NVMe, 5. install on the blank NVMe; each then boots alone
 for tag, nv in (("install-flex", FLEX), ("install-blank", BLANK)):
+    if not (want(tag) or (tag == "install-blank" and want("update"))):
+        continue
     stick_default("gbos-install-test.conf")
     r = qemu(tag, STICK_DRV + nvme_drv(nv), [(CONFIRM, NVME_SERIAL[-4:].lower() + "\r", "prompt"), (r"Press Enter to reboot", "\r", "done")], 3600)
     ud = installed(tag, nv, r)
     if ud: nvme_boot(tag, nv, ud)
+    # 6. update mode on the installed NVMe: the same image into slot b, /data and slot a untouched
+    if ud and tag == "install-blank" and want("update"):
+        with open(nv, "r+b") as f:                      # pretend user data: must survive the update untouched
+            f.seek(ud["first"] * 512 + (64 << 20)); f.write(b"USER-DATA-MARKER" * 4096)
+        before = update_ranges(nv, ud, "a")
+        stick_default("gbos-update-test.conf")
+        r = qemu("update-blank", STICK_DRV + nvme_drv(nv), [(CONFIRM, NVME_SERIAL[-4:].lower() + "\r", "prompt"),
+                                                         (r"Press Enter to reboot", "\r", "done")], 5400)
+        updated("update-blank", nv, r, before)
+        nvme_boot("update-blank", nv, ud)
+        # 7. the second update, slot b running: the image goes into slot a (the stick's 'previous version' was slot a)
+        before = update_ranges(nv, ud, "b")
+        stick_default("gbos-update-test.conf")
+        r = qemu("update2-blank", STICK_DRV + nvme_drv(nv), [(CONFIRM, NVME_SERIAL[-4:].lower() + "\r", "prompt"),
+                                                          (r"Press Enter to reboot", "\r", "done")], 5400)
+        updated("update2-blank", nv, r, before, t="a", c="b", c_initrd="/gbos/b/initrd.img")
+        nvme_boot("update2-blank", nv, ud)
     if not os.environ.get("GBOS_STICK_KEEP"): nv.unlink()
 
 failed = [k for k, v in results.items() if not v]

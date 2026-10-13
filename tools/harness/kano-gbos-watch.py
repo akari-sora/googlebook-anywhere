@@ -21,18 +21,18 @@ Observability (exit 4, "unobservable"): within --observe-timeout seconds (defaul
 line must show up, and during that time the log must never stay silent for --stall-timeout seconds (default 30).
 After the observe window a silent log only produces a note (Android legitimately goes quiet once it has booted).
 
-Guards: this boot's kernel command line must carry every module of the module_blacklist in builder/image.py (BL, the
-single source; read with ast, not executed), every initcall of its initcall_blacklist (with --profile nvme:
+Guards: this boot's kernel command line must carry every module of the module_blacklist of the device profile
+(profiles/kano/profile.toml, the single source the builder uses; read as TOML), every initcall of its initcall_blacklist (with --profile nvme:
 all but nvme_init, which must not be blacklisted) and efi=noruntime, and no spi-intel.* option. The kernel keeps the last module_blacklist= and adds up
 every initcall_blacklist=.
 
 exit status: 0 window over, boot observed, no danger line; 2 danger line, EC power cut confirmed; 3 a kernel
 command line guard is missing, EC power cut confirmed; 4 unobservable (also when the window ends before this boot's
 command line showed up); 5 not started: invalid arguments, KANO_EC_TTY is not set (it could not cut the power) or the
-guard list cannot be read from builder/image.py; 6 danger seen but the EC power cut could not be confirmed (cut power
+guard list cannot be read from the device profile; 6 danger seen but the EC power cut could not be confirmed (cut power
 by hand).
 """
-import argparse, ast, importlib.util, math, os, re, subprocess, sys, time
+import argparse, importlib.util, math, os, re, subprocess, sys, time
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -59,40 +59,29 @@ PROFILES = {
     "nvme": COMMON_DANGER,
 }
 CMDLINE = "Kernel command line"
-IMAGE_PY = HERE.parent.parent / "builder" / "image.py"
+REPO_ROOT = HERE.parent.parent
+GUARD_SOURCE = REPO_ROOT / "profiles" / "kano" / "profile.toml"
 
 
-def expected_guards(path=IMAGE_PY):
-    """(modules, initcalls, plain options) every Googlebook entry carries, from builder/image.py: BL after its
-    .remove() calls, and the initcall_blacklist= and efi= items of `tail`. Parsed with ast, nothing is executed.
-    Raises ValueError (or OSError) unless the file has exactly that shape, so a changed builder fails closed."""
-    bl, tail, removed = None, None, []
-    for node in ast.parse(Path(path).read_text()).body:
-        if isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id in ("BL", "tail") for t in node.targets):
-            if len(node.targets) != 1 or (bl if node.targets[0].id == "BL" else tail) is not None:
-                raise ValueError(f"{node.targets[0].id} is assigned more than once")
-            v = ast.literal_eval(node.value)
-            if not (isinstance(v, list) and v and all(isinstance(x, str) for x in v)):
-                raise ValueError(f"{node.targets[0].id} is not a list of strings")
-            if node.targets[0].id == "BL":
-                bl = v
-            else:
-                tail = v
-        elif isinstance(node, ast.AugAssign) and isinstance(node.target, ast.Name) and node.target.id == "BL":
-            raise ValueError("BL is changed with an augmented assignment")
-        elif (isinstance(node, ast.Expr) and isinstance(node.value, ast.Call) and isinstance(node.value.func, ast.Attribute)
-              and isinstance(node.value.func.value, ast.Name) and node.value.func.value.id == "BL"):
-            if node.value.func.attr != "remove" or len(node.value.args) != 1:
-                raise ValueError(f"BL.{node.value.func.attr}() is not understood")
-            removed.append(ast.literal_eval(node.value.args[0]))
-    if bl is None or tail is None:
-        raise ValueError("no BL / tail list")
-    modules = set(bl) - set(removed)
-    ic = [x.split("=", 1)[1].split(",") for x in tail if x.startswith("initcall_blacklist=")]
-    plain = [x for x in tail if x.startswith("efi=")]
-    if len(ic) != 1 or not plain or len(modules) < 10:
-        raise ValueError("tail has no single initcall_blacklist= / no efi= item, or BL is implausibly short")
-    return modules, ic[0], plain
+def expected_guards(profile_dir=GUARD_SOURCE.parent):
+    """(modules, initcalls, plain options) every Googlebook entry carries, from the device profile the builder uses
+    (profiles/kano/profile.toml with the project-wide profiles/_safety.toml, through builder/lib/devprofile.py, which
+    reads TOML and checks it; the builder itself is not run): the profile's module_blacklist, and the initcall_blacklist=
+    and efi= items of the tail. Raises ValueError (or OSError) when the profile is missing, invalid or implausible, so a
+    changed builder fails closed."""
+    lib = REPO_ROOT / "builder" / "lib" / "devprofile.py"
+    spec = importlib.util.spec_from_file_location("devprofile", lib)
+    if spec is None:
+        raise OSError(f"no {lib}")
+    dp = importlib.util.module_from_spec(spec)
+    try:
+        spec.loader.exec_module(dp)
+        modules, ic, plain = dp.guards(dp.load(profile_dir))
+    except SystemExit as e:                      # devprofile.py refuses a Python without tomllib
+        raise ValueError(str(e)) from None
+    if len(ic) == 0 or not plain or len(modules) < 10:
+        raise ValueError("the profile has no initcall_blacklist= / no efi= item, or its module_blacklist is implausibly short")
+    return modules, ic, plain
 
 
 def cmdline_tokens(text):
@@ -194,7 +183,7 @@ def main(argv):
     try:
         guards = expected_guards()
     except (OSError, SyntaxError, ValueError) as e:
-        bad(f"cannot read the expected command line guards from {IMAGE_PY}: {e}")
+        bad(f"cannot read the expected command line guards from {GUARD_SOURCE}: {e}")
     patterns = PROFILES[a.profile]
     a.frames.mkdir(parents=True, exist_ok=True)
 

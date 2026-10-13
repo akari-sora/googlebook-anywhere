@@ -32,6 +32,8 @@ import shutil
 import struct
 import subprocess
 import sys
+import time
+import urllib.error
 import urllib.request
 import zipfile
 import zlib
@@ -298,6 +300,41 @@ def _resolve(url):
         return r.geturl(), int(cr.split("/")[1])
 
 
+class _Remote:
+    """A remote file read with HTTP Range through the URL it redirects to.  ci.android.com redirects to a signed
+    storage.googleapis.com URL that expires after 300 s (2026-10-13), and fetching all members takes longer than that on
+    an ordinary connection: the signed URL is resolved again every 120 s, and once more when it is refused anyway."""
+
+    REFRESH = int(os.environ.get("GBOS_FETCH_REFRESH", "120"))   # the override exists for tests/builder/fetch-zip-test.py
+
+    def __init__(self, url):
+        self.url = url
+        self.final, self.size = _resolve(url)
+        self.at = time.monotonic()
+
+    def _refresh(self):
+        final, size = _resolve(self.url)
+        if size != self.size:
+            die(f"{self.url} changed size while it was being read ({self.size} -> {size})")
+        self.final, self.at = final, time.monotonic()
+
+    def get(self, a, b):
+        if time.monotonic() - self.at > self.REFRESH:
+            try:
+                self._refresh()
+            except (urllib.error.URLError, TimeoutError, OSError) as e:
+                # the current signed URL is still good for a while: keep it (a refused request re-resolves below)
+                print(f"note: re-resolving {self.url} failed ({e}); keeping the current signed URL", file=sys.stderr)
+                self.at = time.monotonic()
+        try:
+            return _http_get(self.final, a, b)
+        except urllib.error.HTTPError as e:
+            if e.code not in (400, 401, 403):
+                raise
+            self._refresh()
+            return _http_get(self.final, a, b)
+
+
 def _zip64_extra(extra, usz, csz, off):
     p = 0
     while p + 4 <= len(extra):
@@ -318,9 +355,10 @@ def _zip64_extra(extra, usz, csz, off):
 
 def cmd_fetch_zip(url, outdir, specs):
     """specs: member=sha256[:outname]"""
-    final, size = _resolve(url)
-    print(f"remote size {size} via {final.split('?')[0]}")
-    _, _, tail = _http_get(final, max(0, size - 65558), size)
+    rem = _Remote(url)
+    size = rem.size
+    print(f"remote size {size} via {rem.final.split('?')[0]}")
+    _, _, tail = rem.get(max(0, size - 65558), size)
     i = tail.rfind(b"PK\x05\x06")
     if i < 0:
         die("no EOCD")
@@ -328,9 +366,9 @@ def cmd_fetch_zip(url, outdir, specs):
     if cdoff == 0xFFFFFFFF or n == 0xFFFF:
         j = tail.rfind(b"PK\x06\x07")
         z64 = struct.unpack_from("<Q", tail, j + 8)[0]
-        _, _, z = _http_get(final, z64, z64 + 56)
+        _, _, z = rem.get(z64, z64 + 56)
         n, cdsize, cdoff = struct.unpack_from("<QQQ", z, 32)
-    _, _, cd = _http_get(final, cdoff, cdoff + cdsize)
+    _, _, cd = rem.get(cdoff, cdoff + cdsize)
     index = {}
     p = 0
     while p < len(cd) and cd[p:p + 4] == b"PK\x01\x02":
@@ -351,7 +389,7 @@ def cmd_fetch_zip(url, outdir, specs):
         if member not in index:
             die("member not in remote zip: " + member)
         meth, crc, csz, usz, off = index[member]
-        _, _, lh = _http_get(final, off, off + 30)
+        _, _, lh = rem.get(off, off + 30)
         if lh[:4] != b"PK\x03\x04":
             die("bad local header for " + member)
         nl, xl = struct.unpack_from("<HH", lh, 26)
@@ -368,7 +406,7 @@ def cmd_fetch_zip(url, outdir, specs):
             end = start + csz
             while pos < end:
                 nxt = min(end, pos + (32 << 20))
-                _, _, blob = _http_get(final, pos, nxt)
+                _, _, blob = rem.get(pos, nxt)
                 data = dec.decompress(blob) if dec else blob
                 f.write(data)
                 h.update(data)

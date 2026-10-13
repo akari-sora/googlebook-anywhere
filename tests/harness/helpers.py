@@ -267,8 +267,9 @@ def env_names(harness=HARNESS):
 
 
 def harness_copy(dst, local=None):
-    """Copy of the harness under test without kano-env.local.sh; `local` (text) becomes its local file. Without a
-    builder/ two levels up (as in the repo), the watchers refuse to start (they read their guards from it)."""
+    """Copy of the harness under test without kano-env.local.sh; `local` (text) becomes its local file. Without
+    builder/ and profiles/ two levels up (as in the repo), the watchers refuse to start (they read their guards from the
+    device profile through builder/lib/devprofile.py)."""
     shutil.copytree(HARNESS, dst, ignore=shutil.ignore_patterns("kano-env.local.sh", "__pycache__"))
     if local is not None:
         (Path(dst) / "kano-env.local.sh").write_text(local)

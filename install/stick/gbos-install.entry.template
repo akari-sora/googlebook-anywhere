@@ -1,7 +1,7 @@
 # XBOOTLDR entry that starts gbos-install. setup-stick.sh and tests/stick/qemu-install.py render it: the maintenance
 # root's partition GUID for the ROOT_PARTUUID placeholder, and the initcalls of builtin-initcalls.txt (comma-separated,
-# in file order) for the INITCALL_BLACKLIST placeholder. module_blacklist: every module that builder/image.py BL lists
-# (the Android entries' list, plus cros_ec_proto) and mei_me, 8250_dw, intel_lpss_pci, intel_lpss, intel_lpss_acpi,
+# in file order) for the INITCALL_BLACKLIST placeholder. module_blacklist: every module of profiles/kano/profile.toml
+# blacklist.modules (the Android entries' list), cros_ec_proto and mei_me, 8250_dw, intel_lpss_pci, intel_lpss, intel_lpss_acpi,
 # i915, tpm_crb; nvme stays allowed. module_blacklist cannot stop a built-in driver: those (TPM, nvram in the Arch
 # kernel) are blocked by initcall_blacklist; setup-stick.sh refuses a built-in blocked module that builtin-initcalls.txt
 # does not cover, or an Android entry blocking a module missing here. lockdown=integrity: no /dev/mem, /dev/port,

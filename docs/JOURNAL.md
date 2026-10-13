@@ -28,7 +28,7 @@
 | 觸控板、觸控螢幕、音效沒有 | `i2c_hid_acpi` 被封鎖；放行 intel-lpss 又會把序列埠重設 | `pci-stub.ids=8086:51a8,8086:51a9,8086:51aa,8086:51ab` 搶走 LPSS UART 與指紋 GSPI，pci-stub 放在 initrd 第一個載入 |
 | 音效 HAL 找不到卡 | DRAS 依 `hal_configs/audio_default.xml` 找 lapis 的 `sof-soundwire` | 新增 `sof-nau8825_kano` 設定（從 ChromeOS kano UCM 人工翻譯），喇叭曲線降 4.75 dB（DSM 保護參數不公開） |
 | 電源鍵沒反應 | lapis 的 `excluded-input-devices.xml` 排除 ACPI「Power Button」（它的電源鍵走 cros_ec_buttons，這裡被封鎖） | 不再排除 ACPI Power Button（safe25） |
-| 一般選項（plain）面板不亮 | 未解（final14 時觀察到，之後未重測）；Android 有開起來（有寫檔），面板停在暗畫面 | 預設改用 quiet／serial-debug（都帶 pci-stub） |
+| 一般選項（plain）面板不亮 | Android 有開起來（有寫檔），面板停在暗畫面；序列埠紀錄在 intel-lpss 接手 LPSS UART 時中斷（f13-normal） | 預設改用 quiet／serial-debug（都帶 pci-stub）；之後的版本不再產生 plain 選項 |
 
 鍵盤背光：ACPI `GOOG0002` 驅動與 EC console 的 `kblight` 都只改得了 EC 記錄的百分比，攝影機拍到亮度完全不變，
 判定這台的 EC 韌體本身不支援調整（要改 EC 韌體，禁止）。
@@ -77,7 +77,7 @@
 ## 未完成
 
 - 觸控螢幕點擊、耳機孔、USB-C 資料與 DisplayPort：需要有人在實機前操作。
-- 「充電中」顯示、自動旋轉、光感測：都在 EC 後面，維持封鎖。
+- 「充電中」顯示：v0.2 起由釘選建置的 `ac.ko` 提供（ACPI AC 驅動，讀 ACPI 的 `_PSR`，不送 EC 指令）。
+- 自動旋轉、光感測：在 EC 後面，預設維持封鎖；開發者選項 `GBOS_EC=sensors` 放行自動旋轉的感測器（尚未在實機驗證）。
 - 內建相機：Googlebook 的相機 HAL 是給 IPU7 的，要移植 IPU6 HAL。
-- plain 開機選項的暗畫面。
 - 只支援 KANO；其他型號見 NEW-DEVICE.md。

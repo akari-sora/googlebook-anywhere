@@ -84,9 +84,12 @@ done
 # --- 2. install.sh (Linux x86-64)
 if [ "$(uname -s)/$(uname -m)" != Linux/x86_64 ]; then skp "install.sh reuse cases (install.sh runs on Linux x86-64 only)"; finish; fi
 if [ "$(id -u)" = 0 ]; then skp "install.sh reuse cases (install.sh refuses root; run as a normal user)"; finish; fi
-R="$T/repo"; mkdir -p "$R/install" "$R/base" "$R/builder/lib" "$R/profiles/kano" "$T/bin"
+R="$T/repo"; mkdir -p "$R/install" "$R/base/builds" "$R/builder/lib" "$R/profiles/kano" "$T/bin"
 cp "$ROOT/install/install.sh" "$R/install/"
-cp "$ROOT/profiles/kano/audio-src.list" "$R/profiles/kano/"
+cp "$ROOT"/base/builds/*.sh "$R/base/builds/"
+cp "$ROOT/profiles/kano/audio-src.list" "$ROOT/profiles/kano/profile.toml" "$ROOT/profiles/kano/vendor.py" "$R/profiles/kano/"
+cp "$ROOT/profiles/_safety.toml" "$R/profiles/"
+cp "$ROOT/builder/lib/devprofile.py" "$R/builder/lib/"     # install.sh reads the image name from the profile
 echo "# stand-in for base/gbos_base.py" > "$R/base/gbos_base.py"
 echo "# stand-in for builder/vendor.sh" > "$R/builder/vendor.sh"
 echo "# stand-in" > "$R/builder/lib/rebuild.py"
@@ -110,22 +113,41 @@ cat > "$R/builder/fetch-inputs.sh" << 'STUB'
 #!/usr/bin/env bash
 mkdir -p "$1/firmware" "$1/audio-src"
 STUB
+mkdir -p "$R/builder/kmod"
+cat > "$R/builder/kmod/build-ac.sh" << 'STUB'
+#!/usr/bin/env bash
+# stub of builder/kmod/build-ac.sh <work> <out>: a fake ac.ko, and a work dir that install.sh must remove afterwards;
+# the pin is the SHA-256 of the fake module, so install.sh's pin check accepts it on a reuse
+AC_KO_SHA=a0e575a281219c53af7e810538a3d4ae21151b8b2d47816df018f90760ae24e7
+set -eu
+mkdir -p "$1" "$2"; echo toolchain > "$1/clang"; echo ac-module > "$2/ac.ko"
+echo kmod >> "$STUB_LOG/kmod"
+STUB
+cat > "$R/builder/kmod/build-gbos_wakefilter.sh" << 'STUB'
+#!/usr/bin/env bash
+# stub of builder/kmod/build-gbos_wakefilter.sh <work prepared by build-ac.sh> <out>
+WAKEFILTER_KO_SHA=5a1c5f0b3eeb254c34eca1f1796d49c9a543995128972eeba90445e720e6d02c
+set -eu
+[ -f "$1/clang" ] || { echo "work dir not prepared by build-ac.sh"; exit 2; }
+echo wakefilter-module > "$2/gbos_wakefilter.ko"
+echo wakefilter >> "$STUB_LOG/kmod-wf"
+STUB
 cat > "$R/builder/build.sh" << 'STUB'
 #!/usr/bin/env bash
 # stub of builder/build.sh: an "image" whose name and content record the settings it was built with
 set -eu
 mkdir -p "$GBOS_OUT/image"
 I="$GBOS_OUT/image/${GBOS_IMAGE_NAME:-googlebook-kano.img}"
-echo "entry ${GBOS_DEFAULT_ENTRY:-} editor ${GBOS_LOADER_EDITOR:-} adb ${GBOS_ADB_PUBKEY:-}" > "$I"
+echo "entry ${GBOS_DEFAULT_ENTRY:-} editor ${GBOS_LOADER_EDITOR:-} adb ${GBOS_ADB_PUBKEY:-} kmod-ac ${GBOS_KMOD_AC:-} kmod-wf ${GBOS_KMOD_WAKEFILTER:-}" > "$I"
 (cd "$GBOS_OUT/image" && sha256sum "${I##*/}" > "${I##*/}.sha256")
 echo build >> "$STUB_LOG/build"
 STUB
 # commands install.sh's host check asks for but the stubs never run (CI images lack some of them)
-for c in curl python3 lz4 mkfs.fat mmd mcopy mtype mdir openssl sha256sum truncate tar zstd cmp; do
+for c in curl python3 lz4 mkfs.fat mmd mcopy mtype mdir openssl sha256sum truncate tar zstd cmp git make perl flex bison nice xargs base64; do
     command -v "$c" > /dev/null || { printf '#!/bin/sh\nexit 1\n' > "$T/bin/$c"; chmod +x "$T/bin/$c"; }
 done
 Z="$T/fake.zip"; echo zip > "$Z"
-ZSHA=$(sed -n 's/^ZIP_SHA256=//p' "$R/install/install.sh")
+ZSHA=$(sed -n 's/^ZIP_SHA256=//p' "$R/base/builds/16452207.sh")
 echo "$ZSHA $(stat -c '%s %Y' "$Z")" > "$Z.ok"   # the stamp of a verified zip, so the fake zip is not hashed
 mkdir -p "$T/log"
 iexpect() {  # iexpect <name> <exit> <regex> [VAR=value ...] -- <install.sh args>; output in $out
@@ -133,7 +155,7 @@ iexpect() {  # iexpect <name> <exit> <regex> [VAR=value ...] -- <install.sh args
     local -a envs=()
     while [ $# -gt 0 ] && [ "$1" != -- ]; do envs+=("$1"); shift; done
     shift
-    out=$(env -u GBOS_DEFAULT_ENTRY -u GBOS_LOADER_EDITOR -u GBOS_ALLOW_FIRMWARE_DRIFT -u GBOS_IMAGE_NAME \
+    out=$(env -u GBOS_DEFAULT_ENTRY -u GBOS_LOADER_EDITOR -u GBOS_EC -u GBOS_ALLOW_FIRMWARE_DRIFT -u GBOS_IMAGE_NAME \
         PATH="$T/bin:$PATH" STUB_LOG="$T/log" ${envs[@]+"${envs[@]}"} \
         bash "$R/install/install.sh" --zip "$Z" --skip-space-check --no-selftest "$@" 2>&1 < /dev/null); rc=$?
     if [ "$rc" = "$code" ] && grep -Eq -- "$re" <<< "$out"; then ok "$name"; else bad "$name (rc=$rc)"; tail -n 6 <<< "$out" | sed 's/^/    /'; fi
@@ -142,15 +164,27 @@ builds() { cat "$T/log/build" 2>/dev/null | wc -l | tr -d ' '; }
 W="$T/work"
 iexpect "first run builds base and image" 0 "^done: $W/build/image/googlebook-kano.img" -- --work "$W"
 check "the stubs ran once each" '[ "$(builds)" = 1 ] && [ "$(wc -l < "$T/log/base")" = 1 ]'
-for l in "^sources [0-9a-f]{64}$" "^adb-key none$" "^default-entry lapis-quiet.conf$" "^loader-editor no$" "^selftest 0$" "^firmware-drift 0$"; do
+for l in "^sources [0-9a-f]{64}$" "^adb-key none$" "^default-entry lapis-quiet.conf$" "^loader-editor no$" "^ec-features none$" "^selftest 0$" "^firmware-drift 0$"; do
     check "params records: $l" 'grep -Eq -- "$l" "$W/build/params"'
 done
 check "the base records its sources" 'grep -Eq "^base-sources [0-9a-f]{64}$" "$W/base/install-sources"'
+check "the profile's ac.ko was built once and handed to build.sh" '[ "$(wc -l < "$T/log/kmod")" = 1 ] && grep -q "kmod-ac $W/inputs/kmod/ac.ko" "$W/build/image/googlebook-kano.img"'
+check "... its 9 GB work dir removed afterwards" '[ ! -e "$W/inputs/kmod-work" ]'
+check "params records the ac.ko" 'grep -Eq "^kmod-ac [0-9a-f]{64}$" "$W/build/params"'
+check "the profile's gbos_wakefilter.ko was built once, in the same work dir, and handed to build.sh" '[ "$(wc -l < "$T/log/kmod-wf")" = 1 ] && grep -q "kmod-wf $W/inputs/kmod/gbos_wakefilter.ko" "$W/build/image/googlebook-kano.img"'
+check "params records the gbos_wakefilter.ko" 'grep -Eq "^kmod-gbos_wakefilter [0-9a-f]{64}$" "$W/build/params"'
 iexpect "same sources and settings: the image is reused" 0 "reusing $W/build \(same sources and settings\)" -- --work "$W"
 check "... without building again" '[ "$(builds)" = 1 ]'
+check "... nor ac.ko" '[ "$(wc -l < "$T/log/kmod")" = 1 ]'
+check "... nor gbos_wakefilter.ko" '[ "$(wc -l < "$T/log/kmod-wf")" = 1 ]'
+echo not-the-pinned-module > "$W/inputs/kmod/ac.ko"
+iexpect "a cached ac.ko that is not the pinned one: both modules are built again" 0 "does not hold the modules pinned" -- --work "$W"
+check "... once each, and the image is reused (the rebuilt modules are the pinned ones)" \
+    '[ "$(wc -l < "$T/log/kmod")" = 2 ] && [ "$(wc -l < "$T/log/kmod-wf")" = 2 ] && [ "$(builds)" = 1 ]'
 iexpect "GBOS_DEFAULT_ENTRY changed: refused" 2 "made with other settings" GBOS_DEFAULT_ENTRY=lapis-debug.conf -- --work "$W"
 check "... and the change is shown" 'grep -q "now: default-entry lapis-debug.conf" <<< "$out"'
 iexpect "GBOS_LOADER_EDITOR changed: refused" 2 "made with other settings" GBOS_LOADER_EDITOR=yes -- --work "$W"
+iexpect "GBOS_EC changed: refused" 2 "made with other settings" GBOS_EC=sensors -- --work "$W"
 echo "ssh-rsa AAAA test" > "$T/adb.pub"
 iexpect "an adb key added: refused" 2 "made with other settings" -- --work "$W" --adb-pubkey "$T/adb.pub"
 iexpect "--adb-pubkey that does not exist: refused at once" 2 "--adb-pubkey: not a file" -- --work "$W" --adb-pubkey "$T/none.pub"
@@ -181,4 +215,20 @@ iexpect "... then the same settings reuse it" 0 "reusing" GBOS_DEFAULT_ENTRY=lap
 iexpect "... and the default settings do not" 2 "was: default-entry lapis-debug.conf" -- --work "$W2"
 rm "$W2/base/install-sources"
 iexpect "a base without a record of its sources: refused" 2 "without a record of its sources" -- --work "$W2"
+# the AVB key is kept outside base/ and an update (--update) rebuilds with it
+check "the first run kept the AVB key in work/keys" 'cmp -s "$W/keys/vbmeta.pem" "$W/base/keys/vbmeta.pem"'
+check "... readable only by the user" '[ "$(stat -c %a "$W/keys/vbmeta.pem")" = 600 ]'
+iexpect "GBOS_LAPIS_BUILD without pins: refused" 2 "no pins for Google build '1234'" GBOS_LAPIS_BUILD=1234 -- --work "$W"
+echo damaged-fixed > /dev/null; rm -rf "$W/base"
+iexpect "base/ deleted: rebuilt with the kept key (no new key)" 0 "^done:" -- --work "$W" --update
+check "... the new base is signed with the kept key" 'cmp -s "$W/keys/vbmeta.pem" "$W/base/keys/vbmeta.pem"'
+echo "# edited" >> "$R/base/gbos_base.py"
+iexpect "--update with changed base/ sources: base moved to base.prev and rebuilt" 0 "moving it to $W/base.prev" -- --work "$W" --update
+check "... with the kept key" 'cmp -s "$W/keys/vbmeta.pem" "$W/base/keys/vbmeta.pem" && [ -d "$W/base.prev" ]'
+check "... and it says how to update a stick" 'grep -q "write-usb.sh --keep-data" <<< "$out"'
+sed -i '$d' "$R/base/gbos_base.py"
+echo "# edited" >> "$R/builder/vendor.sh"
+iexpect "--update with changed builder sources: build moved to build.prev and rebuilt" 0 "moving it to $W/build.prev" -- --work "$W" --update
+check "... a new image was built" 'grep -q "^build$" "$T/log/build" && [ -d "$W/build.prev" ] && [ -f "$W/build/image/googlebook-kano.img" ]'
+sed -i '$d' "$R/builder/vendor.sh"
 finish

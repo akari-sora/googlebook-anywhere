@@ -19,10 +19,18 @@
 # make-pristine.py from the same image), except super, which is copied from this stick. /data starts empty (Android
 # formats it on the first boot); nothing of the stick's own /data is copied. Everything shown is also written to
 # /var/log/gbos-install-<time>.log on the stick.
+#
+# Update mode (kernel command line also has gbos.update=1, boot entry "Update Googlebook on the internal disk (keep
+# data)"): the same checks of this boot and of the installer data, then gbos-update.py (installed by setup-stick.sh)
+# puts this stick's image into the internal disk's other slot. /data, metadata and the running version stay; the
+# running version remains on the boot menus as "(previous version)". The serial number is confirmed the same way.
 set -Eeuo pipefail
 shopt -s inherit_errexit
 P=/var/lib/gbos-install/pristine
 MNT=/run/gbos-install
+ENGINE=/usr/local/share/gbos-install/gbos-update.py
+MODE=install
+case " $(cat /proc/cmdline) " in *" gbos.update=1 "*) MODE=update ;; esac
 export MTOOLS_SKIP_CHECK=1
 WROTE=0
 W=""
@@ -70,6 +78,9 @@ sector_size() { cat "/sys/block/$(basename "$1")/queue/logical_block_size"; }
 devsha() { blockdev --flushbufs "$1"; dd if="$1" bs=4M iflag=direct status=none | sha256sum | cut -c1-64; }
 reread() { blockdev --flushbufs "$1"; partx -u "$1" 2>/dev/null || blockdev --rereadpt "$1"; udevadm settle; }
 stick_part() { sgdisk -p "$SRC" | awk -v k="$1" '$NF == k {print $1}'; }
+# esp_entries <FAT image or partition>: the names in its loader/entries, sorted, space-separated (empty on any error)
+esp_entries() { { mdir -b -i "$1" ::/loader/entries || true; } | tr -d '\r' | sed -n 's|^::/loader/entries/\([^/]*\)$|\1|p' |
+    LC_ALL=C sort | tr '\n' ' '; }
 nvme_entry() {  # nvme_entry <title> <NVMe ESP entry>: the stick's menu entry for the internal disk
     sed -e "s/^title .*/title $1/" -e 's|^linux .*|linux /gbos-nvme/kernel.efi|' -e 's|^initrd .*|initrd /gbos-nvme/initrd.img|' "$2"
 }
@@ -80,7 +91,8 @@ if [ "$TTY" = tty1 ]; then chvt 1 2>/dev/null || true; setfont LatGrkCyr-12x22 2
 clear 2>/dev/null || true
 LOG=/var/log/gbos-install-$(date +%Y%m%d-%H%M%S).log
 exec > >(tee -a "$LOG") 2>&1
-log "Googlebook installer for the Acer Chromebook Spin 714 (KANO)"
+if [ "$MODE" = update ]; then log "Googlebook updater for the Acer Chromebook Spin 714 (KANO): keeps your data"
+else log "Googlebook installer for the Acer Chromebook Spin 714 (KANO)"; fi
 log "log file on this stick: $LOG ($(date))"
 
 # --- 1. this boot keeps the firmware out of reach
@@ -98,6 +110,10 @@ log "ok   kernel lockdown: $LDMODE; EFI runtime services off"
 for c in python3 zstd sgdisk partx blockdev blkdiscard udevadm lsblk findmnt mcopy mtype dd sha256sum cmp mount umount; do
     command -v "$c" > /dev/null || die "missing tool: $c"
 done
+if [ "$MODE" = update ]; then
+    for c in lz4 mdir mmd mdel minfo; do command -v "$c" > /dev/null || die "missing tool: $c"; done
+    [ -f "$ENGINE" ] || die "missing $ENGINE; set up the stick with setup-stick.sh"
+fi
 W=$(mktemp -d)
 cat > "$W/gbos.py" << 'PY'
 import hashlib, os, re, struct, subprocess, sys, uuid, zlib
@@ -341,7 +357,14 @@ zstd -q -dc "$P/p$EN.img.zst" > "$W/esp.img"
 mcopy -n -i "$W/esp.img" ::/initrd.img "$W/initrd.orig"
 mcopy -n -i "$W/esp.img" ::/kernel.efi "$W/kernel.efi"
 python3 "$W/gbos.py" bootconfig-check "$W/initrd.orig" - || die "the image's initrd has no usable bootconfig"
-for f in lapis.conf lapis-debug.conf lapis-quiet.conf; do
+# quiet and serial-debug; images built before the plain entry was dropped also carry it (lapis.conf). Any other set
+# (a missing entry, an unknown one such as an unmodified original) stops here.
+ENTRIES=$(esp_entries "$W/esp.img")
+case "$ENTRIES" in
+    "lapis-debug.conf lapis-quiet.conf " | "lapis-debug.conf lapis-quiet.conf lapis.conf ") ;;
+    *) die "the image's ESP has unexpected boot entries: ${ENTRIES:-none readable}" ;;
+esac
+for f in $ENTRIES; do
     mtype -i "$W/esp.img" "::/loader/entries/$f" > "$W/$f.orig"
     python3 "$W/gbos.py" lift-entry "$W/$f.orig" "$W/$f" || die "boot entry $f of the image cannot be changed safely"
 done
@@ -365,10 +388,12 @@ mount -o ro "$(pdev "$SRC" "$XN")" "$MNT/xb"; mount -o ro "$(pdev "$SRC" "$SEN")
 umount "$MNT/xb" "$MNT/esp"
 [ "$(part_start "$SRC" "$SN")" = $((SSTART / 512)) ] && [ "$(part_size "$SRC" "$SN")" = $((SLEN / 512)) ] \
     || die "the stick's super partition is not where the installer data puts it"
-log "Checking the Googlebook copy on this stick ($((SLEN / 1000000000)) GB). This takes several minutes on a USB stick..."
-GOT=$(dd if="$(pdev "$SRC" "$SN")" bs=4M status=progress 2> "/dev/$TTY" | sha256sum | cut -c1-64)
-[ "$GOT" = "$SSHA" ] || die "super on this stick does not match the installer data (damaged stick, or a new image without setup-stick.sh)"
-log "ok   super on this stick matches the installer data"
+if [ "$MODE" = install ]; then   # (update mode: gbos-update.py checks super itself before it writes)
+    log "Checking the Googlebook copy on this stick ($((SLEN / 1000000000)) GB). This takes several minutes on a USB stick..."
+    GOT=$(dd if="$(pdev "$SRC" "$SN")" bs=4M status=progress 2> "/dev/$TTY" | sha256sum | cut -c1-64)
+    [ "$GOT" = "$SSHA" ] || die "super on this stick does not match the installer data (damaged stick, or a new image without setup-stick.sh)"
+    log "ok   super on this stick matches the installer data"
+fi
 
 # The maintenance OS keeps the NVMe driver from loading on its own (install nvme /bin/false in modprobe.d), so that
 # nothing else ever touches the internal disk. Only the installer loads it, after every check above has passed.
@@ -411,6 +436,41 @@ in_use() {  # prints why $T is in use (mounted, swap, held by LVM, RAID or dm-cr
 U=$(in_use); [ -z "$U" ] || die "$U"
 [ "$SIZE" -ge $(( (UD_START + 16 * 1024 * 1024 * 2) * 512 )) ] || die "$T is too small (needs at least $(( UD_START / 2 / 1024 / 1024 + 16 )) GiB)"
 
+if [ "$MODE" = update ]; then
+    echo
+    python3 -I "$ENGINE" inspect "$T" || die "$T holds no Googlebook this updater can update (above)"
+    echo
+    echo "  Target: $T  $MODEL  $((SIZE / 1000000000)) GB  serial $SERIAL"
+    echo "  Update to: this stick's $(awk '$1 == "image" {print $2}' "$P/manifest.txt") (checked again before anything is written)"
+    echo "  /data stays: apps, files and your Google account. The version that runs now stays on this stick's menu as"
+    echo "  'Googlebook (internal disk, previous version)', and on the internal disk's own menu as '(previous version)'"
+    echo "  when its boot partition has room for both. When it has not (a Google build with a new kernel), the internal"
+    echo "  disk's own menu starts nothing while the update runs: this stick's 'Googlebook (internal disk)' still does."
+    echo
+    read -r -p "  Type the last 4 characters of the serial ($SERIAL) to update, or just Enter to cancel: " A || A=""
+    LAST4=${SERIAL: -4}
+    [ -n "$A" ] && [ "${A^^}" = "${LAST4^^}" ] || finish 0 poweroff "Cancelled. Nothing was written."
+    [ "$(lsblk -dno SERIAL "$T" | tr -d ' ')" = "$SERIAL" ] && [ "$(lsblk -dbno SIZE "$T")" = "$SIZE" ] \
+        && [ "$(cat "/sys/block/$(basename "$T")/dev")" = "$DEVNO" ] || die "$T changed while waiting"
+    U=$(in_use); [ -z "$U" ] || die "$U"
+    log "confirmed: updating $T ($MODEL, serial $SERIAL)"
+    if python3 -I "$ENGINE" apply "$T" --pristine "$P" --super "$(pdev "$SRC" "$SN")" --mode nvme --rdev "$DEVNO" \
+            --syspath "$(readlink -e "/sys/dev/block/$DEVNO")" --bytes "$SIZE" \
+            --stick-boot "$(pdev "$SRC" "$XN")"; then rc=0; else rc=$?; fi
+    case $rc in
+        0)  # the stick's menu starts the internal disk by default (a stick set up before the first install may not yet)
+            S=$(pdev "$SRC" "$SEN")
+            if mount "$S" "$MNT/esp" && cp "$W/stick-loader.conf" "$MNT/esp/loader/loader.conf" && sync && umount "$MNT/esp" \
+                    && blockdev --flushbufs "$S" && mtype -i "$S" ::/loader/loader.conf > "$W/rb.stick-loader.conf" \
+                    && cmp -s "$W/stick-loader.conf" "$W/rb.stick-loader.conf"; then
+                finish 0 reboot "Update done. Remove the USB stick, or keep it inserted: its menu starts the internal disk by default."
+            fi
+            umount "$MNT/esp" 2> /dev/null || true
+            finish 0 reboot "Update done. This stick's menu could not be set to start the internal disk by default: choose 'Googlebook (internal disk)' on it, or remove the stick." ;;
+        2) finish 1 poweroff "Stopped before anything was written. The internal disk was not changed." ;;
+        *) finish 1 poweroff "The update stopped halfway (the reason is above). This stick's 'Googlebook (internal disk)' still starts a complete version of Googlebook on the internal disk, the one that ran before unless only the last step was left; start 'Update Googlebook on the internal disk' again to finish." ;;
+    esac
+fi
 echo
 echo "  Target: $T  $MODEL  $((SIZE / 1000000000)) GB  serial $SERIAL"
 echo "  Source: this USB stick, $(awk '$1 == "image" {print $2}' "$P/manifest.txt") (checked)"
@@ -467,12 +527,14 @@ BG=$(sgdisk -i "$BN" "$T" | sed -n 's/^Partition unique GUID: //p' | tr 'A-F' 'a
 cp "$W/initrd.orig" "$W/initrd.img"
 python3 "$W/gbos.py" bootconfig-set "$W/initrd.img" "$BG" || die "cannot set boot_part_uuid in the initrd"
 mcopy -o -i "$E" "$W/initrd.img" ::/initrd.img
-for f in lapis.conf lapis-debug.conf lapis-quiet.conf; do mcopy -o -i "$E" "$W/$f" "::/loader/entries/$f"; done
+for f in $ENTRIES; do mcopy -o -i "$E" "$W/$f" "::/loader/entries/$f"; done
 mcopy -o -i "$E" "$W/loader.conf" ::/loader/loader.conf
 log "ok   boot files: Android finds this disk by boot_a $BG, NVMe allowed, quiet entry by default"
 
-# the stick's menu: an entry for the internal disk (XBOOTLDR), started by default
+# the stick's menu: an entry for the internal disk (XBOOTLDR), started by default. What updates of an earlier
+# installation left there (its previous version and the per-slot copies) would start a disk that is gone: removed.
 mount "$(pdev "$SRC" "$XN")" "$MNT/xb"
+rm -f "$MNT/xb/loader/entries/gbos-nvme-prev.conf"; rm -rf "$MNT/xb/gbos-nvme/a" "$MNT/xb/gbos-nvme/b"
 mkdir -p "$MNT/xb/gbos-nvme" "$MNT/xb/loader/entries"
 cp "$W/kernel.efi" "$MNT/xb/gbos-nvme/kernel.efi"; cp "$W/initrd.img" "$MNT/xb/gbos-nvme/initrd.img"
 cp "$W/gbos-nvme.conf" "$W/gbos-nvme-debug.conf" "$MNT/xb/loader/entries/"
@@ -496,10 +558,11 @@ mcopy -n -i "$E" ::/kernel.efi "$W/rb.kernel.efi"
 cmp -s "$W/initrd.img" "$W/rb.initrd.img" || die "ESP initrd on $T differs from what was written"
 python3 "$W/gbos.py" bootconfig-check "$W/rb.initrd.img" "$BG" || die "ESP initrd on $T does not point at boot_a"
 cmp -s "$W/kernel.efi" "$W/rb.kernel.efi" || die "ESP kernel on $T differs from the image"
-for f in lapis.conf lapis-debug.conf lapis-quiet.conf; do
+for f in $ENTRIES; do
     mtype -i "$E" "::/loader/entries/$f" > "$W/rb.$f"
     cmp -s "$W/$f" "$W/rb.$f" || die "ESP entry $f on $T differs from what was written"
 done
+[ "$(esp_entries "$E")" = "$ENTRIES" ] || die "the ESP on $T does not hold exactly the entries $ENTRIES"
 mtype -i "$E" ::/loader/loader.conf > "$W/rb.loader.conf"
 cmp -s "$W/loader.conf" "$W/rb.loader.conf" || die "ESP loader.conf on $T differs from what was written"
 X=$(pdev "$SRC" "$XN"); blockdev --flushbufs "$X"
@@ -507,6 +570,10 @@ mcopy -n -i "$X" ::/gbos-nvme/kernel.efi "$W/rb.x.kernel.efi"
 mcopy -n -i "$X" ::/gbos-nvme/initrd.img "$W/rb.x.initrd.img"
 cmp -s "$W/rb.kernel.efi" "$W/rb.x.kernel.efi" && cmp -s "$W/rb.initrd.img" "$W/rb.x.initrd.img" \
     || die "the stick's copy of the internal disk's kernel or initrd differs"
+[ "$( { mdir -b -i "$X" ::/loader/entries || true; } | tr -d '\r' | sed -n 's|^::/loader/entries/\(gbos-nvme[^/]*\.conf\)$|\1|p' | LC_ALL=C sort | tr '\n' ' ')" \
+    = "gbos-nvme-debug.conf gbos-nvme.conf " ] || die "the stick's menu holds other internal-disk entries than gbos-nvme.conf and gbos-nvme-debug.conf"
+! mdir -b -i "$X" ::/gbos-nvme/a > /dev/null 2>&1 && ! mdir -b -i "$X" ::/gbos-nvme/b > /dev/null 2>&1 \
+    || die "the stick still holds copies of an earlier installation (/gbos-nvme/a or /gbos-nvme/b)"
 for f in gbos-nvme.conf gbos-nvme-debug.conf; do
     mtype -i "$X" "::/loader/entries/$f" > "$W/rb.$f"
     cmp -s "$W/$f" "$W/rb.$f" && grep -qx 'linux /gbos-nvme/kernel.efi' "$W/rb.$f" && grep -qx 'initrd /gbos-nvme/initrd.img' "$W/rb.$f" \

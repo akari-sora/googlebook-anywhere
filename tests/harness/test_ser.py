@@ -22,6 +22,9 @@ ALLOWED = {
     "kblight": "kblight",
     "gpioget": "gpioget",
     "gpioget EC_WP_L": "gpioget EC_WP_L",
+    "lidclose": "lidclose",
+    "LIDOPEN": "lidopen",
+    "lidstate": "lidstate",
 }
 REFUSED = {
     "flashwrite": "allowlist", "FLASHWR": "allowlist", "flashe": "allowlist", "flasherase 0 4096": "allowlist",
@@ -35,6 +38,8 @@ REFUSED = {
     "powerbtn 0": "arguments", "powerbtn 99999": "arguments", "powerbtn 2 3": "arguments", "kbpress 18 1": "arguments",
     "kbpress 1 8": "arguments", "kbpress 1 1 2": "arguments", "kbpress 1": "arguments", "kbpress": "arguments",
     "gpioget A B": "arguments", "gpioget A;B": "arguments", "version x": "arguments", "powerinfo 1": "arguments",
+    "lidclose 1": "arguments", "lidopen now": "arguments", "lidstate x": "arguments", "lidangle": "allowlist",
+    "tabletmode on": "allowlist",
 }
 
 

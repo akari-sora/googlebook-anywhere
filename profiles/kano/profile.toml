@@ -1,0 +1,145 @@
+# KANO: Acer Chromebook Spin 714 (CP714-1WN, Alder Lake-P, brya/kano) with MrChromebox UEFI firmware.
+# Every model-specific value the builder uses (builder/lib/devprofile.py checks this file against profiles/_safety.toml).
+# A new model is a new directory next to this one: docs/NEW-DEVICE.md, and install/gbos-probe.sh writes a draft.
+schema = 1
+# extra kernel modules built from pinned sources (builder/kmod/build-<name>.sh) and shipped in vendor:
+# ac = the ACPI AC adapter driver (ACPI0003 _PSR), so Android shows the charger; it sends no EC host command
+# gbos_wakefilter = drops the ACPI power button's resume KEY_WAKEUP when the button did not wake the system: without it
+#   every dark resume (an RTC alarm, an EC event) turns the screen on, so a closed KANO lights up within a minute
+kmods = ["ac", "gbos_wakefilter"]
+
+[model]
+id = "kano"
+name = "Acer Chromebook Spin 714 (CP714-1WN)"
+status = "verified"                  # verified | experimental | probe-only
+image_name = "googlebook-kano.img"
+dmi = { sys_vendor = "Google", product_name = "Kano" }
+
+[entries]                            # systemd-boot menu titles
+quiet = "Googlebook KANO quiet"
+debug = "Googlebook KANO safe serial-debug"
+
+[cmdline]
+# stock lapis options removed for this model (superseded by the tail below, or a lapis SoundWire mask the KANO lacks)
+stock_drop = ["snd_intel_sdw_acpi.sdw_link_mask=0x5", "xe.enable_psr=1", "snd_sof_pci.ipc_type=1"]
+# appended to the stock options of every entry; the quiet entry drops the console/earlycon/log-level ones again.
+# Serial: COM1 plus the KANO's LPSS UART 00:1e.0 (MMIO 0xfe03e000, Cr50 AP console). xe does not list ADL-P (46a6).
+add = ["loglevel=8", "ignore_loglevel", "console=ttyS0,115200n8", "console=ttyS4,115200n8",
+       "console=uart8250,mmio32,0xfe03e000,115200n8", "earlycon=uart8250,mmio32,0xfe03e000,115200n8", "xe.force_probe=46a6"]
+# after the safety tail: xe on 6.18.21 faults scanning tiled framebuffers through a DPT in stolen memory
+# (CVE-2026-80915, upstream fc648757908304aedbad74f74bf58192aec383db); max98373 + nau8825 on SOF ships for IPC3 only
+tail = ["xe.enable_dpt=0", "xe.enable_psr=0", "xe.enable_fbc=0", "snd_sof_pci.ipc_type=0"]
+debug_drop = ["8250.nr_uarts=4"]
+# serial-debug and quiet: LPSS UART 00:1e.0 (51a8-51aa) and the fingerprint GSPI (51ab) go to pci-stub, so
+# intel-lpss-pci binds only the I2C functions (touchpad, touchscreen, audio amplifiers)
+pci_stub_ids = ["8086:51a8", "8086:51a9", "8086:51aa", "8086:51ab"]
+# first-stage modules.load: pci-stub loads first, these never (they would claim the LPSS UART before pci-stub)
+first_stage_drop = ["8250_dw.ko", "intel-lpss-pci.ko", "intel-lpss.ko"]
+
+[blacklist]
+# module_blacklist of every entry, in this order. With LPSS I2C live: EEPROM writer, HPS, EC I2C tunnel and peripheral
+# charger stay unbound. cros_ec_proto (library only) is allowed so cros_kbd_led_backlight binds ACPI GOOG0002; every
+# other module that depends on it stays out, transports first (no EC device is ever registered, so no EC host command
+# can be sent).
+modules = ["cros_ec_debugfs", "tpm_tis_i2c_cr50", "cros_ec_lpcs", "cros_ec_usb", "spi_intel_pci", "spi_intel", "i2c_dev",
+           "thunderbolt", "tpm", "tpm_tis", "tpm_tis_core", "tpm_tis_spi", "cros_ec", "cros_ec_dev", "cros_ec_chardev",
+           "gsmi", "chromeos_acpi", "nvram", "mtd", "spi_nor", "spidev", "intel_quicki2c", "intel_quickspi",
+           "at24", "cros_hps_i2c", "i2c_cros_ec_tunnel", "cros_peripheral_charger",
+           "cros_ec_spi", "cros_ec_i2c", "cros_ec_ishtp", "cros_ec_sysfs", "cros_ec_vbc", "cros_ec_typec", "cros_typec_switch",
+           "cros_usbpd_notify", "cros_usbpd_charger", "cros_usbpd_logger", "cros_charge_control", "cros_ec_ucsi", "cros_ec_keyb",
+           "cros_ec_sensorhub", "cros_ec_sensors_core", "cros_ec_sensors", "cros_ec_accel_legacy", "cros_ec_baro",
+           "cros_ec_lid_angle", "cros_ec_light_prox", "cros_ec_lightbar", "cros_ec_pwrmon", "cros_ec_cec", "leds_cros_ec",
+           "hid_google_hammer", "wilco_ec", "wilco_charger", "wilco_ec_debugfs", "wilco_ec_telem", "rtc_wilco_ec"]
+# serial-debug and quiet also keep the LPSS UART drivers away (pci-stub holds 00:1e.0)
+debug_add = ["8250_dw", "intel_lpss_acpi"]
+# must stay loadable (keyboard backlight)
+allow = ["cros_ec_proto", "cros_kbd_led_backlight"]
+
+[firmware_sources]
+linux_firmware_tag = "20260810"
+sof_bin_url = "https://github.com/thesofproject/sof-bin/releases/download/v2025.12.2/sof-bin-2025.12.2.tar.gz"
+sof_bin_sha256 = "533f63e3a6d94c09ce05a782657b675fa683ff20787c0979226cf563ec79f517"
+
+# Device firmware, RAM-loaded by the drivers (nothing is flashed). path = under /vendor/firmware and under GBOS_FIRMWARE;
+# src = path in linux-firmware (at linux_firmware_tag) or in the sof-bin tarball. Other versions were never tested on
+# the KANO, so builder/vendor.sh refuses them unless GBOS_ALLOW_FIRMWARE_DRIFT=1.
+[[firmware]]                         # ADL-P display microcontroller, GuC, HuC (xe)
+path = "i915/adlp_dmc.bin"
+from = "linux-firmware"
+src = "i915/adlp_dmc.bin"
+sha256 = "3516de2e134ddcf3b319c75d2e437779fecbd58cbb77234bd6f297c544e92ccb"
+[[firmware]]
+path = "i915/adlp_guc_70.bin"
+from = "linux-firmware"
+src = "i915/adlp_guc_70.bin"
+sha256 = "b7a800cbdcdf687e7b1c81f3316d040ab75fa3e5c698ebc356f077af17462ef8"
+[[firmware]]
+path = "i915/tgl_huc.bin"
+from = "linux-firmware"
+src = "i915/tgl_huc.bin"
+sha256 = "dbb1316bac13a76427ffa7827e52b5b9affe8a4cadd23dc22e2a54e35c53bdad"
+[[firmware]]                         # AX211 Wi-Fi (iwlmvm)
+path = "iwlwifi-so-a0-gf-a0-89.ucode"
+from = "linux-firmware"
+src = "intel/iwlwifi/iwlwifi-so-a0-gf-a0-89.ucode"
+sha256 = "7b53254bb28115f91b6eaa33b1f9a3526e32966105eaac587e259dd17790f384"
+[[firmware]]
+path = "iwlwifi-so-a0-gf-a0.pnvm"
+from = "linux-firmware"
+src = "intel/iwlwifi/iwlwifi-so-a0-gf-a0.pnvm"
+sha256 = "2aee7592ddbd6c88f1aa51be4ada188fce44765405e52d7f3056b46e62cf3f91"
+[[firmware]]                         # AX211 Bluetooth
+path = "intel/ibt-0040-0041.sfi"
+from = "linux-firmware"
+src = "intel/ibt-0040-0041.sfi"
+sha256 = "8dcfb3a7c1592c11c3e80505d21ee78dbde3de0c830d8e3e856371c37717b62c"
+[[firmware]]
+path = "intel/ibt-0040-0041.ddc"
+from = "linux-firmware"
+src = "intel/ibt-0040-0041.ddc"
+sha256 = "fe272982577efdc289cfe3e8bedafca607c0b7d6c9df1aab1880e22ef930d077"
+[[firmware]]                         # SOF DSP (IPC3; ADL uses the TGL image) and the max98373 + nau8825 topology
+path = "intel/sof/community/sof-adl.ri"
+from = "sof-bin"
+src = "sof-bin-2025.12.2/sof/community/sof-tgl.ri"
+sha256 = "e3489dcb277e87eee8bc091ab7d51163a63c85541c22522775122b54263769f3"
+[[firmware]]
+path = "intel/sof-tplg/sof-adl-max98373-nau8825.tplg"
+from = "sof-bin"
+src = "sof-bin-2025.12.2/sof-tplg/sof-adl-max98373-nau8825.tplg"
+sha256 = "4beb29400d9beed0c80bcc11b3f4e82aad70a54d6e851638c81eb087a10d4de5"
+
+[audio]
+# card sof-nau8825 (NAU8825 headset + 2x MAX98373, SOF IPC3); the DRAS files are written by hooks.vendor (audio())
+card = "sof-nau8825"
+config_dir = "sof-nau8825_kano"
+sources = "audio-src.list"           # ChromeOS board-overlays files, fetched by builder/fetch-inputs.sh
+
+[wifi]
+modprobe = ["iwlmvm"]                # the AX211 needs the iwlmvm op-mode (lapis only loads iwlmld, for BE200/BE211)
+
+[display]
+stack = "native"                     # native | gop-swiftshader (builder/lib/devprofile.py)
+hwc_backend = "client"               # xe faults scanning Y-tiled buffers through DPT on ADL-P: SurfaceFlinger composes all
+# drm_hwcomposer colour pipeline, HDR and log gamma LUT off; SurfaceFlinger treats the panel as sRGB SDR
+build_prop_set = [["vendor.hwc.drm.enable_color_pipeline", "true", "false"],
+                  ["vendor.hwc.drm.force_color_mode", "13", "0"],
+                  ["vendor.hwc.drm.persistent_hdr", "true", "false"],
+                  ["vendor.hwc.use_log_gamma_lut", "true", "false"],
+                  ["ro.surface_flinger.has_wide_color_display", "true", "false"],
+                  ["ro.surface_flinger.has_HDR_display", "true", "false"]]
+
+[input]
+# ACPI GOOG0002 (\_SB_.CREC.KBLT) sits under the EC node here, so cros_kbd_led_backlight registers below GOOG0004
+kbd_backlight_leds = "/sys/devices/platform/GOOG0004:00/GOOG0002:00/leds"
+power_button = "acpi"                # cros_ec_keyb is blacklisted: the ACPI Power Button is the only power key
+
+[camera]
+# The built-in camera (IPU6 + OV2740; the kernel side is in lapis' vendor_dlkm): upstream libcamera 0.7.2 (simple
+# pipeline, SoftISP on the CPU) and its Android camera3 HAL, built by builder/camera/build-libcamera.sh and added by
+# vendor.py camera(). false until it is proven on the KANO's Android: only a build with GBOS_CAMERA_OVERLAY=<its
+# out/vendor> includes it. true = every build needs that overlay.
+libcamera = false
+
+[hooks]
+vendor = "vendor.py"                 # model-specific vendor edits that need more than data (comments, DRAS files)

@@ -191,6 +191,7 @@ C=(--check-only "$T/x.img")
 
 expect "refuses a character device" 2 "not a block device" -- "${C[@]}" /dev/null
 expect "refuses a missing path" 2 "does not exist" -- "${C[@]}" "$T/no-such-disk"
+expect "refuses --without-fallback without --keep-data" 2 "goes with --keep-data" -- --without-fallback "$T/x.img" /dev/null
 if [ -n "$rootdisk" ]; then
     expect "refuses the disk holding / even when it claims to be USB" 2 "holds the running system" \
         FAKE_DEV="$rootdisk" FAKE_MAJMIN="$(majmin_of "$rootdisk")" GBOS_WUSB_TEST_SYSFS= -- "${C[@]}" "$rootdisk"
@@ -214,6 +215,14 @@ pretend_cases() {  # every case on the pretend disk; with DRY=1 each one is only
     expect "sysfs test hook is refused without --check-only" 2 "only with --check-only" -- "$T/x.img" "$spare"
     expect "accepts a USB whole disk (check only)" 0 "CHECKS OK" -- "${C[@]}" "$spare"
     has "check-only runs the after-prompt re-check" "== re-checking"
+    if ! command -v lz4 > /dev/null || ! command -v minfo > /dev/null; then
+        skp "--keep-data check only (needs lz4 and mtools)"
+    elif [ "$(id -u)" != 0 ]; then
+        expect "--keep-data: the same checks pass (check only)" 0 "CHECKS OK" -- --check-only --keep-data "$T/x.img" "$spare"
+        has "--keep-data as a user says it did not read the disk" "gbos-update.py inspect needs root"
+    else
+        expect "--keep-data refuses a disk without Googlebook on it" 2 "holds no Googlebook that can be updated" -- --check-only --keep-data "$T/x.img" "$spare"
+    fi
     if [ "$(id -u)" != 0 ]; then
         has "check-only as a user says it skipped the root-only probe" "exclusive-open probe .* skipped"
     fi
@@ -294,6 +303,21 @@ wexpect "the writer writes, reads back and moves the backup GPT to the end of th
     write "$T/lo.img" "$LOSHA" "$LOOP" "$lmm" "$lbytes" "$lsys"
 sg=$(sgdisk -v "$LOOP" 2>&1)
 grep -q "No problems found" <<< "$sg" && ok "sgdisk -v finds no problems on the device" || bad "sgdisk -v on the device: $sg"
+# write-usb.sh --keep-data hands the confirmed identity to gbos-update.py (--rdev, --syspath, --bytes); its own checks
+# on a real block device, before anything else is read (rollback: the one command that needs no release)
+uexp() {  # uexp <name> <output regex> -- <extra args>: refused (exit 2) with that output, the device unchanged
+    local name=$1 re=$2 b out rc=0; shift 3
+    b=$(sha256sum < "$LOOP")
+    out=$(python3 -I "$ROOT/install/gbos-update.py" rollback "$LOOP" "$@" 2>&1) || rc=$?
+    if [ "$rc" = 2 ] && grep -Eq -- "$re" <<< "$out" && [ "$(sha256sum < "$LOOP")" = "$b" ]; then ok "$name"; else bad "$name (rc=$rc): $(tail -n 2 <<< "$out")"; fi
+}
+uexp "gbos-update.py refuses a block device that is not the confirmed major:minor" "not the confirmed 7:9999" -- --rdev 7:9999
+uexp "gbos-update.py refuses a block device whose sysfs path is not the confirmed one" "in sysfs, not the confirmed" -- \
+    --rdev "$lmm" --syspath /sys/devices/virtual/block/loop-not-this --bytes "$lbytes"
+uexp "gbos-update.py refuses a block device whose size is not the confirmed one" "bytes, not the confirmed" -- \
+    --rdev "$lmm" --syspath "$lsys" --bytes $((lbytes + 512))
+uexp "gbos-update.py with the confirmed identity goes on to read the disk (not Googlebook here: refused)" "no super partition" -- \
+    --rdev "$lmm" --syspath "$lsys" --bytes "$lbytes"
 losetup -d "$LOOP"; LOOP=''
 if python3 - "$T/lo-disk" "$T/lo.img" "$ROOT/tests/stick" << 'PY'
 import sys

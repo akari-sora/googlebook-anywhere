@@ -7,12 +7,13 @@
 1. `base/build-base.sh`：官方 recovery 映像 → 基礎 GPT 映像（中間產物，不能直接開機；ESP 放 systemd-boot、`kernel.efi`、`initrd.img`），
    vendor 換成軟體 KeyMint／Gatekeeper，`vbmeta_a` 用你的金鑰重簽。用原本的金鑰重建時，輸出與 2026-10-11 手工做出的映像逐位元組相同
    （`base/RESULT.md`）。
-2. `builder/fetch-inputs.sh`：韌體（linux-firmware 20260810、sof-bin v2025.12.2）與 ChromeOS 音效設定（board-overlays 固定 commit），
-   每個檔案都核對 SHA-256。
-3. `builder/vendor.sh`：解開 vendor EROFS，套用下面所有修改，用 otatools 的 mkfs.erofs 重建（固定時間戳與 UUID，uid／gid／mode／
+2. `builder/fetch-inputs.sh`：機型設定（`profiles/kano/profile.toml` 的 `[[firmware]]`）列的韌體（linux-firmware 20260810、
+   sof-bin v2025.12.2）與 ChromeOS 音效設定（board-overlays 固定 commit），每個檔案都核對 SHA-256。
+3. `builder/vendor.sh`：解開 vendor EROFS，套用下面所有修改（機型相關的部分來自機型設定與它的 `vendor.py`），用 otatools 的 mkfs.erofs 重建（固定時間戳與 UUID，uid／gid／mode／
    SELinux 標籤從原映像逐一抄寫），再比對新舊 vendor 樹：新增、刪除、變更的檔案必須剛好是預期的清單。接著加 hashtree、重簽 vbmeta，
    更新 ESP initrd 的 bootconfig。
-4. `builder/image.py`：ESP 的 initrd 與三個開機選項，然後兩個 QEMU 自我測試：
+4. `builder/image.py`：ESP 的 initrd 與兩個開機選項（quiet、serial-debug；vendor_boot 的原廠參數＋機型設定＋`profiles/_safety.toml`，由
+   `builder/lib/devprofile.py` 組合），然後兩個 QEMU 自我測試：
    - 功能測試：直接把 kernel、initrd 與 serial-debug 的參數交給 QEMU，從序列埠紀錄檢查 Android 開到 system_server、/data 是 f2fs、
      沒有載入 EC 模組、fwupd 沒啟動等二十多項；
    - 開機鏈測試：不給 kernel，讓韌體從映像自己的 ESP 開 systemd-boot，跑預設選項。quiet 選項沒有序列埠輸出，所以改看磁碟：
@@ -23,7 +24,7 @@
 
 - **自帶 systemd-boot 的 USB 映像**：base 階段把官方 recovery 映像轉成 GPT 映像，ESP 放 `kernel.efi`、`initrd.img` 與 loader
   entries。這個中間產物**還不能開機**（開機選項是原廠參數、initrd 的 vbmeta digest 是舊的），只給 builder 用；builder 重寫 ESP 的
-  initrd 與三個開機選項之後，才是給 UEFI 韌體開機的映像。
+  initrd 與開機選項之後，才是給 UEFI 韌體開機的映像。
 - **vbmeta 用你自己的 AVB 金鑰重簽**：vendor 改了，頂層 vbmeta 必須重簽；bootconfig 的 `androidboot.vbmeta.digest/size`
   同步更新，`androidboot.boot_part_uuid` 指向這顆碟的 boot_a。
 - **軟體 KeyMint／Gatekeeper**：KANO 沒有 pKVM protected VM，改用 `rust_nonsecure` / `gatekeeper.nonsecure` APEX。
@@ -32,9 +33,9 @@
   「drm/xe: Fix DPT allocation paths」，6.18.y 的 backport 是 `491c499295fb`），關掉 DPT 就正常。
 - **pci-stub 先於 intel-lpss 載入**（initrd 第一個模組；`pci-stub.ids=8086:51a8,8086:51a9,8086:51aa,8086:51ab`）：
   LPSS UART（序列埠）與指紋 GSPI 交給 pci-stub，intel-lpss 只接 I²C，觸控板、觸控螢幕、音效 codec 才能用，序列埠也不會被重設。
-- **三個開機選項**：quiet（預設，不輸出序列埠）、serial-debug（開發用，序列埠 + logcat 鏡像）、plain（「Googlebook KANO plain (no pci-stub, for comparison)」）。
-  quiet 與 serial-debug 只差序列埠與 log level 參數（`image.py` 會檢查）。plain 沒有 `pci-stub.ids`，LPSS UART 與指紋 GSPI 會由
-  intel-lpss-pci 接手；它保留給比對用，日常請用 quiet。
+- **兩個開機選項**：quiet（預設，不輸出序列埠）與 serial-debug（開發用，序列埠 + logcat 鏡像），只差序列埠與 log level 參數
+  （`image.py` 會檢查）。base ESP 原本的 `lapis.conf`（Google 的參數，沒有 KANO 的封鎖）會被刪掉，`image.py` 也確認 ESP 上
+  只剩這兩個選項。早期版本另有一個沒有 `pci-stub.ids` 的 plain 選項，在 KANO 上面板一直是暗的，已不再產生。
 
 ## 儲存與首次開機
 
@@ -52,7 +53,7 @@
   `sof-adl-max98373-nau8825.tplg`，加上 ADL-P 的 GPU 韌體（DMC、GuC、HuC），全部只載入 RAM、不燒錄；載入 `iwlmvm`。
   內容固定在 linux-firmware 20260810 與 sof-bin v2025.12.2，別的版本會被拒絕（`GBOS_ALLOW_FIRMWARE_DRIFT=1` 才放行，未經實機測試）。
 - **音效設定（DRAS）**：ChromeOS 官方 kano UCM（board-overlays 的 `ucm-config/sof-nau8825.kano/HiFi.conf`）是**人工翻譯**的參考來源：
-  `audio_config.xml` 的 PCM 編號與 `mixer_paths.xml` 的控制項寫在 `vendor.sh` 裡，build 時不會讀 HiFi.conf。
+  `audio_config.xml` 的 PCM 編號與 `mixer_paths.xml` 的控制項寫在 `profiles/kano/vendor.py` 裡，build 時不會讀 HiFi.conf。
   只有音量曲線從 `sof-nau8825.card_settings` 讀取並轉換。`hal_configs/audio_default.xml` 指向 `sof-nau8825`。
   官方 DSM 喇叭保護參數沒有公開，喇叭音量曲線整體降 4.75 dB（100% = -10 dB）。
 - **鍵盤背光路徑**：KANO 的 GOOG0002 在 EC 節點底下（`platform/GOOG0004:00/GOOG0002:00/leds`），idc／ueventd／genfscon

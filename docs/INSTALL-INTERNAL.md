@@ -3,7 +3,8 @@
 有兩種做法：
 
 - **安裝碟**（`install/stick/`）：在 KANO 上從隨身碟選單選「Install Googlebook to the internal disk」，確認序號後全新安裝。
-  需要帶維護系統的隨身碟，見 `install/stick/README.md`。
+  需要帶維護系統的隨身碟，見 `install/stick/README.md`。用 `install.sh` + `write-usb.sh` 做出的隨身碟**沒有**維護系統，
+  目前也沒有自動建立它的腳本（排在下一版），所以這一版的一般使用者只能從隨身碟執行。
 - **harness 遠端安裝**（下面這份紀錄）：開發機透過 ssh 操作維護系統，連隨身碟上的 /data 一起搬過去。
 
 > 這份是**開發者在 KANO 上做過一次的操作紀錄**，不是一般使用者可以照抄的安裝程式。它需要：
@@ -15,7 +16,7 @@
 流程在 `tools/harness/kano-nvme-install.sh`（需要 `--go` 才會寫入）：
 
 0. 來源是必須設定的 `KANO_NVME_SRC`（隨身碟上那個映像的建置產物目錄）。第一次連到 KANO 之前就核對全部本機輸入
-   （initrd、bootconfig、三個開機選項），清碟之前再確認來源和隨身碟 ESP 上的是同一個映像；不符就什麼都不寫。
+   （initrd、bootconfig、每個開機選項），清碟之前再確認來源和隨身碟 ESP 上的是同一個映像；不符就什麼都不寫。
 1. 從隨身碟開一個「放行 NVMe、其他封鎖不變」的維護 Linux（`initcall_blacklist` 與 `module_blacklist` 拿掉 nvme）。
 2. 備份目標碟原本的 GPT（開頭與結尾各 1 MiB）到本機，以 SHA-256 確認備份完整，失敗就停止。這只保住分割表，不是使用者資料備份。
 3. 防呆與寫入在同一次遠端執行裡完成：目標必須是 `TRAN=nvme`、PCI ID 與序號相符的內建碟，不是維護系統的根目錄碟、沒有掛載、
