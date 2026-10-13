@@ -44,7 +44,9 @@ expect "png-ok accepts the screenshots and refuses hidden payloads (tests/builde
 # the release archive builds from this checkout (git only: the release archive itself has no .git)
 if [ -f "$ROOT/tools/release/make-release.sh" ] && [ "$(git -C "$ROOT" rev-parse --show-toplevel 2> /dev/null)" = "$(cd "$ROOT" && pwd -P)" ]; then
     expect "make-release.sh builds an archive with the screenshots" 0 "googlebook-anywhere-v9.9.9.tar.gz" -- env GBOS_RELEASE_OUT="$T/rel" bash "$ROOT/tools/release/make-release.sh" v9.9.9 HEAD
-    if tar -tzf "$T/rel/googlebook-anywhere-v9.9.9.tar.gz" 2> /dev/null | grep -q "/docs/images/kano-welcome.png$"; then ok "the release archive carries docs/images"; else bad "the release archive lacks docs/images"; fi
+    # list to a file first: under pipefail, `tar | grep -q` fails with SIGPIPE (141) when grep stops reading early (GNU tar)
+    if tar -tzf "$T/rel/googlebook-anywhere-v9.9.9.tar.gz" > "$T/rel.list" 2> /dev/null && grep -q "/docs/images/kano-welcome.png$" "$T/rel.list"; then
+        ok "the release archive carries docs/images"; else bad "the release archive lacks docs/images"; fi
 fi
 # base/gbos_base.py fetch-zip: ci.android.com's signed redirect expires (300 s) while the members are fetched
 expect "fetch-zip re-resolves an expired signed URL (tests/builder/fetch-zip-test.py)" 0 "fetch-zip tests: [0-9]+ passed, 0 failed" -- python3 "$ROOT/tests/builder/fetch-zip-test.py"
