@@ -1,0 +1,2 @@
+# device -> lapis driver
+pci  0000:00:02.0  8086:46a6  class 030000  host driver xe  ->  lapis module: xe

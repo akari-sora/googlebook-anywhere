@@ -1,0 +1,12 @@
+SSID: [ssid]
+ssid=[ssid]
+mWifiInfo SSID: [ssid], BSSID: 02:00:00:00:00:01
+BSSID: 02:00:00:00:00:01
+SSID: [ssid], BSSID: 02:11:22:33:44:55
+SSID: [ssid], BSSID: 02:11:22:33:44:55
+mWifiSsid=[ssid]
+wifiSsid=[ssid]
+ConfigKey:[ssid]WPA_PSK
+<string name="SSID">[ssid]</string>
+SSID: [ssid]
+ 02:11:22:33:44:55    2412      -40   0.000  [ssid]                  [WPA2-PSK-CCMP][ESS]

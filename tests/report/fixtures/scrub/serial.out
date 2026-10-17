@@ -1,0 +1,21 @@
+[ro.serialno]: [serial]
+Serial: [serial]
+serial number: [serial]
+product_serial=[serial]
+board_serial: [serial]
+[ro.boot.serialno]: [BOOTSERIAL999]
+gpu pci: 8086:46a6
+build: CL3B.260622.271.R1
+[gsm.serial]: [serial]
+[ril.serialnumber]: [serial]
+[persist.radio.serialno]: [serial]
+mSerialNumber=[serial]
+serial number: [serial]
+U: Uniq=[serial]
+UniqueId: [display-id]
+Descriptor: [serial]
+uniqueId=[display-id]
+uniqueId="local:0"
+mUniqueId=[display-id]
+adb: device '[serial]' not found
+Uniq=001a7dda7113

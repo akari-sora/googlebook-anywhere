@@ -1,0 +1,3 @@
+Bluetooth Status
+  enabled: true
+  state: ON

@@ -5,7 +5,9 @@ usage: kano-delta-push-nvme.py <old.img> <new.img> <kano-ip> [--dry-run]
 
 Only blocks inside super, vbmeta_a and vbmeta_b are written (vendor lives in super). Changed EFI-SYSTEM blocks are
 skipped and reported: the NVMe ESP carries its own initrd (NVMe boot_part_uuid) that is updated separately. Any other
-changed block (GPT, userdata — moved on the NVMe — or another partition) makes the push refuse. --dry-run only
+changed block (GPT, userdata — moved on the NVMe — or another partition) makes the push refuse. This program does
+not scan the vendor for a TEST autooff image and does not write userdata, so it cannot create
+/data/kano-autooff.nonce. kano-nvme-update.sh scans before it calls this. --dry-run only
 compares the two images (no ssh).
 
 Before anything is written, one remote call collects the facts; the push refuses unless

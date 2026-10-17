@@ -1,0 +1,6 @@
+schema = 1
+
+[model]
+id = "kano"
+name = "Google Kano"
+status = "probe-only"

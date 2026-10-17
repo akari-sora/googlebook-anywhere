@@ -1,0 +1,13 @@
+I: Bus=0018 Vendor=06cb Product=ce92 Version=0000
+N: Name="SYNA0000:00 06CB:CE92"
+P: Phys=i2c-SYNA0000:00
+H: Handlers=event7 mouse1
+B: PROP=0
+B: EV=b
+B: KEY=e520 10000 0 0 0 0
+B: ABS=2e0800000000003
+
+I: Bus=0018 Vendor=04f3 Product=2d5b Version=0000
+N: Name="ELAN900C:00 04F3:2D5B"
+H: Handlers=event6
+B: ABS=260800000000003

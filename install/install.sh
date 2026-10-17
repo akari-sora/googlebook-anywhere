@@ -21,6 +21,10 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 die() { echo "install.sh: $*" >&2; exit 2; }
+# Developer-only. A release install never powers itself off; pass this only to builder/build.sh for a TEST image.
+if [ -n "${GBOS_TEST_AUTOOFF:-}" ]; then
+    die "GBOS_TEST_AUTOOFF is developer-only (TEST images); install.sh does not accept it"
+fi
 # the Google build and its pins (base/builds/<build>.sh; GBOS_LAPIS_BUILD selects one, default 16452207)
 LAPIS_BUILD=${GBOS_LAPIS_BUILD:-16452207}
 [[ $LAPIS_BUILD =~ ^[0-9]+$ ]] && [ -f "$ROOT/base/builds/$LAPIS_BUILD.sh" ] || die "no pins for Google build '$LAPIS_BUILD' in base/builds"
@@ -84,14 +88,19 @@ fi
 export GBOS_QEMU="$QEMU" GBOS_OVMF_CODE="${GBOS_OVMF_CODE:-}" GBOS_OVMF_VARS="${GBOS_OVMF_VARS:-}"
 [ "$SELFTEST" = 0 ] || echo "QEMU $GBOS_QEMU, OVMF $GBOS_OVMF_CODE"
 
-# content identity of source directories: names and contents of every file except Markdown documents, committed or not
+# content identity of source directories and files: names and contents of every file except Markdown documents, committed or not
 tree_digest() {
     local d
     for d in "$@"; do
-        [ -d "$d" ] || die "missing source directory $d"
-        echo "dir $d"
-        (cd "$d" && find . -type f ! -name '*.md' ! -name '*.pyc' ! -path '*/__pycache__/*' -print0 \
-            | LC_ALL=C sort -z | xargs -0 -r sha256sum) || die "cannot read $d"
+        if [ -f "$d" ]; then
+            echo "file $d"
+            sha256sum < "$d" || die "cannot read $d"
+        else
+            [ -d "$d" ] || die "missing source directory $d"
+            echo "dir $d"
+            (cd "$d" && find . -type f ! -name '*.md' ! -name '*.pyc' ! -path '*/__pycache__/*' -print0 \
+                | LC_ALL=C sort -z | xargs -0 -r sha256sum) || die "cannot read $d"
+        fi
     done | sha256sum | cut -c1-64
 }
 
@@ -175,8 +184,11 @@ if [ "$STATUS" != verified ]; then
 fi
 log "3/4 device firmware and audio configuration of the profile ($PROFILE)"
 bash "$ROOT/builder/fetch-inputs.sh" "$WORK/inputs" "$PROFILE"
-if [ "$(python3 "$ROOT/builder/lib/devprofile.py" get "$PROFILE" display.stack)" = gop-swiftshader ]; then
-    # machines without a GPU driver in this kernel (profiles/generic-x86): SwiftShader from the public Cuttlefish build
+MODEL_ID=$(python3 "$ROOT/builder/lib/devprofile.py" get "$PROFILE" model.id) || die "the device profile $PROFILE is not valid"
+DISPLAY_STACK=$(python3 "$ROOT/builder/lib/devprofile.py" get "$PROFILE" display.stack) || die "the device profile $PROFILE is not valid"
+if [ "$DISPLAY_STACK" = gop-swiftshader ] || [ "$MODEL_ID" = amd-hx370 ]; then
+    # machines with GOP framebuffer + SwiftShader (profiles/generic-x86, and amd-hx370's safe default entry):
+    # SwiftShader from the public Cuttlefish build + gbos_efifb.ko
     bash "$ROOT/builder/fetch-generic-inputs.sh" "$WORK/inputs" || die "fetching the generic display inputs failed"
 fi
 # extra kernel modules of the profile (kmods), built from pinned sources; ac = the ACPI AC adapter driver (charger shown),
@@ -224,7 +236,7 @@ log "4/4 image ($IMAGE_NAME) + QEMU self-tests (about 10 minutes)"
 # are pinned by SHA-256 in the profile (checked by builder/vendor.sh), so their paths are enough, unless
 # GBOS_ALLOW_FIRMWARE_DRIFT=1.
 if [ -n "$ADB" ]; then ADB_ID=$(sha256sum < "$ADB" | cut -c1-64) || die "cannot read $ADB"; else ADB_ID=none; fi
-SRC_ID=$(tree_digest "$ROOT/builder" "$PROFILE")
+SRC_ID=$(tree_digest "$ROOT/builder" "$ROOT/tools/mesa" "$ROOT/profiles/_safety.toml" "$PROFILE")
 BASE_SUMS=$(tr '\n' ' ' < "$B/SHA256SUMS")
 PARAMS="sources $SRC_ID
 base $BASE_SUMS
@@ -251,13 +263,35 @@ camera-overlay $(sha256sum < "$GBOS_CAMERA_OVERLAY/../SHA256SUMS" | cut -c1-64)"
 elif [ "$(python3 "$ROOT/builder/lib/devprofile.py" get "$PROFILE" camera.libcamera)" = true ]; then
     die "the profile builds the camera (camera.libcamera = true): set GBOS_CAMERA_OVERLAY to the out/vendor of builder/camera/build-libcamera.sh"
 fi
-# profiles/generic-x86: a given gbos_efifb.ko or vulkan.pastel.so instead of the pinned build and download
-for v in GBOS_GENERIC_KO GBOS_GENERIC_PASTEL; do
+# profiles/generic-x86 and profiles/amd-hx370: resolve default input paths before hashing into PARAMS (same defaults as builder/build.sh)
+if [ "$DISPLAY_STACK" = gop-swiftshader ]; then
+    export GBOS_GENERIC_PASTEL="${GBOS_GENERIC_PASTEL:-$WORK/inputs/generic/vulkan.pastel.so}"
+    [ -f "$GBOS_GENERIC_PASTEL" ] || die "this profile needs vulkan.pastel.so at $GBOS_GENERIC_PASTEL (builder/fetch-generic-inputs.sh)"
+    if [ -z "${GBOS_GENERIC_KO:-}" ] && [ -f "$WORK/inputs/generic/gbos_efifb.ko" ]; then
+        export GBOS_GENERIC_KO="$WORK/inputs/generic/gbos_efifb.ko"
+    fi
+fi
+if [ "$MODEL_ID" = amd-hx370 ]; then
+    export GBOS_RADV="${GBOS_RADV:-$WORK/inputs/amd-hx370/vulkan.radeon.so}"
+    export GBOS_RADV_PROBE="${GBOS_RADV_PROBE:-$WORK/inputs/amd-hx370/radv-probe}"
+    export GBOS_RADV_VKPROP="${GBOS_RADV_VKPROP:-$WORK/inputs/amd-hx370/libvkprop.so}"
+    export GBOS_GENERIC_PASTEL="${GBOS_GENERIC_PASTEL:-$WORK/inputs/generic/vulkan.pastel.so}"
+    export GBOS_GENERIC_KO="${GBOS_GENERIC_KO:-$WORK/inputs/generic/gbos_efifb.ko}"
+    for f in "$GBOS_RADV" "$GBOS_RADV_PROBE" "$GBOS_RADV_VKPROP" "$GBOS_GENERIC_PASTEL" "$GBOS_GENERIC_KO"; do
+        [ -f "$f" ] || die "profiles/amd-hx370 needs $(basename "$f") at $f (tools/mesa/build-radv.sh, builder/fetch-generic-inputs.sh, builder/kmod/build-gbos_efifb.sh)"
+    done
+fi
+for v in GBOS_GENERIC_KO GBOS_GENERIC_PASTEL GBOS_RADV GBOS_RADV_VKPROP GBOS_RADV_PROBE; do
     if [ -n "${!v:-}" ]; then
+        [ -f "${!v}" ] || die "cannot read ${!v}"
         PARAMS="$PARAMS
 $v $(sha256sum < "${!v}" | cut -c1-64)" || die "cannot read ${!v}"
     fi
 done
+if [ -n "${GBOS_DEV_KERNEL_DIR:-}" ]; then
+    PARAMS="$PARAMS
+GBOS_DEV_KERNEL_DIR $(tree_digest "$GBOS_DEV_KERNEL_DIR")"
+fi
 if [ -n "$KMOD_WF" ]; then
     [ -f "$KMOD_WF" ] || die "gbos_wakefilter.ko missing: $KMOD_WF (the profile lists it; it is built together with ac.ko)"
     PARAMS="$PARAMS

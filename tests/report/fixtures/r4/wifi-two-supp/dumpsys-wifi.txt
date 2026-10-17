@@ -1,0 +1,4 @@
+Wi-Fi is enabled
+curState=ConnectedState
+mWifiInfo SSID: "Synthetic", Supplicant state: COMPLETED
+mWifiInfo SSID: "Other", Supplicant state: DISCONNECTED

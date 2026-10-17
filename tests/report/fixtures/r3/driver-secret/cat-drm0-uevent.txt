@@ -1,0 +1,2 @@
+DRIVER=r3owner7f3a
+PCI_ID=8086:46a6

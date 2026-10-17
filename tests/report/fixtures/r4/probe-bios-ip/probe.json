@@ -1,0 +1,4 @@
+{
+  "dmi": {"sys_vendor": "Google", "bios_vendor": "coreboot", "bios_version": "203.0.113.44"},
+  "net": [{"name": "wlan0", "wireless": true, "address": "203.0.113.44"}]
+}

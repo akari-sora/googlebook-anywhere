@@ -3,9 +3,9 @@
 "signed" URL, and the signature is refused after a few requests (the real one expires after 300 s; counting requests
 keeps the test fast and deterministic). Each case starts a fresh server. No network: 127.0.0.1 only.
 Cases: expiry during the fetch (re-resolve and retry once); the timed refresh (GBOS_FETCH_REFRESH=0) whose re-resolve
-fails keeps the still-valid signed URL; a size change between resolves stops; 404/500 are not retried; a signature
-that is refused for good stops after one re-resolve; a stored member larger than one 32 MiB range survives an expiry
-in its second range."""
+fails (500, 200 without Content-Range, or HTTPException) keeps the still-valid signed URL; a size change between resolves
+stops; 404/500 are not retried; a signature that is refused for good stops after one re-resolve; stored and deflated
+members larger than one 32 MiB range survive an expiry in their second range."""
 import hashlib
 import http.server
 import io
@@ -31,18 +31,20 @@ def check(name, ok, detail=""):
         print("FAIL " + name + (": " + detail if detail else ""))
 
 
-def make_zip(members):
+def make_zip(members, compress=None):
     buf = io.BytesIO()
-    with zipfile.ZipFile(buf, "w") as z:
+    with zipfile.ZipFile(buf, "w", compresslevel=1) as z:
         for i, (name, data) in enumerate(members.items()):
-            z.writestr(name, data, compress_type=zipfile.ZIP_DEFLATED if i % 2 else zipfile.ZIP_STORED)
+            ctype = (zipfile.ZIP_DEFLATED if i % 2 else zipfile.ZIP_STORED) if compress is None else compress
+            z.writestr(name, data, compress_type=ctype)
     return buf.getvalue(), {n: hashlib.sha256(d).hexdigest() for n, d in members.items()}
 
 
 class Server:
-    """mode: uses = requests one signature is good for; resolve_fail_after = resolves after which the build URL answers
-    500; grow_after = resolves after which the object is one byte longer; data_status = HTTP status for every data read;
-    refuse_all = every signed request after the first resolve is refused."""
+    """mode: uses = requests one signature is good for; resolve_fail_after = resolves after which the build URL fails
+    (resolve_fail = 500 | "200" without Content-Range | "bad_http"); grow_after = resolves after which the object is one
+    byte longer; data_status = HTTP status for every data read; refuse_all = every signed request after the first resolve
+    is refused."""
 
     def __init__(self, blob, **mode):
         self.blob, self.mode = blob, mode
@@ -65,7 +67,16 @@ class Server:
         if h.path == "/build/otatools.zip":
             self.resolves += 1
             if m.get("resolve_fail_after") is not None and self.resolves > m["resolve_fail_after"]:
-                h.send_error(500, "backend error")
+                fail = m.get("resolve_fail", 500)
+                if fail == "200":
+                    h.send_response(200)
+                    h.send_header("Content-Length", "2")
+                    h.end_headers()
+                    h.wfile.write(b"ok")
+                elif fail == "bad_http":
+                    h.wfile.write(b"NOT-HTTP\r\n\r\n")
+                else:
+                    h.send_error(fail, "backend error")
                 return
             self.token += 1
             self.left = m.get("uses", 1000)
@@ -85,14 +96,12 @@ class Server:
             self.log.append((tok, a, b, 400))
             h.send_error(400, "ExpiredToken")
             return
-        valid_old = m.get("old_stays_valid") and tok < self.token
-        if not valid_old and (tok != self.token or self.left <= 0):
+        if tok != self.token or self.left <= 0:
             self.refused += 1
             self.log.append((tok, a, b, 400))
             h.send_error(400, "ExpiredToken")
             return
-        if not valid_old:
-            self.left -= 1
+        self.left -= 1
         if not is_probe:
             self.data_reads += 1
             if m.get("data_status"):
@@ -133,11 +142,13 @@ check("expiry during the fetch: the server really refused and the URL was re-res
       f"refused={s.refused} resolves={s.resolves}")
 s.close()
 
-s = Server(blob, resolve_fail_after=1, old_stays_valid=True)
-r, good = fetch(s, sums, {"GBOS_FETCH_REFRESH": "0"})
-check("timed refresh whose re-resolve fails keeps the still-valid signed URL", r.returncode == 0 and good and s.resolves >= 2,
-      f"rc={r.returncode} resolves={s.resolves} {r.stderr.strip()[-200:]}")
-s.close()
+for label, fail in (("HTTP 500", 500), ("200 without Content-Range", "200"), ("HTTPException", "bad_http")):
+    s = Server(blob, resolve_fail_after=1, resolve_fail=fail)
+    r, good = fetch(s, sums, {"GBOS_FETCH_REFRESH": "0"})
+    check(f"timed refresh whose re-resolve fails ({label}) keeps the still-valid signed URL",
+          r.returncode == 0 and good and s.resolves >= 2 and all(t == 1 for t, _, _, _ in s.log),
+          f"rc={r.returncode} resolves={s.resolves} {r.stderr.strip()[-200:]}")
+    s.close()
 
 s = Server(blob, uses=3, grow_after=1)
 r, good = fetch(s, sums)
@@ -147,7 +158,8 @@ s.close()
 for status in (404, 500):
     s = Server(blob, data_status=status)
     r, good = fetch(s, sums)
-    check(f"HTTP {status} on data is not retried", r.returncode != 0 and s.resolves == 1, f"rc={r.returncode} resolves={s.resolves}")
+    check(f"HTTP {status} on data is not retried", r.returncode != 0 and s.resolves == 1 and s.data_reads == 1,
+          f"rc={r.returncode} resolves={s.resolves} data_reads={s.data_reads}")
     s.close()
 
 s = Server(blob, refuse_all=True)
@@ -155,17 +167,19 @@ r, good = fetch(s, sums)
 check("a signature refused for good stops after one re-resolve", r.returncode != 0 and s.resolves == 2, f"rc={r.returncode} resolves={s.resolves}")
 s.close()
 
-big = {"bin/big-stored": os.urandom((32 << 20) + 300_000)}
-bblob, bsums = make_zip(big)
-s = Server(bblob, uses=5)      # resolve probe, tail, central dir, local header, 1st range -> the 2nd range is refused
-r, good = fetch(s, bsums)
-refused = [(a, b) for t, a, b, c in s.log if c == 400]
-first = [(a, b) for t, a, b, c in s.log if c == 206 and t == 1 and b - a + 1 == 32 << 20]
-check("a stored member larger than one 32 MiB range survives an expiry in its second range",
-      r.returncode == 0 and good and s.resolves == 2 and len(first) == 1 and len(refused) == 1
-      and refused[0][0] == first[0][1] + 1 and (2, *refused[0], 206) in s.log,
-      f"rc={r.returncode} resolves={s.resolves} log={[(t, a, b, c) for t, a, b, c in s.log if b - a > 0]} {r.stderr.strip()[-200:]}")
-s.close()
+raw_big = os.urandom((32 << 20) + 300_000)
+for kind, ctype, data in (("stored", zipfile.ZIP_STORED, raw_big),
+                          ("deflated", zipfile.ZIP_DEFLATED, raw_big + b"gbos" * 25_000)):
+    bblob, bsums = make_zip({f"bin/big-{kind}": data}, compress=ctype)
+    s = Server(bblob, uses=5)      # resolve probe, tail, central dir, local header, 1st range -> the 2nd range is refused
+    r, good = fetch(s, bsums)
+    refused = [(a, b) for t, a, b, c in s.log if c == 400]
+    first = [(a, b) for t, a, b, c in s.log if c == 206 and t == 1 and b - a + 1 == 32 << 20]
+    check(f"a {kind} member larger than one 32 MiB range survives an expiry in its second range",
+          r.returncode == 0 and good and s.resolves == 2 and len(first) == 1 and len(refused) == 1
+          and refused[0][0] == first[0][1] + 1 and (2, *refused[0], 206) in s.log,
+          f"rc={r.returncode} resolves={s.resolves} log={[(t, a, b, c) for t, a, b, c in s.log if b - a > 0]} {r.stderr.strip()[-200:]}")
+    s.close()
 
 print(f"fetch-zip tests: {passed} passed, {failed} failed")
 sys.exit(1 if failed else 0)

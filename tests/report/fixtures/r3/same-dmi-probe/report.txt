@@ -1,0 +1,1 @@
+firmware: coreboot; UEFI no, Secure Boot on

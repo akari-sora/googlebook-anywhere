@@ -1,0 +1,31 @@
+gbos-report 20261014
+tool: install/gbos-report.sh (read-only allowlist; no install, no settings change, no file push)
+privacy: the default report contains only allowlisted fields and no free text. Values are integers, fixed hex ids (PCI, USB vid:pid), enumerations (a known driver, or other plus that PCI or USB id; a known vendor or other; CPU vendor; wlan0-wlan9, eth0-eth9, hci0-hci99, card0-card99, or renderD0-renderD999, with no leading zero; on/off/connected/disconnected/unknown), and version strings this project ships (Googlebook profile id and status, the build id this project ships, a kernel release only when it exactly equals a pinned image kernel). Set GBOS_DEV_KERNEL_DIR to a kernel tree. When the running release equals that tree's include/config/kernel.release, the report says dev-kernel. When .config is a regular file, config pass means its sha256 equals the pinned GKI config, and config fail means it does not. The dev release string is never printed. Model names, BIOS versions, and any other interface name are not included; type those in the issue. Raw dumpsys/logcat output is not included. A missing value or a value that fails its check is "unknown". This script does not attach raw logs; ask the person directly if one is needed.
+redactions: 0
+note: a recognized device is not proof that audio, touch, Wi-Fi, or suspend works. Read both files before pasting.
+sources: fixture, probe
+
+running profile: unknown (no image marker) [—]
+draft profile: kano (probe-only) [probe]
+model: Google [fixture]
+board: Google [fixture]
+firmware: coreboot [fixture]
+firmware flags: UEFI yes, Secure Boot off [probe]
+build: CL3B.260622.271.R1 [fixture]
+kernel: other [fixture]
+display/gpu: bound (xe) [fixture]
+gpu pci: 8086:46a6 [fixture]
+drm cards: card0 driver xe pci 8086:46a6 real-gpu [fixture]
+cpu: GenuineIntel family 6 model 154 stepping 3 [fixture]
+sound card: unknown [fixture]
+wifi: connected, driver iwlwifi [fixture]
+bluetooth: on, driver btusb [fixture]
+input: touchpad: 04f3:323c (i2c); touchscreen: 04f3:2d5b (i2c) [fixture]
+sleep/resume: success 4, fail 1 [fixture]
+dri nodes: card0 renderD128 [fixture]
+live linux gpu: 8086:46a6 xe [probe]
+live linux sound: unknown [probe]
+live linux wifi: probe saw wlan0 (no link state) [probe]
+live linux bluetooth: probe saw hci0 (no power state) [probe]
+live linux input: touchpad: 04f3:323c; touchscreen: 04f3:2d5b [probe]
+compare: agree: DMI, CPU, PCI [fixture+probe]

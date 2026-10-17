@@ -1,4 +1,4 @@
-# generic-x86: any x86-64 UEFI machine whose GPU has no driver in the Googlebook kernel (AMD, older Intel, QEMU).
+# generic-x86: any x86-64 UEFI machine whose GPU has no driver in the Googlebook kernel (for example AMD, QEMU; CPU: Intel 12th gen / AMD Zen 5 or newer, see docs/COMPATIBILITY.en.md "Minimum CPU").
 # EXPERIMENTAL. Display through the firmware's GOP framebuffer (builder/kmod/gbos_efifb.c) and SwiftShader (CPU Vulkan,
 # from the public Cuttlefish build; builder/fetch-generic-inputs.sh): no GPU acceleration, no device firmware, no audio
 # configuration, no machine-specific Wi-Fi. Verified in QEMU only (research/amd/PLAN.md section 8).

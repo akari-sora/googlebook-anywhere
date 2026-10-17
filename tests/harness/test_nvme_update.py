@@ -1,7 +1,14 @@
 """kano-nvme-update.sh against the fake KANO. It runs from a copy of the harness in which the sibling kano-boot.sh
 (EC power cycle + boot menu over the AP UART) is a logging fake; one test also replaces the NVMe watcher."""
-import hashlib, json, shutil, struct, unittest
-from helpers import BOOT_A_GUID, MiB, HarnessCase, harness_copy, initrd, make_disk, make_images
+import hashlib, importlib.util, json, shutil, struct, unittest
+from helpers import BOOT_A_GUID, HARNESS, MiB, HarnessCase, harness_copy, initrd, make_disk, make_images
+
+
+def autooff_mod():
+    spec = importlib.util.spec_from_file_location("kano_autooff_image", HARNESS / "kano-autooff-image.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
 
 ARCHIVE = b"INITRD-ARCHIVE" * 64
 
@@ -33,6 +40,7 @@ class Update(HarnessCase):
         self.runs.mkdir(parents=True)
         (self.runs / "ap-uart.log").write_text("... reboot: Power down\n")
         self.adb({"init.svc.kano_bootfix": "stopped", "sys.boot_completed": "1"})
+        autooff_mod().write_vendor_fixture(self.work / "kano-final2" / "kano-final2.img", ["etc/placeholder"])
 
     def adb(self, props, connect=True):
         self.fk.set("adb.json", json.dumps({"connect": connect, "props": props}))
@@ -67,7 +75,11 @@ class Update(HarnessCase):
         self.assertTrue((self.out / "run.log.prev").exists())
 
     def test_dry_run_refusal_stops_everything(self):
-        make_disk(self.work / "kano-final2/kano-final2.img", 16 * MiB, [(2, "super", 5, 10)])
+        img = self.work / "kano-final2/kano-final2.img"
+        make_disk(img, 16 * MiB, [(2, "super", 5, 10)])
+        # The scan runs before the dry run. A layout the delta tool will refuse still needs a
+        # readable clean vendor, including the empty vendor_b a normal super carries.
+        autooff_mod().write_vendor_fixture(img, ["etc/placeholder"])
         r = self.update()
         self.assert_no_push(r, "dry run refused")
         self.assertEqual(self.fk.ssh_calls(), [])
@@ -134,6 +146,60 @@ class Update(HarnessCase):
         after = self.adb_log()[[i for i, l in enumerate(self.adb_log()) if "reboot -p" in l][-1] + 1:]
         self.assertTrue(after)
         self.assertEqual([l for l in after if " shell " in l and "getprop init.svc.kano_bootfix" not in l], [], after)
+
+    def test_the_push_is_scanned_again_immediately_before_the_writer(self):
+        text = (HARNESS / "kano-nvme-update.sh").read_text()
+        first = text.index('> "$OUT/autooff.txt"')
+        again = text.index('> "$OUT/autooff-push.txt"')
+        push = text.index('python3 "$HERE/kano-delta-push-nvme.py" "$OLDIMG" "$NEWIMG" "$KANO_IP" >')
+        self.assertLess(first, again)
+        self.assertLess(again, push)
+        between = text[again:push]
+        self.assertIn("vendor clean", between)
+        self.assertNotIn("kano-ssh", between)
+        self.assertNotIn("adb", between)
+
+    def test_refuses_test_super_before_any_write(self):
+        autooff_mod().write_vendor_fixture(
+            self.work / "kano-final2" / "kano-final2.img",
+            ["etc/kano-autooff.nonce", "etc/init/kano-autooff.rc"],
+        )
+        r = self.update()
+        self.assert_no_push(r, "etc/kano-autooff.nonce")
+        self.reason("etc/init/kano-autooff.rc", r.stdout + r.stderr)
+        self.assertEqual(self.fk.ssh_calls(), [])
+        self.assertEqual(self.adb_log(), [])
+        self.assertFalse((self.out / "dryrun.txt").exists())
+
+    def test_delta_writer_refuses_userdata_without_writing(self):
+        # kano-delta-push-nvme.py writes super and vbmeta only. A changed userdata block is refused
+        # before ssh, and this tool never creates /data/kano-autooff.nonce.
+        img = self.work / "kano-final2" / "kano-final2.img"
+        raw = bytearray(img.read_bytes())
+        raw[12 * MiB] ^= 0x5A
+        img.write_bytes(raw)
+        old = self.work / "kano-final1" / "kano-final1.img"
+        r = self.fk.run(
+            ["python3", str(HARNESS / "kano-delta-push-nvme.py"), str(old), str(img), "192.0.2.10"],
+            timeout=180,
+        )
+        self.assertNotEqual(r.returncode, 0, self.explain(r))
+        self.reason("userdata", r.stdout + r.stderr)
+        self.assertNotIn("dd of=", self.fk.sent())
+        self.assertEqual(self.fk.writes(), [])
+
+    def test_second_scan_sees_a_vendor_swapped_after_the_dry_run(self):
+        new = self.work / "kano-final2" / "kano-final2.img"
+        swapped = self.fk.tmp / "swapped.img"
+        shutil.copy(new, swapped)
+        autooff_mod().write_vendor_fixture(swapped, ["etc/kano-autooff.nonce"])
+        self.fk.rules([{"when": "NVMe partition 13 is", "once": True,
+                        "host_copy": {str(swapped): str(new)}}])
+        r = self.update()
+        self.assertNotEqual(r.returncode, 0, self.explain(r))
+        self.reason("etc/kano-autooff.nonce", r.stdout + r.stderr)
+        self.assertFalse((self.out / "push.txt").exists(), self.explain(r))
+        self.assertEqual(self.fk.writes(), [])
 
     def test_unreadable_swaps_is_not_idle(self):
         self.fk.rules([{"when": "NVME_ID_OK", "remove": ["proc/swaps"]}])

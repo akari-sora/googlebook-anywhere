@@ -14,10 +14,11 @@
    更新 ESP initrd 的 bootconfig。
 4. `builder/image.py`：ESP 的 initrd 與兩個開機選項（quiet、serial-debug；vendor_boot 的原廠參數＋機型設定＋`profiles/_safety.toml`，由
    `builder/lib/devprofile.py` 組合），然後兩個 QEMU 自我測試：
-   - 功能測試：直接把 kernel、initrd 與 serial-debug 的參數交給 QEMU，從序列埠紀錄檢查 Android 開到 system_server、/data 是 f2fs、
-     沒有載入 EC 模組、fwupd 沒啟動等二十多項；
-   - 開機鏈測試：不給 kernel，讓韌體從映像自己的 ESP 開 systemd-boot，跑預設選項。quiet 選項沒有序列埠輸出，所以改看磁碟：
-     QEMU 在時限結束時仍在執行、整顆隨身碟累計寫入 16 MiB 以上，而且最高的寫入位置落在 userdata 內（只有 Android 掛上 /data 才會寫到那裡）。
+   - 功能測試：把 kernel、initrd 交給 QEMU，但先拿掉 debug 選項裡的 `console=`／`earlycon=`，改成 COM1 的
+     `console=ttyS0` 與 I/O `earlycon`。QEMU 沒有 KANO 的 MMIO UART。這是 Android 功能測試，不是原樣 debug 開機，也不能代替實機 UART。
+   - 開機鏈測試：不給 kernel，讓韌體從映像自己的 ESP 開 systemd-boot，跑預設選項，選項不做改寫。只在預設是 quiet 時跑。
+     quiet 沒有序列埠輸出，所以改看磁碟：QEMU 在時限結束時仍在執行、整顆隨身碟累計寫入 16 MiB 以上，而且最高的寫入位置落在 userdata 內
+     （只有 Android 掛上 /data 才會寫到那裡）。
    全部通過才把 `<name>.partial` 改名成正式檔名。
 
 ## 開機與顯示
@@ -33,9 +34,12 @@
   「drm/xe: Fix DPT allocation paths」，6.18.y 的 backport 是 `491c499295fb`），關掉 DPT 就正常。
 - **pci-stub 先於 intel-lpss 載入**（initrd 第一個模組；`pci-stub.ids=8086:51a8,8086:51a9,8086:51aa,8086:51ab`）：
   LPSS UART（序列埠）與指紋 GSPI 交給 pci-stub，intel-lpss 只接 I²C，觸控板、觸控螢幕、音效 codec 才能用，序列埠也不會被重設。
-- **兩個開機選項**：quiet（預設，不輸出序列埠）與 serial-debug（開發用，序列埠 + logcat 鏡像），只差序列埠與 log level 參數
-  （`image.py` 會檢查）。base ESP 原本的 `lapis.conf`（Google 的參數，沒有 KANO 的封鎖）會被刪掉，`image.py` 也確認 ESP 上
-  只剩這兩個選項。早期版本另有一個沒有 `pci-stub.ids` 的 plain 選項，在 KANO 上面板一直是暗的，已不再產生。
+- **兩個開機選項**：quiet（預設，不輸出序列埠）與 serial-debug（開發用）。serial-debug 留在 UART 上的是
+  `earlycon=uart8250,mmio32,0xfe03e000,115200n8` 加上 `keep_bootcon`（printk 的 bootconsole，不是可登入的 tty）；
+  `console=ttyS0`／`ttyS4`／`uart8250` 沒有放回去。quiet 本來就沒有這三個 `console=`。兩邊還差 log level。
+  `image.py` 會檢查命令列長度（lapis 的 x86 上限再扣 64 bytes，給 harness 附加除錯參數）。base ESP 原本的 `lapis.conf`
+  （Google 的參數，沒有 KANO 的封鎖）會被刪掉，`image.py` 也確認 ESP 上只剩這兩個選項。早期版本另有一個沒有 `pci-stub.ids`
+  的 plain 選項，在 KANO 上面板一直是暗的，已不再產生。
 
 ## 儲存與首次開機
 
@@ -49,8 +53,8 @@
 
 ## 硬體
 
-- **Wi-Fi／藍牙／音效韌體**：AX211（`iwlwifi-so-a0-gf-a0-89`、pnvm、`ibt-0040-0041`）、SOF `sof-adl.ri` 與
-  `sof-adl-max98373-nau8825.tplg`，加上 ADL-P 的 GPU 韌體（DMC、GuC、HuC），全部只載入 RAM、不燒錄；載入 `iwlmvm`。
+- **Wi-Fi／藍牙／音效韌體**：AX211（`iwlwifi-so-a0-gf-a0-89`、pnvm、`ibt-0040-0041`）、SOF `sof-adl.ri`／`sof-rpl.ri` 與
+  `sof-adl-max98373-nau8825.tplg`／`sof-rpl-max98373-nau8825.tplg`，加上 ADL-P／RPL-P 共用的 GPU 韌體（DMC、GuC、HuC），全部只載入 RAM、不燒錄；載入 `iwlmvm`。
   內容固定在 linux-firmware 20260810 與 sof-bin v2025.12.2，別的版本會被拒絕（`GBOS_ALLOW_FIRMWARE_DRIFT=1` 才放行，未經實機測試）。
 - **音效設定（DRAS）**：ChromeOS 官方 kano UCM（board-overlays 的 `ucm-config/sof-nau8825.kano/HiFi.conf`）是**人工翻譯**的參考來源：
   `audio_config.xml` 的 PCM 編號與 `mixer_paths.xml` 的控制項寫在 `profiles/kano/vendor.py` 裡，build 時不會讀 HiFi.conf。
@@ -71,3 +75,15 @@
 - `kano_wifi`：只有 `/data/kano-wifi.conf` 存在時才連線（開發用維護系統寫入）。
 - vendor build.prop 的 `ro.debuggable=1`：這一行實際上沒有生效，KANO 實機讀到的是 `ro.debuggable=0`（見 SAFETY.md）。
 - `kano_adb`：只有 build 時提供 `GBOS_ADB_PUBKEY` 才會包含（金鑰驗證的 TCP 5555 adb）。
+
+`kano_autooff` 不在上面這份清單。只有開發者的 TEST 映像（`GBOS_TEST_AUTOOFF`＝60..7200 秒）才會放進這個服務。它要斷電，`/vendor` 裡的 nonce 和 `/data/kano-autooff.nonce` 必須都在，而且是同一份 33 bytes。`/data` 那一份只由這次硬體 session 寫到已核對身份的 USB 隨身碟 userdata，用完就刪。沒有這份檔，碟上即使有 TEST vendor 也只會 staying on（QEMU 自我測試就是這個情況：`image.py` 的 `autooff_log_checks` 要求出現 `nonce gate closed, staying on`，而且同一份 log 不能有 `powering off`）。
+
+斷電只能靠 `/data` 上的 nonce。會把隨身碟的 userdata 複製到內建碟的，只有 `tools/harness/kano-nvme-install.sh`。這條路的安全保證是：複製並掛上之後清掉 `kano-autooff.nonce`（一般檔、符號連結或目錄）。一般檔與符號連結用 `rm -f`，不跟隨符號連結。目錄在同一個遠端 python3 裡刪除：`os.lstat` 必須是真目錄而不是符號連結，`shutil.rmtree.avoids_symlink_attacks` 必須為真，`rmtree` 的錯誤會讓 helper 非 0；檔名不經過文字紀錄。卸載後再以唯讀重新掛上，同一個名字的 `lstat` 必須是 ENOENT，然後再卸載。掛載失敗、根目錄列不出來、查找錯誤（errno 不是 ENOENT）、刪不掉、重新掛載失敗、複查失敗或任一次卸載失敗，就以非 0 停止，不再 `resize.f2fs`、`fsck.f2fs`，也不再寫 ESP。只有 ENOENT 算這個名字不存在。任何 lstat 發生 ENOENT 以外的查找錯誤就停止；刪除後及重新掛載後的確認，必須得到 ENOENT，成功查到任何物件也停止。`dd` 完成之後、這次清除成功之前的任何停止（行程被殺掉、斷電、ssh 中斷）都可能留下檔案；清除失敗則不會繼續。之後只更新 super 的路不會清掉已經留下的 nonce。vendor 掃描是縱深防禦：寫入前拒絕解析得到 `etc/kano-autooff.nonce` 或 `etc/init/kano-autooff.rc` 的映像，讓 TEST 服務不要留在日常碟上。`blkdiscard` 前先確認 `/dev/sda1` 的 PARTLABEL 是 `userdata`，再以 `-o ro` 掛上；f2fs 即使唯讀掛載仍可能把先前的 fsync 補完。已有一般檔、符號連結或目錄 `kano-autooff.nonce`，或列出根目錄／`lstat` 失敗（不是 ENOENT），就拒絕。這個 repo 沒有寫 session nonce 的程式。
+
+只寫 super 或開機分割、因此建不出 `/data` nonce 的路，不會因為裝上 TEST vendor 就斷電：`kano-nvme-update.sh` 在推送前會拒絕 TEST，但它不清 userdata；直接呼叫的 `kano-delta-push-nvme.py` 只寫 super 與 vbmeta_a/b（userdata 有變動就拒絕），不掃描 vendor。安裝碟的更新走 `gbos-update.py apply`：寫入的是目標 slot、super 裡的動態分割、LP metadata，以及 ESP 選單。`guard_ranges` 把 userdata 列進不可寫範圍，`pwrite` 碰到就拒絕。`rollback` 只改 ESP 的 loader 項目，不寫 userdata。`NEVER` 那一行是說明，擋住寫入的是上述範圍。安裝碟的全新安裝把內建碟的 userdata 建成新的，開頭 16 MiB 寫零，不複製隨身碟的 userdata。`install.sh` 與 `docker-install.sh` 不寫內建碟，它們在建置 USB 映像之前拒絕這個開關。`install/update.sh` 先呼叫 `install.sh`；若帶了 `--disk`，接著 `exec sudo install/write-usb.sh --keep-data`，目標是 USB 隨身碟，不是內建 NVMe。
+
+Build 產生一組新的 128-bit nonce：32 個小寫十六進位再加一個 LF，共 33 bytes。同一份放進映像的 `/vendor/etc/kano-autooff.nonce`（mode 0444）以及 `<out>/image/autooff.nonce`（給這次 session 讀）。沒有這個開關時，這兩個檔案和服務都不存在。
+
+開機腳本把兩個檔案當原始位元組讀。只有兩邊都是一般檔（不是符號連結）、都是那 33 bytes、而且逐 byte 相同，才開始等。等滿 N 秒（`sleep` 必須成功，而且 `/proc/uptime` 至少前進 N 秒）之後、斷電前再讀一次、再比一次，通過才執行一次 `reboot -p`。`/proc/uptime` 是 `CLOCK_BOOTTIME`（含 s2idle／S0ix 的時間）；`sleep` 用的 `CLOCK_MONOTONIC` 在休眠時暫停。正常睡滿 N 秒時，boottime 的增量不會小於 monotonic，閘門仍會過。缺檔、讀取失敗、長度不對、NUL、CR、多出來的位元組、大寫、兩邊不同，都在 kmsg 記 staying on 並以 exit 0 結束。符號連結即使指到正確內容也保持開機：`/data` 上的連結可以指回 vendor 檔或指到別顆碟。硬連結跨不過唯讀的 vendor erofs 與 userdata 的 f2fs，所以不能用連結把 vendor nonce 掛到 `/data`。
+
+`/data/kano-autooff.nonce` 不在映像裡。和 `/data/kano-wifi.conf` 一樣，由這次 TEST 開機前的 session（維護系統）寫到**已核對身份的 USB 隨身碟** userdata（`install/write-usb.sh` 的目標是 `/dev/disk/by-id/usb-...`），而且必須是一般檔：內容是該次 build 的 `<out>/image/autooff.nonce` 原始 33 bytes。用完立刻刪掉。不要寫到內建 NVMe 的 userdata。不要把 TEST 映像裝成內建系統。若這些檢查不在，留下檔案再跑 harness 安裝會讓內建碟同時得到服務與 nonce，之後每次開機都會斷電；`kano-nvme-update.sh` 只推 super／vbmeta，不會清掉那個檔。目前 `kano-nvme-install.sh` 用 vendor 掃描當縱深防禦，在 `blkdiscard` 前確認 `sda1` 是 userdata 再以 `-o ro` 掛上並拒絕已有的 nonce，並在卸載複製過來的 userdata 之前清掉 `kano-autooff.nonce`（一般檔、符號連結或目錄；目錄由 python3 的 `shutil.rmtree` 刪除，不把檔名交回 shell）。卸載後再唯讀掛上複查，名字必須是 ENOENT，然後再卸載。那次清除或複查失敗（含查找錯誤（errno 不是 ENOENT），或確認時成功查到任何物件）就停止，不再 `resize.f2fs`、`fsck.f2fs`，也不再寫 ESP。`dd` 完成之後、清除成功之前的任何停止（行程被殺掉、斷電、ssh 中斷）都可能留下檔案。這一步才是這條複製路的安全保證。QEMU 沒有這份 `/data` 檔，自我測試會 staying on。

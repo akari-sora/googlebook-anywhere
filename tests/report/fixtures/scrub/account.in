@@ -1,0 +1,6 @@
+Account {name=Ada Lovelace, type=com.google}
+account name: Ada Lovelace
+type=com.google
+accountName=AdaLovelace
+identity="SYNTH_EAP_777"
+Account[name=AdaLovelace]

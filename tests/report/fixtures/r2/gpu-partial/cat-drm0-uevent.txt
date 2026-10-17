@@ -1,0 +1,2 @@
+DRIVER=vkms
+PCI_ID=1234:5678

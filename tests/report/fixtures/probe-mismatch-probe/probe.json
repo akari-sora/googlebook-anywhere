@@ -1,0 +1,23 @@
+{
+  "audio": {"card_ids": ["live-linux-only-sound"]},
+  "bluetooth": [{"device": "0000:00:14.3", "name": "hci0"}],
+  "cpu": {
+    "cpu family": "6",
+    "model": "1",
+    "model name": "Other CPU Name",
+    "stepping": "1",
+    "vendor_id": "GenuineIntel"
+  },
+  "dmi": {
+    "bios_date": "2020-01-01",
+    "bios_vendor": "OtherBIOS",
+    "bios_version": "1.0",
+    "board_name": "Laptop",
+    "board_vendor": "Other",
+    "product_name": "Laptop",
+    "sys_vendor": "Other"
+  },
+  "input": [{"kind": "touchpad", "name": "OtherPad 1234:5678"}],
+  "net": [{"name": "wlan0", "wireless": true}],
+  "pci": [{"class": "030000", "driver": "amdgpu", "id": "1002:1638", "slot": "0000:00:02.0"}]
+}

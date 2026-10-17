@@ -1,0 +1,3 @@
+[ro.serialno]: [SYNTHFIXED001]
+[ro.build.display.id]: [CL3B.260622.271.R1]
+[ro.build.id]: [16452207]

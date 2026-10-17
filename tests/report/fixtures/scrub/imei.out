@@ -1,0 +1,7 @@
+[gsm.imei]: [imei]
+IMEI: [imei]
+MEID: [imei]
+keep: 123456789012345
+build: 16452207
+[persist.radio.meid]: [imei]
+[ril.cdma.meid]: [imei]

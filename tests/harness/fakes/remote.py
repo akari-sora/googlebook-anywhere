@@ -6,10 +6,16 @@ State lives under $FAKE_ROOT:
   disks/<name>/<COLUMN>   what `lsblk -o COLUMN /dev/<name>` prints (TRAN, SERIAL, SIZE, PKNAME, PARTLABEL, ...)
   sgdisk/<name>/p, i<N>   what `sgdisk -p` / `sgdisk -i N` print
   proc/self/mounts        mount table read by findmnt and the scripts
-  faults.json             {"fail": ["tool", ...], "dd_write_exit": N}
+  faults.json             {"fail": ["tool", ...], "dd_write_exit": N,
+                           "fail_mount": ["substring", ...], "unreadable_mount": ["substring", ...],
+                           "rm_exit": N, "rm_eio": true, "rm_keep": true, "rm_error_after": true,
+                           "fail_umount": ["/mnt/ud"], "fail_umount_nth": {"/mnt/ud": 2},
+                           "plant_nonce_on_ro_remount": true}
+EIO on os.lstat / os.listdir is not handled here. fakes/pyfault/sitecustomize.py reads the same
+faults.json keys eio_lstat, eio_lstat_nth, and eio_listdir for the install script's python3 -c.
 Logs: log/calls.log (every call), log/destructive.log (writes to a /dev target, blkdiscard, sgdisk changes).
 """
-import hashlib, json, os, sys
+import hashlib, json, os, re, shutil, sys
 from pathlib import Path
 
 R = Path(os.environ["FAKE_ROOT"])
@@ -145,6 +151,22 @@ def sgdisk():
                 or (len(opts) == 2 and opts[0] == "-A" and opts[1].endswith(":show")))
     if not readonly:
         note("destructive.log", "SGDISK " + " ".join(ARGS))
+        # The install rewrites p1 to 1:37246976:0. This 24 MiB disk cannot hold that
+        # LBA, so the fake answer moves from the initial 24576/6144 to 30720/8192
+        # (15 MiB, 4 MiB). 8192 >= the old 6144, so the happy path's new p1 is long
+        # enough for the userdata copy. The script's OLD_START and NEW_START then
+        # differ, and the kernel node is checked against the new start and length.
+        # FAULTS["nvme_p1_new_sectors"] forces a shorter new p1 for the refuse test.
+        if dev == "nvme0n1" and any("1:37246976:0" in a for a in opts):
+            f = R / "sgdisk" / dev / "i1"
+            if f.exists():
+                text = f.read_text()
+                new_sectors = int(FAULTS.get("nvme_p1_new_sectors", 8192))
+                text, n1 = re.subn(r"(?m)^First sector: [0-9]+", "First sector: 30720", text, count=1)
+                text, n2 = re.subn(r"(?m)^Partition size: [0-9]+ sectors",
+                                   f"Partition size: {new_sectors} sectors", text, count=1)
+                if n1 == 1 and n2 == 1:
+                    f.write_text(text)
         return
     if "-p" in opts:
         f = R / "sgdisk" / dev / "p"
@@ -167,15 +189,110 @@ def blockdev():
 
 
 def mount():
+    blob = " ".join(ARGS)
+    for needle in FAULTS.get("fail_mount", []):
+        if needle in blob:
+            print("mount: injected failure", file=sys.stderr)
+            sys.exit(32)
     src, mp = [a for a in ARGS if not a.startswith("-") and a != "f2fs"][-2:]
     with open(R / "proc" / "self" / "mounts", "a") as f:
         f.write(f"{src} {unfake(mp)} auto rw 0 0\n")
+    for needle in FAULTS.get("unreadable_mount", []):
+        if needle in blob:
+            # Mode 000 fails -r/-x for a normal user. Root still passes those checks, so
+            # replace the mountpoint with a non-directory and fail -d as well.
+            if hasattr(os, "geteuid") and os.geteuid() == 0:
+                if os.path.isdir(mp) and not os.path.islink(mp):
+                    os.rmdir(mp)
+                Path(mp).write_text("not-a-directory")
+            else:
+                os.chmod(mp, 0)
+    if FAULTS.get("plant_nonce_on_ro_remount") and "-o" in ARGS and "ro" in ARGS and "f2fs" in ARGS:
+        if unfake(mp).rstrip("/") == "/mnt/ud":
+            Path(mp, "kano-autooff.nonce").write_text("still-here\n")
+
+
+def _bump(name, key):
+    path = LOGDIR / name
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, ValueError):
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+    data[key] = int(data.get(key, 0)) + 1
+    path.write_text(json.dumps(data))
+    return data[key]
+
+
+def rm():
+    if FAULTS.get("rm_eio"):
+        print("rm: Input/output error", file=sys.stderr)
+        sys.exit(1)
+    if FAULTS.get("rm_keep"):
+        return
+    if FAULTS.get("rm_exit"):
+        print("rm: injected failure", file=sys.stderr)
+        sys.exit(int(FAULTS["rm_exit"]))
+    recursive = any(a.startswith("-") and ("r" in a[1:] or "R" in a[1:]) for a in ARGS)
+    force = any(a.startswith("-") and "f" in a[1:] for a in ARGS)
+    paths = [a for a in ARGS if not a.startswith("-")]
+    status = 0
+    for p in paths:
+        path = Path(p)
+        if path.is_symlink() or (path.exists() and not path.is_dir()):
+            path.unlink()
+        elif path.is_dir():
+            if not recursive:
+                print(f"rm: cannot remove '{p}': Is a directory", file=sys.stderr)
+                status = 1
+            else:
+                shutil.rmtree(path)
+        elif not force:
+            print(f"rm: cannot remove '{p}': No such file or directory", file=sys.stderr)
+            status = 1
+    if FAULTS.get("rm_error_after"):
+        print("rm: Input/output error", file=sys.stderr)
+        sys.exit(1)
+    if status:
+        sys.exit(status)
+
+
+def rmdir_cmd():
+    """rmdir(2) the path. A symlink is not followed and is not a directory."""
+    paths = [a for a in ARGS if not a.startswith("-")]
+    if not paths:
+        print("rmdir: missing operand", file=sys.stderr)
+        sys.exit(1)
+    for p in paths:
+        path = Path(p)
+        if path.is_symlink() or not path.is_dir():
+            print(f"rmdir: failed to remove '{p}': Not a directory", file=sys.stderr)
+            sys.exit(1)
+        try:
+            path.rmdir()
+        except OSError as e:
+            print(f"rmdir: failed to remove '{p}': {e.strerror}", file=sys.stderr)
+            sys.exit(1)
 
 
 def umount():
-    targets = {unfake(a) for a in ARGS if not a.startswith("-")}
+    logical = [unfake(a).rstrip("/") for a in ARGS if not a.startswith("-")]
+    nth = FAULTS.get("fail_umount_nth") or {}
+    if isinstance(nth, dict):
+        for target in logical:
+            for key, want in nth.items():
+                if target == str(key).rstrip("/"):
+                    if _bump("umount-counts.json", target) == int(want):
+                        print("umount: injected failure", file=sys.stderr)
+                        sys.exit(1)
+    for needle in FAULTS.get("fail_umount") or []:
+        if any(target == str(needle).rstrip("/") for target in logical):
+            print("umount: injected failure", file=sys.stderr)
+            sys.exit(1)
+    targets = set(logical)
     f = R / "proc" / "self" / "mounts"
-    f.write_text("".join(" ".join(r) + "\n" for r in mounts() if r[1] not in targets and r[0] not in targets))
+    f.write_text("".join(" ".join(r) + "\n" for r in mounts() if r[1].rstrip("/") not in targets and r[0] not in targets))
 
 
 def cmp():
@@ -204,4 +321,4 @@ def noop():
 
 
 {"lsblk": lsblk, "findmnt": findmnt, "dd": dd, "blkdiscard": blkdiscard, "sgdisk": sgdisk, "blockdev": blockdev,
- "mount": mount, "umount": umount, "cmp": cmp, "sha256sum": sha256sum}.get(TOOL, noop)()
+ "mount": mount, "umount": umount, "cmp": cmp, "sha256sum": sha256sum, "rm": rm, "rmdir": rmdir_cmd}.get(TOOL, noop)()

@@ -1,0 +1,6 @@
+Wi-Fi is enabled
+curState=DisconnectedState
+mWifiInfo SSID: <unknown ssid>, Supplicant state: DISCONNECTED
+
+History:
+  mWifiInfo SSID: "OldCafe9f3a", Supplicant state: COMPLETED

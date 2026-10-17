@@ -18,8 +18,14 @@
 # GBOS_KMOD_TOOLCHAIN, default <GBOS_INPUTS>/kmod-toolchain; or GBOS_GENERIC_KO=<that pinned gbos_efifb.ko>).
 # GBOS_CAMERA_OVERLAY=<the out/vendor directory of builder/camera/build-libcamera.sh>: the built-in camera (KANO: IPU6 +
 # OV2740, upstream libcamera HAL); opt-in until proven on the hardware, required when the profile says camera.libcamera = true.
+# profiles/amd-hx370 (native amdgpu) refuses to build unless GBOS_DEV_KERNEL_DIR is the Track 2 self-built GKI
+# and that directory contains modules/amdgpu.ko. Stock lapis has no amdgpu.
 # GBOS_EC: opt-in ChromeOS EC features, a comma list of sensors (accelerometers -> auto-rotate), typec (USB-C
 # USB3/DisplayPort), buttons (side volume keys). Empty (default): the EC stays unreachable. See docs/SAFETY.md.
+# GBOS_TEST_AUTOOFF (developer-only; install/install.sh refuses it): empty = off. Otherwise seconds 60..7200.
+# A TEST image powers off only when /vendor/etc/kano-autooff.nonce and /data/kano-autooff.nonce are the same
+# 33 bytes (32 lowercase hex + LF). The session copies <out>/image/autooff.nonce onto the stick userdata
+# before that boot and deletes it afterwards. QEMU has no /data nonce, so the self-test stays on.
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 die() { echo "build.sh: $*" >&2; exit 2; }
@@ -40,6 +46,16 @@ echo "== preflight"
 [[ "${GBOS_EC:-}" =~ ^((sensors|typec|buttons)(,(sensors|typec|buttons))*)?$ ]] \
     || die "GBOS_EC must be empty or a comma list of sensors, typec, buttons"
 [ -z "${GBOS_EC:-}" ] || echo "NOTE: GBOS_EC=$GBOS_EC: this image lets audited EC drivers talk to the EC (docs/SAFETY.md)"
+# Empty = off. A non-empty value must be an integer 60..7200 (canonical decimal, no leading zeros).
+# Check the text before any arithmetic: bash wraps 2^64+60 to 60, and 10#0060 becomes 60.
+if [ -n "${GBOS_TEST_AUTOOFF:-}" ]; then
+    [[ "$GBOS_TEST_AUTOOFF" =~ ^[1-9][0-9]{1,3}$ ]] \
+        || die "GBOS_TEST_AUTOOFF must be empty or an integer 60..7200, not $GBOS_TEST_AUTOOFF"
+    [ "$GBOS_TEST_AUTOOFF" -ge 60 ] && [ "$GBOS_TEST_AUTOOFF" -le 7200 ] \
+        || die "GBOS_TEST_AUTOOFF must be empty or an integer 60..7200, not $GBOS_TEST_AUTOOFF"
+    export GBOS_TEST_AUTOOFF
+    echo "NOTE: GBOS_TEST_AUTOOFF=$GBOS_TEST_AUTOOFF: TEST image powers off only if /data/kano-autooff.nonce matches the vendor nonce"
+fi
 if [ -e "$GBOS_OUT" ] && [ -n "$(ls -A "$GBOS_OUT")" ]; then die "GBOS_OUT ($GBOS_OUT) must be a new or empty directory"; fi
 for f in "$GBOS_BASE" "$GBOS_INITRD" "$GBOS_AVB_KEY"; do [ -f "$f" ] || die "missing file: $f"; done
 if [ "${GBOS_SKIP_SELFTEST:-}" != 1 ]; then
@@ -59,6 +75,22 @@ if [ -n "${GBOS_CAMERA_OVERLAY:-}" ]; then
         || die "GBOS_CAMERA_OVERLAY must be the out/vendor directory of builder/camera/build-libcamera.sh (with ../SHA256SUMS): $GBOS_CAMERA_OVERLAY"
     export GBOS_CAMERA_OVERLAY
 fi
+MODEL=$(python3 "$HERE/lib/devprofile.py" get "$GBOS_PROFILE" model.id)
+if [ "$MODEL" = amd-hx370 ]; then
+    [ -n "${GBOS_DEV_KERNEL_DIR:-}" ] || die "profiles/amd-hx370 needs the self-built Track 2 GKI: set GBOS_DEV_KERNEL_DIR (stock lapis has no amdgpu)"
+fi
+if [ -n "${GBOS_DEV_KERNEL_DIR:-}" ]; then
+    [ -d "$GBOS_DEV_KERNEL_DIR" ] && [ -f "$GBOS_DEV_KERNEL_DIR/bzImage" ] && [ -d "$GBOS_DEV_KERNEL_DIR/modules" ] \
+        && [ -f "$GBOS_DEV_KERNEL_DIR/modules/modules.dep" ] && compgen -G "$GBOS_DEV_KERNEL_DIR/modules/*.ko" >/dev/null \
+        || die "GBOS_DEV_KERNEL_DIR must be a directory with bzImage, modules/*.ko, and modules/modules.dep: $GBOS_DEV_KERNEL_DIR"
+    if [ "$MODEL" = amd-hx370 ]; then
+        [ -f "${GBOS_DEV_KERNEL_DIR}/modules/amdgpu.ko" ] || die "GBOS_DEV_KERNEL_DIR has no modules/amdgpu.ko (profiles/amd-hx370 needs the Track 2 amdgpu module)"
+    fi
+    python3 "$HERE/lib/devprofile.py" check-kconfig "$GBOS_PROFILE" "$GBOS_DEV_KERNEL_DIR" \
+        || die "GBOS_DEV_KERNEL_DIR failed the kernel .config safety gate: $GBOS_DEV_KERNEL_DIR"
+    echo "WARNING: GBOS_DEV_KERNEL_DIR=$GBOS_DEV_KERNEL_DIR: developer-only self-built kernel + modules override"
+    export GBOS_DEV_KERNEL_DIR
+fi
 STACK=$(python3 "$HERE/lib/devprofile.py" get "$GBOS_PROFILE" display.stack)
 if [ "$STACK" = gop-swiftshader ]; then
     export GBOS_GENERIC_PASTEL="${GBOS_GENERIC_PASTEL:-${GBOS_INPUTS:-}/generic/vulkan.pastel.so}"
@@ -69,6 +101,19 @@ fi
 AUDIO_LIST=$(python3 "$HERE/lib/devprofile.py" get "$GBOS_PROFILE" audio.sources)
 [ -z "$AUDIO_LIST" ] || [ -f "$GBOS_PROFILE/$AUDIO_LIST" ] || die "GBOS_PROFILE has no $AUDIO_LIST: $GBOS_PROFILE"
 [ -d "$GBOS_AUDIO_SRC" ] || die "GBOS_AUDIO_SRC is not a directory: $GBOS_AUDIO_SRC"
+if [ "$MODEL" = amd-hx370 ]; then
+    # Local hashed inputs. tools/mesa/build-radv.sh produces the three RADV files (not committed) for the
+    # experimental native entry; vulkan.pastel.so and gbos_efifb.ko are the same pins as profiles/generic-x86,
+    # staged for the default "Googlebook AMD HX370 safe" boot entry (no runtime native->safe fallback).
+    export GBOS_RADV="${GBOS_RADV:-${GBOS_INPUTS:-}/amd-hx370/vulkan.radeon.so}"
+    export GBOS_RADV_PROBE="${GBOS_RADV_PROBE:-${GBOS_INPUTS:-}/amd-hx370/radv-probe}"
+    export GBOS_RADV_VKPROP="${GBOS_RADV_VKPROP:-${GBOS_INPUTS:-}/amd-hx370/libvkprop.so}"
+    export GBOS_GENERIC_PASTEL="${GBOS_GENERIC_PASTEL:-${GBOS_INPUTS:-}/generic/vulkan.pastel.so}"
+    export GBOS_GENERIC_KO="${GBOS_GENERIC_KO:-${GBOS_INPUTS:-}/generic/gbos_efifb.ko}"
+    for f in "$GBOS_RADV" "$GBOS_RADV_PROBE" "$GBOS_RADV_VKPROP" "$GBOS_GENERIC_PASTEL" "$GBOS_GENERIC_KO"; do
+        [ -f "$f" ] || die "profiles/amd-hx370 needs $(basename "$f") at $f (tools/mesa/build-radv.sh, builder/fetch-generic-inputs.sh, builder/kmod/build-gbos_efifb.sh)"
+    done
+fi
 for c in python3 mcopy mtype mdir zstd sha256sum cp readlink cmp; do command -v "$c" >/dev/null || die "missing command: $c"; done
 if [ "${GBOS_SKIP_SELFTEST:-}" = 1 ]; then
     echo "WARNING: GBOS_SKIP_SELFTEST=1: the image will NOT be booted in QEMU before you write it"

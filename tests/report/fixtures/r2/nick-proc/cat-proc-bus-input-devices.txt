@@ -1,0 +1,3 @@
+I: Bus=0005 Vendor=04f3 Product=1234 Version=0001
+N: Name="ReviewOwner777 04F3:1234 Magic Touchpad"
+H: Handlers=mouse0 event8

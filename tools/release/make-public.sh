@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Export the public repository tree (googlebook-anywhere) from a commit of this private repository: everything except
 # the research notes and the developer's personal settings, then scan the result for personal data and refuse on a hit.
+# A clean personal-data scan covers the public export tree only, not the private checkout and not an unscanned installer image.
 # usage: tools/release/make-public.sh <commit> <empty destination dir>
 # The scan patterns live in tools/release/private-patterns.txt (one extended regex per line), which is never exported.
 # The export is built and scanned in a temporary directory; the destination is filled only when every check passed.
@@ -16,6 +17,12 @@ if grep -nE '^(#|[[:space:]]*$)' "$PATTERNS" > /dev/null; then echo "$PATTERNS: 
 rc=0; grep -E -f "$PATTERNS" /dev/null || rc=$?
 [ "$rc" = 1 ] || { echo "$PATTERNS: grep cannot use these patterns (exit $rc)"; exit 2; }
 SHA=$(git -C "$ROOT" rev-parse --verify --quiet "$C^{commit}") || { echo "not a commit: $C"; exit 2; }
+# Reads the commit with git ls-tree / git archive only. Does not modify the source repository.
+# A tree that already carries the public-export marker is an export, not a private source: refuse it.
+if git -C "$ROOT" cat-file -e "$SHA:tools/release/PUBLIC-EXPORT" 2>/dev/null; then
+    echo "refusing: $SHA already contains tools/release/PUBLIC-EXPORT"
+    exit 1
+fi
 EXCLUDE=(research tools/harness/kano-env.local.sh tools/release/private-patterns.txt)
 
 TMP=$(mktemp -d "${TMPDIR:-/tmp}/gbos-public.XXXXXX")
@@ -48,17 +55,27 @@ other=$(find "$TREE" ! -type f ! -type d)
 nfiles=$(find "$TREE" -type f | wc -l | tr -d ' ')
 [ "$nfiles" = "${#paths[@]}" ] || { echo "refusing: exported $nfiles files, expected ${#paths[@]}"; exit 1; }
 while IFS= read -r -d '' f; do
-    if ! LC_ALL=C tr -d '\000' < "$f" | cmp -s - "$f"; then
-        # the only binary files allowed: plain PNG screenshots in docs/images (no text/EXIF chunks; png-ok.py)
-        case "${f#"$TREE"/}" in
-            docs/images/*.png)
-                why=$(python3 "$ROOT/tools/release/png-ok.py" --pinned "$ROOT/tools/release/published-images.sha256" --as "${f#"$TREE"/}" "$f") \
-                    || { echo "refusing: ${f#"$TREE"/}: ${why#*: }"; exit 1; } ;;
-            *) echo "refusing: binary file (contains NUL bytes): ${f#"$TREE"/}"; exit 1 ;;
-        esac
-    fi
+    # the only binary files allowed: plain PNG screenshots in docs/images (no text/EXIF chunks; png-ok.py)
+    case "${f#"$TREE"/}" in
+        docs/images/*|*.[pP][nN][gG])
+            why=$(python3 "$ROOT/tools/release/png-ok.py" --pinned "$TREE/tools/release/published-images.sha256" --as "${f#"$TREE"/}" "$f") \
+                || { echo "refusing: ${f#"$TREE"/}: ${why#*: }"; exit 1; }
+            case "${f#"$TREE"/}" in
+                docs/images/*/*) echo "refusing: ${f#"$TREE"/}: only docs/images/*.png screenshots are allowed"; exit 1 ;;
+                docs/images/*.png) ;;
+                *) echo "refusing: ${f#"$TREE"/}: only docs/images/*.png screenshots are allowed"; exit 1 ;;
+            esac ;;
+        *)
+            if ! LC_ALL=C tr -d '\000' < "$f" | cmp -s - "$f"; then
+                echo "refusing: binary file (contains NUL bytes): ${f#"$TREE"/}"; exit 1
+            fi ;;
+    esac
 done < <(find "$TREE" -type f -print0)
 for x in "${EXCLUDE[@]}"; do [ ! -e "$TREE/$x" ] || { echo "excluded path present: $x"; exit 1; }; done
+
+# Positive marker for the public tree: the source commit SHA. The scan below covers this file.
+mkdir -p "$TREE/tools/release"
+printf '%s\n' "$SHA" > "$TREE/tools/release/PUBLIC-EXPORT"
 
 scan() {   # scan <what> <grep args...>: 1 = clean, 0 = personal data (file:line only, never the match), else error
     local what=$1 out rc=0; shift
@@ -89,4 +106,5 @@ fi
 if [ -d "$DEST" ]; then rmdir "$DEST"; fi
 mkdir -p "$(dirname "$DEST")"
 mv "$TREE" "$DEST"
+nfiles=$(find "$DEST" -type f | wc -l | tr -d ' ')
 echo "exported $nfiles files from $SHA to $DEST; personal-data scan clean"

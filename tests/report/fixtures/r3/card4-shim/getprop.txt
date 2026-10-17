@@ -1,0 +1,3 @@
+[ro.build.display.id]: [CL3B.1]
+[ro.hardware.egl]: [swiftshader]
+[ro.hardware.vulkan]: [pastel]

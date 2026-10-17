@@ -205,8 +205,9 @@ The following one-off single-layer runs were not added to `mutate.py`:
   loudly, never silently.
 - The tests run the scripts with `bash` from PATH, and the fake runs remote scripts with that bash too. Here that is
   `/bin/bash` 3.2.57. On a Mac with Homebrew bash first on PATH, the 3.2 coverage is lost.
-- In-repo callers of `kano-ser.py ec` only use `apshutdown` and `powerbtn`. `kblight <n>` (used by hand earlier) is
-  now refused.
+- In-repo callers of `kano-ser.py ec` only use `apshutdown` and `powerbtn`. Historical (first round): `kblight <n>`
+  (used by hand earlier) was recorded here as now refused. serkbl (2026-10-16): canonical decimal `kblight <p>` for
+  p in 0..100 is accepted.
 - The pure checks were verified on the real lapis GPT (`test_real_layout`). The kernel's view of the real stick
   (`/sys/block/sda/sdaN`) was not observed. The kernel-table check is strict: if the kernel hid a 1-sector partition,
   the push would refuse rather than write.
@@ -230,7 +231,8 @@ The sections above describe the first round. The final state, with 104 tests and
 - `kano-nvme-update.sh` step 6 is only tested on the watcher-failure path. The power-button path has ~45 s of sleeps
   and was left untested.
 - Behaviour changes callers may notice:
-  - `kano-ser.py` refusals exit 2 (was 1). `ec kblight <n>` is now refused.
+  - `kano-ser.py` refusals exit 2 (was 1). Historical (first round): `ec kblight <n>` was recorded here as now refused.
+    serkbl (2026-10-16): canonical decimal 0..100 is accepted.
   - Watcher exit codes 4/6 are new. A watcher started after the kernel printed its command line now reports
     unobservable after 120 s.
   - `kano-nvme-install.sh` now mounts userdata rw once before `resize.f2fs`. This step comes from the real install's

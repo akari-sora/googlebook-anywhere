@@ -1,0 +1,6 @@
+What: kano-session-lib.sh v11.7, the approved session library, with the example LAN prefix replaced.
+The differential test in tests/harness/test_ser.py reads only this directory's
+kano-session-lib-v117.sh and pins the sha256 below.
+A missing or changed fixture fails that test.
+sha256: 5b75e850ecc78cd5d742cadbde8c195cf1974eaa1422e64dfcd531e8db92f93c
+The approved v11.7 library with its example LAN prefix replaced by 192.0.2. (TEST-NET-1, RFC 5737) in two lines; otherwise byte-identical.

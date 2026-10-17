@@ -3,10 +3,23 @@
 
 usage: qemu-install.py <work dir> <final image> <stick head 1 MiB> <stick tail 1 MiB> <XBOOTLDR dump> <maint root dump>
                        <pristine dir>
+       qemu-install.py --produced <work dir> <final image> <produced stick> <pristine dir>
+       qemu-install.py --asis <work dir> <final image> <produced stick> <pristine dir>
   final image       googlebook-kano.img that <pristine dir> was made from (install/stick/make-pristine.py)
   stick head, tail  first and last MiB of the real installer stick (its GPT, with XBOOTLDR and kano-maint)
   XBOOTLDR dump     image of the stick's XBOOTLDR partition (FAT, holds vmlinuz-linux and initramfs-linux.img)
   maint root dump   image of the stick's kano-maint partition (ext4, the maintenance Arch root)
+  --produced        boot the file from make-installer-stick.sh. That file is not opened for
+                    write and its ext4 is not injected. The produced gbos-install.conf,
+                    gbos-update.conf, and loader.conf are read and kept. Serial-only
+                    entries are extra filenames on the sparse copy. After that check,
+                    the copy's ESP default may name the extra serial entry.
+  --asis            same arguments as --produced. The boot copy's own sha256 must
+                    equal the produced stick before QEMU. The stick drive is
+                    snapshot=on. No entry, cmdline, loader default, or timeout
+                    is rewritten. Keys are QMP send-key on the ordinary console.
+                    Prints AS-IS ACCEPTANCE separately and does not run the
+                    serial / negative cases.
 env: GBOS_QEMU, GBOS_QEMU_LIB, GBOS_OVMF_CODE, GBOS_OVMF_VARS (as for builder/build.sh); GBOS_STICK_KEEP=1 keeps the
      NVMe images; GBOS_STICK_SCENARIOS=<comma list> runs only some of refusals, super-mismatch, cancel, install-flex,
      install-blank, update (update: after install-blank, the update mode puts the image into slot b, then a second
@@ -17,7 +30,9 @@ The stick copy runs the CURRENT repo installer, not whatever the maint root dump
 and module-blacklist.txt (the template's module_blacklist, as setup-stick.sh writes it) (-> /usr/local/share/gbos-install/)
 and <pristine dir> (-> /var/lib/gbos-install/pristine) are written into a copy of the ext4 maint root with debugfs -w
 and read back, and the XBOOTLDR entry is rendered from install/stick/gbos-install.entry.template and
-builtin-initcalls.txt, as setup-stick.sh does.
+builtin-initcalls.txt, as setup-stick.sh does. --produced does not render over gbos-install.conf or
+gbos-update.conf. It reads those files plus the ESP loader.conf and stops if they differ from the
+builder. Static checks use the install entry read from the produced stick.
 
 Static checks: the entry blocks every module the image's entries block, keeps efi=noruntime and lockdown=integrity, and
 every blocked module built into the maintenance kernel (its modules.builtin) is covered by builtin-initcalls.txt, whose
@@ -46,9 +61,27 @@ import hashlib, json, os, random, re, shutil, socket, struct, subprocess, sys, t
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import gptlib  # noqa: E402
+import produced_menu  # noqa: E402
 
-if len(sys.argv) != 8: sys.exit(__doc__)
-W, IMG, HEAD, TAIL, XB, MAINT, PR = map(Path, sys.argv[1:8])
+if len(sys.argv) > 1 and sys.argv[1] == "--replay-produced-menu":
+    sys.exit(produced_menu.replay(Path(__file__).resolve()))
+
+ASIS = False
+if len(sys.argv) > 1 and sys.argv[1] == "--asis":
+    if len(sys.argv) != 6:
+        sys.exit(__doc__)
+    ASIS = True
+    sys.argv[1] = "--produced"
+PRODUCED = False
+PRODUCED_BEFORE = None
+BOOT_COPY_SHA = None
+if len(sys.argv) > 1 and sys.argv[1] == "--produced":
+    if len(sys.argv) != 6: sys.exit(__doc__)
+    PRODUCED = True
+    W, IMG, STICK_SRC, PR = map(Path, sys.argv[2:6])
+else:
+    if len(sys.argv) != 8: sys.exit(__doc__)
+    W, IMG, HEAD, TAIL, XB, MAINT, PR = map(Path, sys.argv[1:8])
 REPO = Path(__file__).resolve().parents[2]
 STICKSRC = REPO / "install/stick"
 QEMU = os.environ.get("GBOS_QEMU", "/usr/bin/qemu-system-x86_64")
@@ -62,7 +95,7 @@ LIFT = "initcall_blacklist=nvme_init,mei_me_driver_init"
 ENTRY_SETS = ({"lapis-debug.conf", "lapis-quiet.conf"}, {"lapis.conf", "lapis-debug.conf", "lapis-quiet.conf"})
 BUILTIN_OK = r"ok +built-in drivers blocked"
 CMDLINE_OK = r"ok +kernel command line: module_blacklist has all \d+ modules of the installer entry, none loaded"
-for tool in ("debugfs", "e2fsck", "mtype", "mcopy", "mdel", "mdeltree", "mdir"):
+for tool in ("debugfs", "e2fsck", "mtype", "mcopy", "mdel", "mdeltree", "mdir", "mmd"):
     if not shutil.which(tool): sys.exit(f"needs {tool} (mtools, e2fsprogs)")
 for p in (W, PR, STICKSRC):
     if re.search(r"\s", str(p.resolve())): sys.exit(f"path must not contain spaces (debugfs commands): {p}")
@@ -102,18 +135,6 @@ for n, m in mparts.items():
         sys.exit(f"image partition {n} differs from the manifest")
 LAST = max((m["start"] + m["len"]) // 512 for m in mparts.values() if m["name"] != "userdata")
 UD_START = (LAST + 2047) // 2048 * 2048
-sh, sg = gptlib.read_gpt(HEAD, backup=False)
-snum = {v["name"]: k for k, v in sg.items()}
-for name in ("super", "EFI-SYSTEM"):
-    m = mparts[mnum[name]]; s = sg.get(mnum[name], {})
-    if (s.get("name"), s.get("first", 0) * 512, (s.get("last", 0) + 1) * 512 - m["start"]) != (name, m["start"], m["len"]):
-        sys.exit(f"the stick's {name} is not where the image has it")
-XBOFF, MAINTOFF = sg[snum["XBOOTLDR"]]["first"] * 512, sg[snum["kano-maint"]]["first"] * 512
-ESPOFF = mparts[mnum["EFI-SYSTEM"]]["start"]          # same on the image and on the stick
-SUPER = mparts[mnum["super"]]
-def part_bytes(name): p = sg[snum[name]]; return (p["last"] + 1 - p["first"]) * 512
-
-# --- maint root: a copy with the current installer, service, enable link and pristine data written by debugfs
 DEBUGFS_ENV = dict(os.environ, DEBUGFS_PAGER="__none__", PAGER="__none__")
 def debugfs(fs, cmd):
     return subprocess.run(["debugfs", "-R", cmd, str(fs)], capture_output=True, env=DEBUGFS_ENV).stdout
@@ -144,111 +165,266 @@ def put(cmds, host, path, mode):
     d, name = path.rsplit("/", 1)
     cmds += [f"cd {d}/.", f"rm {name}", f"write {host} {name}", f"sif {name} mode 0{0o100000 | mode:o}", f"sif {name} uid 0", f"sif {name} gid 0", "cd /"]
 
-maint = W / "maint.img"
-maint.unlink(missing_ok=True)
-run("cp", "--sparse=always", MAINT, maint, check=True)
-if maint.stat().st_size > part_bytes("kano-maint"): sys.exit("maint root dump is larger than the stick's kano-maint partition")
-if run("e2fsck", "-fp", maint).returncode not in (0, 1): sys.exit("e2fsck could not clean the maint root copy")
-PRISTINE = "/var/lib/gbos-install/pristine"
-prfiles = sorted(p for p in PR.iterdir() if p.is_file())
-old = {n: s for n, _, s in debugfs_ls(maint, PRISTINE)}
-st = re.search(r"(?s)Block size:\s+(\d+).*?Free blocks:\s+(\d+)|Free blocks:\s+(\d+).*?Block size:\s+(\d+)",
-              debugfs(maint, "stats").decode(errors="replace"))
-if not st: sys.exit("debugfs stats: no block size / free blocks")
-bs, fb = (st.group(1), st.group(2)) if st.group(1) else (st.group(4), st.group(3))
-free = int(bs) * int(fb)
-if free + sum(old.values()) < sum(p.stat().st_size for p in prfiles) + (64 << 20):
-    sys.exit("the maint root copy has no room for the pristine data")
-# module-blacklist.txt as setup-stick.sh writes it: the template's module_blacklist, '-' as '_', sorted
-template = (STICKSRC / "gbos-install.entry.template").read_text()
-MODLIST = W / "module-blacklist.txt"
-MODLIST.write_text("# module_blacklist of the installer entry (from gbos-install.entry.template, by setup-stick.sh): gbos-install\n"
-                   "# refuses to run when the kernel command line does not block every one of these\n"
-                   + "".join(f"{m}\n" for m in sorted({x.replace("-", "_") for x in blacklist(template)})))
-cmds = ["mkdir /usr/local", "mkdir /usr/local/sbin", "mkdir /usr/local/share", "mkdir /usr/local/share/gbos-install",
-        "mkdir /var/lib/gbos-install", "mkdir /etc/systemd/system/multi-user.target.wants"]
-put(cmds, STICKSRC / "gbos-install.sh", "/usr/local/sbin/gbos-install", 0o755)
-put(cmds, STICKSRC / "builtin-initcalls.txt", "/usr/local/share/gbos-install/builtin-initcalls.txt", 0o644)
-put(cmds, MODLIST, "/usr/local/share/gbos-install/module-blacklist.txt", 0o644)
-put(cmds, STICKSRC / "gbos-installer.service", "/etc/systemd/system/gbos-installer.service", 0o644)
-ENGINE = REPO / "install/gbos-update.py"
-put(cmds, ENGINE, "/usr/local/share/gbos-install/gbos-update.py", 0o644)
-cmds += ["cd /etc/systemd/system/multi-user.target.wants/.", "rm gbos-installer.service",
-         "symlink gbos-installer.service /etc/systemd/system/gbos-installer.service", "cd /"]
-cmds += rmtree_cmds(maint, PRISTINE) + rmtree_cmds(maint, PRISTINE + ".new") + [f"mkdir {PRISTINE}"]
-for p in prfiles: put(cmds, p, f"{PRISTINE}/{p.name}", 0o644)
-debugfs_w(maint, cmds)
-inj = []
-for host, path, mode in ((STICKSRC / "gbos-install.sh", "/usr/local/sbin/gbos-install", "0755"),
-                         (STICKSRC / "builtin-initcalls.txt", "/usr/local/share/gbos-install/builtin-initcalls.txt", "0644"),
-                         (MODLIST, "/usr/local/share/gbos-install/module-blacklist.txt", "0644"),
-                         (STICKSRC / "gbos-installer.service", "/etc/systemd/system/gbos-installer.service", "0644"),
-                         (ENGINE, "/usr/local/share/gbos-install/gbos-update.py", "0644")):
-    stat = debugfs(maint, f"stat {path}").decode(errors="replace")
-    inj.append(debugfs(maint, f"cat {path}") == host.read_bytes() and re.search(rf"Type: regular\s+Mode:\s+0*{mode[1:]}\b", stat)
-               and re.search(r"User:\s+0\s+Group:\s+0\b", stat))
-link = debugfs(maint, "stat /etc/systemd/system/multi-user.target.wants/gbos-installer.service").decode(errors="replace")
-inj.append("Type: symlink" in link and 'link dest: "/etc/systemd/system/gbos-installer.service"' in link)
-inj.append(sorted(n for n, _, _ in debugfs_ls(maint, PRISTINE)) == sorted(p.name for p in prfiles))
-inj += [debugfs_sha(maint, f"{PRISTINE}/{p.name}") == file_sha(p) for p in prfiles]
-check("maint root holds the current gbos-install, its service, the enable link, builtin-initcalls.txt, module-blacklist.txt"
-      " and the pristine data (read back)", all(inj),
-      f"see {W / 'debugfs.log'}")
-# debugfs does not keep every summary counter exact: let e2fsck settle them on this test copy, then it must be clean
-fix = run("e2fsck", "-fy", maint, capture_output=True); (W / "e2fsck-fix.log").write_bytes(fix.stdout + fix.stderr)
-chk = run("e2fsck", "-fn", maint, capture_output=True); (W / "e2fsck-check.log").write_bytes(chk.stdout + chk.stderr)
-check("maint root copy is clean for e2fsck -fn after the injection (summary counters settled by e2fsck -fy)",
-      fix.returncode in (0, 1) and chk.returncode == 0, f"see {W / 'e2fsck-fix.log'}")
+if PRODUCED:
+    src = STICK_SRC.resolve()
+    if re.search(r"\s", str(src)):
+        sys.exit(f"path must not contain spaces (debugfs commands): {src}")
+    if str(src).startswith("/dev/"):
+        sys.exit("refusing a block device")
+    pub = Path(str(STICK_SRC) + ".sha256")
+    if not pub.is_file():
+        sys.exit("produced stick has no .sha256 beside it")
+    published = pub.read_text().split()[0]
+    PRODUCED_BEFORE = gptlib.sha(STICK_SRC, 0, STICK_SRC.stat().st_size)
+    if PRODUCED_BEFORE != published:
+        sys.exit("produced stick does not match its sha256 before the test")
+    print("no injection: booting a sparse copy of the produced stick", flush=True)
+    STICK.unlink(missing_ok=True)
+    run("cp", "--sparse=always", STICK_SRC, STICK, check=True)
+    BOOT_COPY_SHA = gptlib.sha(STICK, 0, STICK.stat().st_size)
+    if BOOT_COPY_SHA != PRODUCED_BEFORE:
+        sys.exit(f"boot copy is not byte-identical to the produced stick ({BOOT_COPY_SHA} != {PRODUCED_BEFORE})")
+    print(f"boot copy sha256 {BOOT_COPY_SHA}", flush=True)
+    sh, sg = gptlib.read_gpt(STICK, backup=True)
+    snum = {v["name"]: k for k, v in sg.items()}
+    for name in ("super", "EFI-SYSTEM", "XBOOTLDR", "kano-maint"):
+        if name not in snum:
+            sys.exit(f"produced stick has no {name}")
+    for name in ("super", "EFI-SYSTEM"):
+        m = mparts[mnum[name]]
+        s = sg[mnum[name]]
+        if (s["name"], s["first"] * 512, (s["last"] + 1) * 512 - m["start"]) != (name, m["start"], m["len"]):
+            sys.exit(f"the stick's {name} is not where the image has it")
+    XBOFF = sg[snum["XBOOTLDR"]]["first"] * 512
+    MAINTOFF = sg[snum["kano-maint"]]["first"] * 512
+    ESPOFF = mparts[mnum["EFI-SYSTEM"]]["start"]
+    SUPER = mparts[mnum["super"]]
+    part_len = (sg[snum["kano-maint"]]["last"] + 1 - sg[snum["kano-maint"]]["first"]) * 512
+    maint = W / "maint-ro.img"
+    maint.unlink(missing_ok=True)
+    run("dd", f"if={STICK}", f"of={maint}", "bs=4M", f"skip={MAINTOFF}", f"count={part_len}",
+        "iflag=skip_bytes,count_bytes,fullblock", "conv=sparse", "status=none", check=True)
+    if run("e2fsck", "-fn", maint).returncode != 0:
+        sys.exit("produced kano-maint is not clean for e2fsck -fn")
+    template = (STICKSRC / "gbos-install.entry.template").read_text()
+    MODLIST = W / "module-blacklist.txt"
+    MODLIST.write_text("# module_blacklist of the installer entry (from gbos-install.entry.template, by setup-stick.sh): gbos-install\n"
+                       "# refuses to run when the kernel command line does not block every one of these\n"
+                       + "".join(f"{m}\n" for m in sorted({x.replace("-", "_") for x in blacklist(template)})))
+    engine = STICKSRC / "gbos-update.py"
+    if not engine.is_file():
+        engine = REPO / "install/gbos-update.py"
+    ENGINE = engine
+    pristine = "/var/lib/gbos-install/pristine"
+    prfiles = sorted(item for item in PR.iterdir() if item.is_file())
+    rows = ((STICKSRC / "gbos-install.sh", "/usr/local/sbin/gbos-install", "0755"),
+            (STICKSRC / "builtin-initcalls.txt", "/usr/local/share/gbos-install/builtin-initcalls.txt", "0644"),
+            (MODLIST, "/usr/local/share/gbos-install/module-blacklist.txt", "0644"),
+            (STICKSRC / "gbos-installer.service", "/etc/systemd/system/gbos-installer.service", "0644"),
+            (engine, "/usr/local/share/gbos-install/gbos-update.py", "0644"))
+    held = []
+    log = bytearray()
+    for host, path, mode in rows:
+        stat = debugfs(maint, f"stat {path}")
+        log += b"STAT " + path.encode() + b"\n" + stat + b"\n"
+        held.append(debugfs(maint, f"cat {path}") == host.read_bytes()
+                    and re.search(rb"Type: regular\s+Mode:\s+0*" + mode[1:].encode() + rb"\b", stat)
+                    and re.search(rb"User:\s+0\s+Group:\s+0\b", stat))
+    link = debugfs(maint, "stat /etc/systemd/system/multi-user.target.wants/gbos-installer.service")
+    log += b"LINK\n" + link
+    (W / "debugfs-ro.log").write_bytes(log)
+    held.append(b"Type: symlink" in link and b'link dest: "/etc/systemd/system/gbos-installer.service"' in link)
+    names = sorted(n for n, _, _ in debugfs_ls(maint, pristine))
+    held.append(names == sorted(item.name for item in prfiles))
+    held += [debugfs_sha(maint, f"{pristine}/{item.name}") == file_sha(item) for item in prfiles]
+    if not all(held):
+        sys.exit(f"produced kano-maint does not already hold the installer payload ({held}); see {W / 'debugfs-ro.log'}")
+    check("produced kano-maint already holds the installer, with no injection", True)
+    mtools("mcopy", STICK, XBOFF, "::/vmlinuz-linux", W / "vmlinuz-linux")
+    kimg = (W / "vmlinuz-linux").read_bytes()
+    kver = None
+    if kimg[0x202:0x206] == b"HdrS":
+        off = struct.unpack_from("<H", kimg, 0x20E)[0] + 0x200
+        kver = kimg[off:kimg.index(b"\0", off)].split(b" ")[0].decode(errors="replace")
+    builtin = debugfs(maint, f"cat /usr/lib/modules/{kver}/modules.builtin").decode(errors="replace") if kver else ""
+    BUILTIN = {Path(line).name.removesuffix(".ko").replace("-", "_") for line in builtin.split()}
+    for font_name in ("LatGrkCyr-12x22.psfu.gz", "cp850-8x16.psfu.gz"):
+        font_bytes = debugfs(maint, f"cat /usr/share/kbd/consolefonts/{font_name}")
+        if font_bytes[:2] == b"\x1f\x8b":
+            (W / font_name).write_bytes(font_bytes)
+    maint.unlink()
+else:
+    sh, sg = gptlib.read_gpt(HEAD, backup=False)
+    snum = {v["name"]: k for k, v in sg.items()}
+    for name in ("super", "EFI-SYSTEM"):
+        m = mparts[mnum[name]]; s = sg.get(mnum[name], {})
+        if (s.get("name"), s.get("first", 0) * 512, (s.get("last", 0) + 1) * 512 - m["start"]) != (name, m["start"], m["len"]):
+            sys.exit(f"the stick's {name} is not where the image has it")
+    XBOFF, MAINTOFF = sg[snum["XBOOTLDR"]]["first"] * 512, sg[snum["kano-maint"]]["first"] * 512
+    ESPOFF = mparts[mnum["EFI-SYSTEM"]]["start"]          # same on the image and on the stick
+    SUPER = mparts[mnum["super"]]
+    def part_bytes(name): p = sg[snum[name]]; return (p["last"] + 1 - p["first"]) * 512
 
-# the maintenance kernel (XBOOTLDR vmlinuz-linux) must not have any blocked module built in
-mtools("mcopy", XB, 0, "-o", "::/vmlinuz-linux", W / "vmlinuz-linux")
-kimg = (W / "vmlinuz-linux").read_bytes()
-kver = None
-if kimg[0x202:0x206] == b"HdrS":
-    o = struct.unpack_from("<H", kimg, 0x20E)[0] + 0x200
-    kver = kimg[o:kimg.index(b"\0", o)].split(b" ")[0].decode(errors="replace")
-builtin = debugfs(maint, f"cat /usr/lib/modules/{kver}/modules.builtin").decode(errors="replace") if kver else ""
-BUILTIN = {Path(l).name.removesuffix(".ko").replace("-", "_") for l in builtin.split()}
+    # --- maint root: a copy with the current installer, service, enable link and pristine data written by debugfs
+    maint = W / "maint.img"
+    maint.unlink(missing_ok=True)
+    run("cp", "--sparse=always", MAINT, maint, check=True)
+    if maint.stat().st_size > part_bytes("kano-maint"): sys.exit("maint root dump is larger than the stick's kano-maint partition")
+    if run("e2fsck", "-fp", maint).returncode not in (0, 1): sys.exit("e2fsck could not clean the maint root copy")
+    PRISTINE = "/var/lib/gbos-install/pristine"
+    prfiles = sorted(p for p in PR.iterdir() if p.is_file())
+    old = {n: s for n, _, s in debugfs_ls(maint, PRISTINE)}
+    st = re.search(r"(?s)Block size:\s+(\d+).*?Free blocks:\s+(\d+)|Free blocks:\s+(\d+).*?Block size:\s+(\d+)",
+                  debugfs(maint, "stats").decode(errors="replace"))
+    if not st: sys.exit("debugfs stats: no block size / free blocks")
+    bs, fb = (st.group(1), st.group(2)) if st.group(1) else (st.group(4), st.group(3))
+    free = int(bs) * int(fb)
+    if free + sum(old.values()) < sum(p.stat().st_size for p in prfiles) + (64 << 20):
+        sys.exit("the maint root copy has no room for the pristine data")
+    # module-blacklist.txt as setup-stick.sh writes it: the template's module_blacklist, '-' as '_', sorted
+    template = (STICKSRC / "gbos-install.entry.template").read_text()
+    MODLIST = W / "module-blacklist.txt"
+    MODLIST.write_text("# module_blacklist of the installer entry (from gbos-install.entry.template, by setup-stick.sh): gbos-install\n"
+                       "# refuses to run when the kernel command line does not block every one of these\n"
+                       + "".join(f"{m}\n" for m in sorted({x.replace("-", "_") for x in blacklist(template)})))
+    cmds = ["mkdir /usr/local", "mkdir /usr/local/sbin", "mkdir /usr/local/share", "mkdir /usr/local/share/gbos-install",
+            "mkdir /var/lib/gbos-install", "mkdir /etc/systemd/system/multi-user.target.wants"]
+    put(cmds, STICKSRC / "gbos-install.sh", "/usr/local/sbin/gbos-install", 0o755)
+    put(cmds, STICKSRC / "builtin-initcalls.txt", "/usr/local/share/gbos-install/builtin-initcalls.txt", 0o644)
+    put(cmds, MODLIST, "/usr/local/share/gbos-install/module-blacklist.txt", 0o644)
+    put(cmds, STICKSRC / "gbos-installer.service", "/etc/systemd/system/gbos-installer.service", 0o644)
+    ENGINE = REPO / "install/gbos-update.py"
+    put(cmds, ENGINE, "/usr/local/share/gbos-install/gbos-update.py", 0o644)
+    cmds += ["cd /etc/systemd/system/multi-user.target.wants/.", "rm gbos-installer.service",
+             "symlink gbos-installer.service /etc/systemd/system/gbos-installer.service", "cd /"]
+    cmds += rmtree_cmds(maint, PRISTINE) + rmtree_cmds(maint, PRISTINE + ".new") + [f"mkdir {PRISTINE}"]
+    for p in prfiles: put(cmds, p, f"{PRISTINE}/{p.name}", 0o644)
+    debugfs_w(maint, cmds)
+    inj = []
+    for host, path, mode in ((STICKSRC / "gbos-install.sh", "/usr/local/sbin/gbos-install", "0755"),
+                             (STICKSRC / "builtin-initcalls.txt", "/usr/local/share/gbos-install/builtin-initcalls.txt", "0644"),
+                             (MODLIST, "/usr/local/share/gbos-install/module-blacklist.txt", "0644"),
+                             (STICKSRC / "gbos-installer.service", "/etc/systemd/system/gbos-installer.service", "0644"),
+                             (ENGINE, "/usr/local/share/gbos-install/gbos-update.py", "0644")):
+        stat = debugfs(maint, f"stat {path}").decode(errors="replace")
+        inj.append(debugfs(maint, f"cat {path}") == host.read_bytes() and re.search(rf"Type: regular\s+Mode:\s+0*{mode[1:]}\b", stat)
+                   and re.search(r"User:\s+0\s+Group:\s+0\b", stat))
+    link = debugfs(maint, "stat /etc/systemd/system/multi-user.target.wants/gbos-installer.service").decode(errors="replace")
+    inj.append("Type: symlink" in link and 'link dest: "/etc/systemd/system/gbos-installer.service"' in link)
+    inj.append(sorted(n for n, _, _ in debugfs_ls(maint, PRISTINE)) == sorted(p.name for p in prfiles))
+    inj += [debugfs_sha(maint, f"{PRISTINE}/{p.name}") == file_sha(p) for p in prfiles]
+    check("maint root holds the current gbos-install, its service, the enable link, builtin-initcalls.txt, module-blacklist.txt"
+          " and the pristine data (read back)", all(inj),
+          f"see {W / 'debugfs.log'}")
+    # debugfs does not keep every summary counter exact: let e2fsck settle them on this test copy, then it must be clean
+    fix = run("e2fsck", "-fy", maint, capture_output=True); (W / "e2fsck-fix.log").write_bytes(fix.stdout + fix.stderr)
+    chk = run("e2fsck", "-fn", maint, capture_output=True); (W / "e2fsck-check.log").write_bytes(chk.stdout + chk.stderr)
+    check("maint root copy is clean for e2fsck -fn after the injection (summary counters settled by e2fsck -fy)",
+          fix.returncode in (0, 1) and chk.returncode == 0, f"see {W / 'e2fsck-fix.log'}")
 
-# --- the test stick: the final image, the real stick's GPT, its XBOOTLDR and the injected maint root
-if XB.stat().st_size > part_bytes("XBOOTLDR"): sys.exit("XBOOTLDR dump is larger than the partition")
-stick_size = sh["alt"] * 512 + 512
-STICK.unlink(missing_ok=True)
-run("cp", "--reflink=auto", "--sparse=always", IMG, STICK, check=True)
-with open(STICK, "r+b") as f:
-    f.truncate(stick_size)
-    f.seek(0); f.write(HEAD.read_bytes()); f.seek(stick_size - TAIL.stat().st_size); f.write(TAIL.read_bytes())
-    for off, dump in ((XBOFF, XB), (MAINTOFF, maint)):
-        f.seek(off)
-        with open(dump, "rb") as d: shutil.copyfileobj(d, f, 16 << 20)
-maint.unlink()
-# a stick that never installed: no entry for the internal disk yet
-mtools("mdeltree", STICK, XBOFF, "::/gbos-nvme", ok=False)
-for e in ("gbos-nvme.conf", "gbos-nvme-debug.conf"): mtools("mdel", STICK, XBOFF, f"::/loader/entries/{e}", ok=False)
+    # the maintenance kernel (XBOOTLDR vmlinuz-linux) must not have any blocked module built in
+    mtools("mcopy", XB, 0, "-o", "::/vmlinuz-linux", W / "vmlinuz-linux")
+    kimg = (W / "vmlinuz-linux").read_bytes()
+    kver = None
+    if kimg[0x202:0x206] == b"HdrS":
+        o = struct.unpack_from("<H", kimg, 0x20E)[0] + 0x200
+        kver = kimg[o:kimg.index(b"\0", o)].split(b" ")[0].decode(errors="replace")
+    builtin = debugfs(maint, f"cat /usr/lib/modules/{kver}/modules.builtin").decode(errors="replace") if kver else ""
+    BUILTIN = {Path(l).name.removesuffix(".ko").replace("-", "_") for l in builtin.split()}
+
+    # --- the test stick: the final image, the real stick's GPT, its XBOOTLDR and the injected maint root
+    if XB.stat().st_size > part_bytes("XBOOTLDR"): sys.exit("XBOOTLDR dump is larger than the partition")
+    stick_size = sh["alt"] * 512 + 512
+    STICK.unlink(missing_ok=True)
+    run("cp", "--reflink=auto", "--sparse=always", IMG, STICK, check=True)
+    with open(STICK, "r+b") as f:
+        f.truncate(stick_size)
+        f.seek(0); f.write(HEAD.read_bytes()); f.seek(stick_size - TAIL.stat().st_size); f.write(TAIL.read_bytes())
+        for off, dump in ((XBOFF, XB), (MAINTOFF, maint)):
+            f.seek(off)
+            with open(dump, "rb") as d: shutil.copyfileobj(d, f, 16 << 20)
+    maint.unlink()
+class ProducedStick:
+    """mtools view of one stick copy. Reads the delivered menu; writes go to extra names or, after the check, the copy's loader.conf."""
+    def __init__(self, img, xboff, espoff, work):
+        self.img, self.xboff, self.espoff, self.work = img, xboff, espoff, work
+        self.produced_menu_ok = False
+    def _loc(self, key):
+        if key.startswith("entries/"):
+            name = key.split("/", 1)[1]
+            if name in ("", ".", "..") or "/" in name: raise KeyError(key)
+            return self.xboff, f"::/loader/entries/{name}"
+        if key == "esp/loader.conf":
+            return self.espoff, "::/loader/loader.conf"
+        raise KeyError(key)
+    def read(self, key):
+        off, path = self._loc(key)
+        env = dict(os.environ, MTOOLS_SKIP_CHECK="1")
+        r = subprocess.run(["mtype", "-i", f"{self.img}@@{off}", path], capture_output=True, env=env)
+        if r.returncode: raise FileNotFoundError(key)
+        return r.stdout
+    def names(self):
+        return esp_entries(self.img, self.xboff)
+    def write(self, key, data):
+        off, path = self._loc(key)
+        host = self.work / "produced-menu" / key.replace("/", "_")
+        host.parent.mkdir(parents=True, exist_ok=True)
+        host.write_bytes(data)
+        mtools("mcopy", self.img, off, "-o", host, path)
+
 IMAP = gptlib.read_initcall_map(STICKSRC / "builtin-initcalls.txt")
-entry = template.replace("@ROOT_PARTUUID@", sg[snum["kano-maint"]]["guid"]).replace("@INITCALL_BLACKLIST@", gptlib.initcalls(IMAP))
-(W / "gbos-install.conf").write_text(entry)
-mtools("mcopy", STICK, XBOFF, "-o", W / "gbos-install.conf", "::/loader/entries/gbos-install.conf")
-check("stick XBOOTLDR has the entry rendered from the template",
-      mtools("mtype", STICK, XBOFF, "::/loader/entries/gbos-install.conf").decode() == entry
-      and template.count("@ROOT_PARTUUID@") == 1 and template.count("@INITCALL_BLACKLIST@") == 1 and "@" not in entry)
-# QEMU-only entries: installer I/O on the serial port, no serial getty fighting for it; one without lockdown
-serial_opts = " console=ttyS0,115200 gbos.install.tty=ttyS0 systemd.mask=serial-getty@ttyS0.service"
-test_entry = re.sub(r"(?m)^title .*$", "title gbos-install-test", entry)
-test_entry = re.sub(r"(?m)^(options .*)$", lambda m: m.group(1) + serial_opts, test_entry)
-nold_entry = re.sub(r"(?m)^title .*$", "title gbos-install-nolockdown", test_entry).replace(" lockdown=integrity", "")
-noic_entry = re.sub(r"(?m)^title .*$", "title gbos-install-noinitcall", test_entry).replace(
-    " initcall_blacklist=" + gptlib.initcalls(IMAP) + " ", " initcall_blacklist=mei_me_driver_init ")
-if noic_entry.count("initcall_blacklist=mei_me_driver_init ") != 1: sys.exit("cannot build the noinitcall entry")
-nomod_entry = re.sub(r"(?m)^title .*$", "title gbos-install-nomodule", test_entry).replace(",spi_intel_pci,", ",")
-if test_entry.count(",spi_intel_pci,") != 1 or "spi_intel_pci" in nomod_entry: sys.exit("cannot build the nomodule entry")
-upd_entry = re.sub(r"(?m)^title .*$", "title gbos-update-test", test_entry)
-upd_entry = re.sub(r"(?m)^(options .*)$", lambda m: m.group(1) + " gbos.update=1", upd_entry)
-for name, text in (("gbos-install-test.conf", test_entry), ("gbos-install-nolockdown.conf", nold_entry),
-                   ("gbos-install-noinitcall.conf", noic_entry), ("gbos-install-nomodule.conf", nomod_entry),
-                   ("gbos-update-test.conf", upd_entry)):
-    (W / name).write_text(text); mtools("mcopy", STICK, XBOFF, "-o", W / name, f"::/loader/entries/{name}")
+initcalls = gptlib.initcalls(IMAP)
+produced_store = None
+# Produced stick: keep gbos-install.conf, gbos-update.conf, and loader.conf.
+if PRODUCED:
+    produced_store = ProducedStick(STICK, XBOFF, ESPOFF, W)
+    try:
+        if ASIS:
+            entry = produced_menu.read_delivered(
+                produced_store, template, sg[snum["kano-maint"]]["guid"], initcalls)
+        if not ASIS:
+            entry = produced_menu.stage_produced(
+                produced_store, template, sg[snum["kano-maint"]]["guid"], initcalls)
+    except produced_menu.ProducedMenuError as err:
+        sys.exit(f"produced menu: {err}")
+    check("produced menu bytes are the stick's own install, update, and loader default", True)
+else:
+    # a stick built from a dump may have no installer entry yet
+    mtools("mdeltree", STICK, XBOFF, "::/gbos-nvme", ok=False)
+    for e in ("gbos-nvme.conf", "gbos-nvme-debug.conf"): mtools("mdel", STICK, XBOFF, f"::/loader/entries/{e}", ok=False)
+    entry = template.replace("@ROOT_PARTUUID@", sg[snum["kano-maint"]]["guid"]).replace("@INITCALL_BLACKLIST@", initcalls)
+    (W / "gbos-install.conf").write_text(entry)
+    # Pack writes only the two boot files. setup-stick.sh creates this directory
+    # before the entry; mmd is non-zero when a previous stick already has it.
+    mtools("mmd", STICK, XBOFF, "::/loader", ok=False)
+    mtools("mmd", STICK, XBOFF, "::/loader/entries", ok=False)
+    mtools("mcopy", STICK, XBOFF, "-o", W / "gbos-install.conf", "::/loader/entries/gbos-install.conf")
+    check("stick XBOOTLDR has the entry rendered from the template",
+          mtools("mtype", STICK, XBOFF, "::/loader/entries/gbos-install.conf").decode() == entry
+          and template.count("@ROOT_PARTUUID@") == 1 and template.count("@INITCALL_BLACKLIST@") == 1 and "@" not in entry)
+    # QEMU-only entries: installer I/O on the serial port, no serial getty fighting for it; one without lockdown
+    serial_opts = produced_menu.SERIAL_OPTS
+    test_entry = re.sub(r"(?m)^title .*$", "title gbos-install-test", entry)
+    test_entry = re.sub(r"(?m)^(options .*)$", lambda m: m.group(1) + serial_opts, test_entry)
+    nold_entry = re.sub(r"(?m)^title .*$", "title gbos-install-nolockdown", test_entry).replace(" lockdown=integrity", "")
+    noic_entry = re.sub(r"(?m)^title .*$", "title gbos-install-noinitcall", test_entry).replace(
+        " initcall_blacklist=" + initcalls + " ", " initcall_blacklist=mei_me_driver_init ")
+    if noic_entry.count("initcall_blacklist=mei_me_driver_init ") != 1: sys.exit("cannot build the noinitcall entry")
+    nomod_entry = re.sub(r"(?m)^title .*$", "title gbos-install-nomodule", test_entry).replace(",spi_intel_pci,", ",")
+    if test_entry.count(",spi_intel_pci,") != 1 or "spi_intel_pci" in nomod_entry: sys.exit("cannot build the nomodule entry")
+    upd_entry = re.sub(r"(?m)^title .*$", "title gbos-update-test", test_entry)
+    upd_entry = re.sub(r"(?m)^(options .*)$", lambda m: m.group(1) + " gbos.update=1", upd_entry)
+    for name, text in (("gbos-install-test.conf", test_entry), ("gbos-install-nolockdown.conf", nold_entry),
+                       ("gbos-install-noinitcall.conf", noic_entry), ("gbos-install-nomodule.conf", nomod_entry),
+                       ("gbos-update-test.conf", upd_entry)):
+        (W / name).write_text(text); mtools("mcopy", STICK, XBOFF, "-o", W / name, f"::/loader/entries/{name}")
 def stick_default(name):
+    if PRODUCED:
+        try:
+            produced_menu.point_copy_at(produced_store, name)
+        except produced_menu.ProducedMenuError as err:
+            sys.exit(f"produced menu: {err}")
+        return
     (W / "loader.conf").write_text(f"default {name}\ntimeout 1\neditor no\n")
     mtools("mcopy", STICK, ESPOFF, "-o", W / "loader.conf", "::/loader/loader.conf")
 
@@ -298,9 +474,11 @@ class QMP:
 
 def clean(out): return re.sub(rb"\x1b\[[0-9;?]*[A-Za-z]", b"", out).decode(errors="replace")
 
-def qemu(tag, drives, steps=(), seconds=900, serial=True):
+def qemu(tag, drives, steps=(), seconds=900, serial=True, _attempt=1):
     """steps: [(regex, reply, label)]: when regex shows up on the serial port, record the NVMe counters under label,
-    then send reply. An unexpected "Press Enter to poweroff/reboot" is answered too (label "unexpected-end")."""
+    then send reply. An unexpected "Press Enter to poweroff/reboot" is answered too (label "unexpected-end").
+    OVMF sometimes finishes console setup and never prints "BdsDxe: loading" (one vCPU spins, the USB stick is
+    never read). That attempt is not a scenario result: start one new QEMU. A second miss is a real failure."""
     vars_fd = W / f"{tag}-vars.fd"; shutil.copy(VARS, vars_fd)
     tmp = Path(tempfile.mkdtemp(prefix="gbq"))     # short path: unix socket names are limited to 108 bytes
     qmp_path, sock = tmp / "qmp", tmp / "serial"
@@ -316,6 +494,8 @@ def qemu(tag, drives, steps=(), seconds=900, serial=True):
     p = subprocess.Popen(cmd, env=env)
     res = dict(alive=False, text="", stats={})
     out = b""
+    stalled = False
+    orig_steps = steps
     try:
         if serial:
             end = time.time() + 60
@@ -329,6 +509,7 @@ def qemu(tag, drives, steps=(), seconds=900, serial=True):
             s.settimeout(1)
         q = QMP(qmp_path, p)
         steps, pos, end = list(steps), 0, time.time() + seconds
+        firmware_deadline = time.time() + 120
         while time.time() < end and p.poll() is None:
             if not serial:
                 time.sleep(2); continue
@@ -338,6 +519,9 @@ def qemu(tag, drives, steps=(), seconds=900, serial=True):
                 out += b
             except socket.timeout:
                 pass
+            if _attempt == 1 and time.time() > firmware_deadline and b"BdsDxe: loading" not in out:
+                print(f"[{tag}] firmware produced no boot load line, retrying the boot once", flush=True)
+                break
             text = clean(out)
             m = re.search(steps[0][0], text[pos:]) if steps else None
             if m: _, reply, label = steps.pop(0)
@@ -350,7 +534,9 @@ def qemu(tag, drives, steps=(), seconds=900, serial=True):
             print(f"[{tag}] saw {m.group(0)!r}, sending {reply!r}", flush=True)
             time.sleep(0.5); s.sendall(reply.encode())
             out += f"\n<<<sent {reply!r}>>>\n".encode()
-        if serial:
+        stalled = (serial and _attempt == 1 and p.poll() is None
+                   and b"BdsDxe: loading" not in out and b"Press Enter to" not in out)
+        if serial and not stalled:
             try: p.wait(60)
             except subprocess.TimeoutExpired: pass
         res["alive"] = p.poll() is None
@@ -365,12 +551,15 @@ def qemu(tag, drives, steps=(), seconds=900, serial=True):
         shutil.rmtree(tmp, ignore_errors=True)
     if serial: (W / f"{tag}-serial.log").write_bytes(out)
     res["text"] = clean(out)
+    if stalled:
+        return qemu(tag, drives, orig_steps, seconds, serial, _attempt=2)
     return res
 
 STICK_DRV = ["-drive", f"file={STICK},if=none,id=stick,format=raw", "-device", "usb-storage,bus=xhci.0,drive=stick,bootindex=1"]
 def nvme_drv(path): return ["-drive", f"file={path},if=none,id=nv,format=raw", "-device", f"nvme,drive=nv,serial={NVME_SERIAL},bus=pcie.0,addr=0x2"]
 def no_writes(st):
-    return st is not None and st.get("wr_bytes") == 0 and st.get("wr_operations") == 0 and st.get("unmap_operations", 0) == 0
+    # A missing discard counter is not zero. QMP has to report unmap_operations.
+    return st is not None and st.get("wr_bytes") == 0 and st.get("wr_operations") == 0 and st.get("unmap_operations") == 0
 def fingerprint(path):
     """SHA-256 over the data extents (offsets and bytes) of a sparse file, and its allocated blocks."""
     h = hashlib.sha256(); fd = os.open(path, os.O_RDONLY); off = 0; size = os.fstat(fd).st_size
@@ -431,12 +620,13 @@ def nvme_entry(title, t):
     t = re.sub(r"(?m)^linux .*$", "linux /gbos-nvme/kernel.efi", t)
     return re.sub(r"(?m)^initrd .*$", "initrd /gbos-nvme/initrd.img", t)
 
-def installed(tag, nv, r):
+def installed(tag, nv, r, disk_only=False):
     t = r["text"]
-    check(f"{tag}: installer reports INSTALL OK", "INSTALL OK" in t and not re.search(r"(?m)^ERROR: ", t))
-    check(f"{tag}: kernel lockdown was on in the installer boot", re.search(r"ok +kernel lockdown: (integrity|confidentiality)", t))
-    check(f"{tag}: built-in TPM/nvram drivers blocked in the installer boot (runtime check)", re.search(BUILTIN_OK, t))
-    check(f"{tag}: whole module_blacklist on the command line, none of it loaded (runtime check)", re.search(CMDLINE_OK, t))
+    if not disk_only:
+        check(f"{tag}: installer reports INSTALL OK", "INSTALL OK" in t and not re.search(r"(?m)^ERROR: ", t))
+        check(f"{tag}: kernel lockdown was on in the installer boot", re.search(r"ok +kernel lockdown: (integrity|confidentiality)", t))
+        check(f"{tag}: built-in TPM/nvram drivers blocked in the installer boot (runtime check)", re.search(BUILTIN_OK, t))
+        check(f"{tag}: whole module_blacklist on the command line, none of it loaded (runtime check)", re.search(CMDLINE_OK, t))
     check(f"{tag}: zero writes to the NVMe before the confirmation (QMP)", no_writes(r["stats"].get("prompt")), r["stats"].get("prompt"))
     try:
         nh, ng = gptlib.read_gpt(nv, backup=True); gerr = ""
@@ -483,6 +673,13 @@ def installed(tag, nv, r):
     check(f"{tag}: NVMe ESP holds exactly the image's entries", esp_entries(nv, eoff) == ENTRIES, esp_entries(nv, eoff))
     loader = mtools("mtype", nv, eoff, "::/loader/loader.conf").decode()
     check(f"{tag}: NVMe loader.conf exact", loader == "default lapis-quiet.conf\ntimeout 5\neditor no\nauto-firmware no\n", repr(loader))
+    # AS-IS keeps snapshot=on, so this host file never shows the guest's stick writes.
+    if not disk_only:
+        stick_after_install(tag, nv, eoff, kernel, initrd)
+    return ud
+
+def stick_after_install(tag, nv, eoff, kernel, initrd):
+    """Serial suite only: the stick drive is raw there, so guest writes are in the host file."""
     xk = mtools("mtype", STICK, XBOFF, "::/gbos-nvme/kernel.efi", ok=False)
     xi = mtools("mtype", STICK, XBOFF, "::/gbos-nvme/initrd.img", ok=False)
     check(f"{tag}: stick XBOOTLDR kernel and initrd for the internal disk = the NVMe ESP's", xk == kernel and xi == initrd)
@@ -495,7 +692,6 @@ def installed(tag, nv, r):
           and "linux /gbos-nvme/kernel.efi\n" in xq and "initrd /gbos-nvme/initrd.img\n" in xq)
     sl = mtools("mtype", STICK, ESPOFF, "::/loader/loader.conf").decode()
     check(f"{tag}: stick menu starts the internal disk by default", sl == "default gbos-nvme.conf\ntimeout 5\neditor no\nauto-firmware no\n", repr(sl))
-    return ud
 
 def nvme_boot(tag, nv, ud):
     r = qemu(f"{tag}-boot", ["-drive", f"file={nv},if=none,id=nv,format=raw,snapshot=on",
@@ -511,28 +707,38 @@ ONLY = set(filter(None, os.environ.get("GBOS_STICK_SCENARIOS", "").split(",")))
 want = lambda name: not ONLY or name in ONLY
 if ONLY: print("scenarios:", ",".join(sorted(ONLY)))
 
+def preserved_ranges(ud_first, nvme_bytes):
+    """Ranges an update must not change, including the installer's 16 MiB userdata wipe and the marker past it."""
+    return {
+        "head": (0, 1 << 20),
+        "tail": (nvme_bytes - (1 << 20), 1 << 20),
+        "userdata-head": (ud_first * 512, 16 << 20),
+        "userdata-marker": (ud_first * 512 + (64 << 20), 1 << 20),
+    }
+
+
 def update_ranges(nv, ud, slot):
-    """byte ranges an update into the other slot must not change: GPT copies, a userdata marker, the data partitions
-    and the running slot's boot partitions"""
+    """byte ranges an update into the other slot must not change: GPT copies, userdata head, a userdata marker,
+    the data partitions and the running slot's boot partitions"""
     nh, ng = gptlib.read_gpt(nv, backup=True)
-    rng = {"head": (0, 1 << 20), "tail": (NVME_BYTES - (1 << 20), 1 << 20),
-           "userdata-marker": (ud["first"] * 512 + (64 << 20), 1 << 20)}
+    rng = preserved_ranges(ud["first"], NVME_BYTES)
     for name in ("metadata", "misc", "frp_persist", "desktop_security_persist", "desktop_security_storage",
                  f"boot_{slot}", f"init_boot_{slot}", f"vendor_boot_{slot}", f"vbmeta_{slot}"):
         e = ng[mnum[name]]; rng[name] = (e["first"] * 512, (e["last"] + 1 - e["first"]) * 512)
     return {"ranges": rng, "sha": {k: gptlib.sha(nv, a, n) for k, (a, n) in rng.items()}}
 
-def updated(tag, nv, r, before, t="b", c="a", c_initrd="/initrd.img"):
+def updated(tag, nv, r, before, t="b", c="a", c_initrd="/initrd.img", disk_only=False):
     """after the update mode of gbos-install: slot t holds the image, slot c and every data partition unchanged, both
     menus start t with c as the previous version (c_initrd: slot c's initrd on the NVMe's ESP)"""
     txt = r["text"]
-    check(f"{tag}: update mode reports UPDATE OK", f"UPDATE OK: slot {t}" in txt and "Update done" in txt and not re.search(r"(?m)^(ERROR|FAILED|REFUSED): ", txt))
-    check(f"{tag}: runtime checks passed in the update boot", re.search(BUILTIN_OK, txt) and re.search(CMDLINE_OK, txt))
-    # (the answer is sent as soon as the prompt starts, so the transcript may split the prompt line)
-    check(f"{tag}: the updater showed the installed slot before asking", f"current slot {c}" in txt and re.search(CONFIRM, txt)
-          and "to update, or just Enter to cancel" in txt and txt.index(f"current slot {c}") < re.search(CONFIRM, txt).start())
-    check(f"{tag}: the stick's menu was prepared before any slot was written",
-          "ok   stickprep:" in txt and txt.index("ok   stickprep:") < txt.index("ok   removed:") < txt.index("ok   dynamic:"))
+    if not disk_only:
+        check(f"{tag}: update mode reports UPDATE OK", f"UPDATE OK: slot {t}" in txt and "Update done" in txt and not re.search(r"(?m)^(ERROR|FAILED|REFUSED): ", txt))
+        check(f"{tag}: runtime checks passed in the update boot", re.search(BUILTIN_OK, txt) and re.search(CMDLINE_OK, txt))
+        # (the answer is sent as soon as the prompt starts, so the transcript may split the prompt line)
+        check(f"{tag}: the updater showed the installed slot before asking", f"current slot {c}" in txt and re.search(CONFIRM, txt)
+              and "to update, or just Enter to cancel" in txt and txt.index(f"current slot {c}") < re.search(CONFIRM, txt).start())
+        check(f"{tag}: the stick's menu was prepared before any slot was written",
+              "ok   stickprep:" in txt and txt.index("ok   stickprep:") < txt.index("ok   removed:") < txt.index("ok   dynamic:"))
     check(f"{tag}: zero writes to the NVMe before the confirmation (QMP)", no_writes(r["stats"].get("prompt")), r["stats"].get("prompt"))
     after = {k: gptlib.sha(nv, a, n) for k, (a, n) in before["ranges"].items()}
     check(f"{tag}: GPT, userdata marker, metadata, misc, frp and slot {c} unchanged byte for byte",
@@ -546,6 +752,12 @@ def updated(tag, nv, r, before, t="b", c="a", c_initrd="/initrd.img"):
     check(f"{tag}: NVMe menu: current entries start slot {t} (lifted), previous version slot {c}",
           f"initrd /gbos/{t}/initrd.img" in q and "initcall_blacklist=mei_me_driver_init" in q and "nvme_init" not in q
           and f"initrd {c_initrd}" in pq and "(previous version)" in pq)
+    # Same snapshot rule as stick_after_install: the host stick file stays the boot copy.
+    if not disk_only:
+        stick_after_update(tag, nv, eoff, t, c, c_initrd)
+
+def stick_after_update(tag, nv, eoff, t, c, c_initrd):
+    """Serial suite only. See stick_after_install."""
     xq = mtools("mtype", STICK, XBOFF, "::/loader/entries/gbos-nvme.conf", ok=False).decode()
     xd = mtools("mtype", STICK, XBOFF, "::/loader/entries/gbos-nvme-debug.conf", ok=False).decode()
     xp = mtools("mtype", STICK, XBOFF, "::/loader/entries/gbos-nvme-prev.conf", ok=False).decode()
@@ -555,6 +767,36 @@ def updated(tag, nv, r, before, t="b", c="a", c_initrd="/initrd.img"):
           and mtools("mtype", STICK, XBOFF, f"::/gbos-nvme/{t}/initrd.img", ok=False) == mtools("mtype", nv, eoff, f"::/gbos/{t}/initrd.img"))
     check(f"{tag}: the stick's menu starts the internal disk by default",
           mtools("mtype", STICK, ESPOFF, "::/loader/loader.conf", ok=False).decode().startswith("default gbos-nvme.conf\n"))
+
+def visible_entries(img, off):
+    shown = []
+    for name in esp_entries(img, off):
+        txt = mtools("mtype", img, off, f"::/loader/entries/{name}").decode(errors="replace")
+        linux = next((l.split(None, 1)[1].strip() for l in txt.splitlines() if l.startswith("linux ")), "")
+        if linux and mtools("mdir", img, off, "-b", f"::{linux}", ok=False):
+            shown.append(name)
+    return shown
+
+# AS-IS acceptance boots the copy with no menu rewrite. Serial cases stay below.
+if ASIS:
+    import asis_boot
+    entry_names = set(visible_entries(STICK, XBOFF)) | set(visible_entries(STICK, ESPOFF))
+    update_ups = asis_boot.update_ups(entry_names)
+    if os.environ.get("GBOS_ASIS_UPDATE_UPS"):
+        update_ups = int(os.environ["GBOS_ASIS_UPDATE_UPS"])
+    asis_boot.run({
+        "work": W, "stick": STICK, "source": STICK_SRC, "boot_sha": BOOT_COPY_SHA,
+        "qemu": QEMU, "qlib": QLIB, "code": CODE, "vars": VARS,
+        "serial": NVME_SERIAL, "nvme_bytes": NVME_BYTES, "check": check,
+        "installed": installed, "updated": updated, "update_ranges": update_ranges,
+        "update_ups": update_ups,
+    })
+    failed = [k for k, v in results.items() if not v]
+    print("AS-IS ACCEPTANCE", "OK" if not failed else "FAILED", f"({sum(results.values())}/{len(results)})")
+    print("serial/negative suite: not this process")
+    for k in failed:
+        print("  failed:", k)
+    sys.exit(0 if not failed else 1)
 
 # 1. no lockdown: refused at once
 if want("refusals"):
@@ -617,6 +859,17 @@ for tag, nv in (("install-flex", FLEX), ("install-blank", BLANK)):
         updated("update2-blank", nv, r, before, t="a", c="b", c_initrd="/gbos/b/initrd.img")
         nvme_boot("update2-blank", nv, ud)
     if not os.environ.get("GBOS_STICK_KEEP"): nv.unlink()
+
+if PRODUCED:
+    after = gptlib.sha(STICK_SRC, 0, STICK_SRC.stat().st_size)
+    published = Path(str(STICK_SRC) + ".sha256").read_text().split()[0]
+    check("produced stick file is unchanged and matches its sha256",
+          PRODUCED_BEFORE == after == published,
+          f"before {PRODUCED_BEFORE} after {after} published {published}")
+    print(f"sha256 before {PRODUCED_BEFORE}")
+    print(f"sha256 after {after}")
+    print(f"sha256 published {published}")
+    print("no injection")
 
 failed = [k for k, v in results.items() if not v]
 print("STICK INSTALLER TEST", "OK" if not failed else "FAILED", f"({sum(results.values())}/{len(results)})")

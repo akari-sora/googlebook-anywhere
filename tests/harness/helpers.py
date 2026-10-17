@@ -31,9 +31,9 @@ IMAGE_SIZE, STICK_SIZE, NVME_SIZE = 16 * MiB, 24 * MiB, 24 * MiB
 CHANGED_MIB = [2, 5, 6, 10]          # EFI-SYSTEM, super x2, vbmeta_a
 
 REMOTE_TOOLS = ["lsblk", "findmnt", "dd", "blkdiscard", "sgdisk", "blockdev", "mount", "umount", "cmp", "sha256sum",
-                "modprobe", "partx", "sync", "sleep", "resize.f2fs", "fsck.f2fs"]
+                "modprobe", "partx", "sync", "sleep", "resize.f2fs", "fsck.f2fs", "rm", "rmdir"]
 SAFE_TOOLS = ["bash", "sh", "cat", "grep", "sed", "awk", "tr", "cut", "head", "tail", "ls", "basename", "dirname",
-              "mkdir", "cp", "rm", "mv", "base64", "wc", "sort", "uniq", "printf", "env", "true", "false", "date",
+              "mkdir", "cp", "mv", "base64", "wc", "sort", "uniq", "printf", "env", "true", "false", "date",
               "seq", "expr", "tee", "touch", "od", "id", "uname", "test"]
 
 
@@ -145,8 +145,9 @@ class FakeKano:
         self.tmp = Path(tmp)
         self.root = self.tmp / "fake"
         self.home = self.tmp / "home"
-        for d in ("log", "dev", "disks", "proc/self", "sys", "mnt", "root", "etc", "sgdisk"):
+        for d in ("log", "dev", "disks", "proc/self", "sys", "mnt", "root", "etc", "sgdisk", "pyfault"):
             (self.root / d).mkdir(parents=True, exist_ok=True)
+        shutil.copy(FAKES / "pyfault" / "sitecustomize.py", self.root / "pyfault" / "sitecustomize.py")
         self.home.mkdir()
         self.runs, self.work = self.home / "runs", self.home / "work"
         shared = shared_bin()

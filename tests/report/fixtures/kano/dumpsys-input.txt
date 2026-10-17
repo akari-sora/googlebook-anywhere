@@ -1,0 +1,6 @@
+Device 3: ELAN2701:00 04F3:323C Touchpad
+  Classes: TOUCHPAD
+Device 4: ELAN900C:00 04F3:2D5B
+  Classes: TOUCH | TOUCH_MT
+Device 2: AT Translated Set 2 keyboard
+  Classes: KEYBOARD

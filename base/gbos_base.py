@@ -25,6 +25,7 @@ Subcommands (see build-base.sh for the order):
 """
 
 import hashlib
+import http.client
 import json
 import os
 import re
@@ -296,7 +297,9 @@ def _http_get(url, a=None, b=None):
 def _resolve(url):
     req = urllib.request.Request(url, headers={"Range": "bytes=0-0", "User-Agent": "gbos-base/1"})
     with urllib.request.urlopen(req, timeout=120) as r:
-        cr = r.headers.get("Content-Range") or die("server ignored Range for " + url)
+        cr = r.headers.get("Content-Range") or ""
+        if r.status != 206 or "/" not in cr or not cr.split("/")[1].isdigit():
+            raise urllib.error.URLError("server ignored Range for " + url)
         return r.geturl(), int(cr.split("/")[1])
 
 
@@ -322,7 +325,7 @@ class _Remote:
         if time.monotonic() - self.at > self.REFRESH:
             try:
                 self._refresh()
-            except (urllib.error.URLError, TimeoutError, OSError) as e:
+            except (urllib.error.URLError, http.client.HTTPException, TimeoutError, OSError) as e:
                 # the current signed URL is still good for a while: keep it (a refused request re-resolves below)
                 print(f"note: re-resolving {self.url} failed ({e}); keeping the current signed URL", file=sys.stderr)
                 self.at = time.monotonic()

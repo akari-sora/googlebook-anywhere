@@ -13,6 +13,7 @@ AP 序列埠紀錄、systemd-boot 選單選擇、危險字串看守（EC 斷電�
 | `kano-boot.sh` | EC 斷電重開，依標題在 systemd-boot 選單選項目（可附加核心參數，要映像的選單編輯器打開） |
 | `kano-gbos-watch.py`、`kano-gbos-watch-nvme.py` | 看守序列埠，出現危險字串就 EC 斷電（USB 版／NVMe 版） |
 | `kano-delta-push.py`、`kano-delta-push-nvme.py` | 只推送變動的 1 MiB 區塊並逐塊回讀驗證 |
+| `kano-autooff-image.py` | 讀 GPT／LP／vendor EROFS，拒絕 TEST autooff 映像 |
 | `kano-nvme-install.sh`、`kano-nvme-update.sh` | 裝到內建 NVMe（需 `--go`）／更新 |
 | `kano-ssh.sh` | 連到維護 Linux 的 ssh（所有腳本的 ssh 都經過它） |
 | `kano-ui.sh` | adb + uiautomator：列出畫面元素、依文字點擊、截圖 |
@@ -58,14 +59,34 @@ shell 腳本從自己所在的目錄 source `kano-env.sh`，它會先讀 `kano-e
 ```
 
 私有 repo 保留開發者的 `kano-env.local.sh`；公開版不含這個檔案。
+A clean personal-data scan covers the public export tree only, not the private checkout and not an unscanned installer image.
 
 ## 防呆（實際做了什麼，沒做什麼）
 
-**`kano-ser.py`**：`ec` 子指令只送 allowlist 裡的指令：`apshutdown`、`powerbtn [ms]`、`kbpress <col> <row> [0|1]`、
-`version`、`battery`、`powerinfo`、`kblight`（只有不帶參數的讀取形式）、`gpioget [名稱]`、`lidclose`／`lidopen`／`lidstate`
-（模擬闔上／打開上蓋：只改 EC RAM 裡的上蓋狀態並送出和實體上蓋相同的事件，見 EC 原始碼 `common/lid_switch.c`；用完一定要 `lidopen`）。在開序列埠之前就檢查：
-任何控制字元（CR、LF、NUL、TAB…）、非 ASCII、不在清單的指令、不合格式的參數都拒絕，exit 2。指令名稱要完全相同
-（不分大小寫）；EC 本身接受唯一前綴縮寫，所以前綴一律不放行。pyserial 只在真的開序列埠時才載入。
+**`kano-ser.py`**：這是一般維護工具。`ec` 的 allowlist 是第二層，只限制哪些 EC 指令可以經由它送出。session 走
+`kano-session-lib`，範圍更窄（不送 `apshutdown`、`powerbtn` 只能不帶時間、而且要先取得 session 的 hardware lock）。
+這支 transport 不檢查 hardware lock。測試用的 `tests/harness/fixtures/kano-session-lib-v117.sh` 是 v11.7 的副本，只把範例網段換成文件專用的
+`192.0.2.`（TEST-NET-1），sha256 釘在 `tests/harness/test_ser.py`。
+
+`ec` 子指令只送 allowlist 裡的指令：`apshutdown`、`powerbtn [ms]`、`kbpress <col> <row> [0|1]`、
+`version`、`battery`、`powerinfo`、`kblight`（不帶參數的讀取，或 `kblight <p>`，p 為 0..100 的標準十進位：無正負號、無前導零、非十六進位）、
+`pwmduty`（讀全部 channel）、`pwmduty 0`（讀 channel 0，鍵盤背光）、`pwmduty 0 <d>`（d 為 `-1`，或同樣的 0..100；channel 1 是風扇，不是字面 `0` 的 channel 拒絕）、
+`gpioset EC_KB_BL_EN_L 0|1`（GPIO 名稱大小寫必須與 `EC_KB_BL_EN_L` 完全相同，其他名稱拒絕）、
+`sysinfo`、`cbi`（只有不帶參數的讀取；帶參數可能進入 CBI 寫入操作，因此一律拒絕）、
+`gpioget [名稱]`、`lidclose`／`lidopen`／`lidstate`
+（模擬闔上／打開上蓋：不寫 flash／CBI，只改 EC RAM 裡的上蓋狀態並送出和實體上蓋相同的事件，見 EC 原始碼 `common/lid_switch.c`；`lidopen` 在 AP 關機時會像實體開蓋一樣開機（等同 `powerbtn`）；模擬狀態會一直留到 `lidopen`、實際上蓋動作或 EC 重設。用完一定要 `lidopen`）。
+
+新增形狀 `pwmduty`（含 `pwmduty 0` 與 `pwmduty 0 <d>`）、`gpioset EC_KB_BL_EN_L 0|1`、`kblight <p>`、`sysinfo`、`cbi`
+只接受已經是正規形的原始字串：指令名稱小寫、token 之間單一 ASCII 空白、沒有前導或尾端空白。舊指令（`apshutdown`、
+`powerbtn`、`kbpress`、`gpioget`、`lidclose`／`lidopen`／`lidstate`、`version`、`battery`、`powerinfo`、不帶參數的
+`kblight`）仍把指令名稱折成小寫、把連續空白收成一個。
+
+鍵盤背光的寫入（`pwmduty 0 <d>`、`gpioset EC_KB_BL_EN_L`、`kblight <p>`）只改 EC RAM。EC reset 會還原它們。
+EC 在 AP suspend／resume 時也會自己重新驅動 `EC_KB_BL_EN_L`。
+
+在開序列埠之前就檢查：任何控制字元（CR、LF、NUL、TAB…）、非 ASCII、不在清單的指令、不合格式的參數都拒絕，exit 2。
+舊指令的名稱不分大小寫；新增形狀的名稱必須是小寫。參數維持原本的大小寫。EC 本身接受唯一前綴縮寫，所以前綴一律不放行。
+pyserial 只在真的開序列埠時才載入。
 `ap-send`、`ap-type`、`ap-keys`、`ap-spam` 寫到 AP UART（韌體、bootloader 選單、維護 shell），**沒有過濾**，送什麼就執行什麼。
 `menu` 只把真正的倒數狀態列（`Boot in <n> s.`，單獨占一列）當成選單的結尾，所以標題裡含「Boot in」（例如
 「Boot into Linux」）不會截斷選單、讓標題的歧義被漏掉。
@@ -90,6 +111,8 @@ NVMe 不是根目錄碟；NVMe 上沒有任何分割被掛載、當 swap 或被�
 核心分割表一致。每次寫入同樣附帶 `write_guard`；根目錄所在碟要被正面認出（`lsblk` 失敗或印出空值都拒絕，
 不會因為「空字串不等於 nvme0n1」而放行），而且是序號相符的 USB 碟。
 
+**`kano-autooff-image.py`**：給安裝與更新用的唯讀掃描。GPT 名稱用 kernel 的低 7 bits（`utf16_le_to_7bit`；kernel 另把非可列印字元換成 `!`，這個檢查器保留低 7 bits，ASCII 的 `super` 相同）。恰好一個 `super`；多於一個就拒絕。主表的 `my_lba` 必須是正在讀的 LBA，表項必須是 128 bytes。header／分割表 CRC 失敗才讀備援 GPT。LP 欄位檢查對齊 liblp，並套用 `AdjustMetadataForSlot`（`SLOT_SUFFIXED` 在 slot 0／1 加上 `_a`／`_b`；名字放不下，或 slot 2 以上仍帶這個旗標，就拒絕整份映像，不改選備援）。`DISABLED` 的 vendor 略過。`UPDATED` 不拒絕。表項超過 4096 或 tables 超過 1 MiB，而且這份副本 liblp 會接受，就拒絕整份映像，不改選備援。checksum 壞掉的主副本仍改讀備援。每一個 metadata slot 都掃（安裝器會留下 `androidboot.slot_suffix`，含 `_b`）。另一個 slot 留著舊的 TEST vendor 也會被拒。`vendor_b` 沒有 extent（lapis super 的空 slot）是正常的，不讀。EROFS 用 inode mode 走進目錄，並依釘死的 kernel `fs/erofs/erofs_fs.h`（`3938c8d97142`）處理 48-bit 根 nid（`0x80`）與 METABOX（`0x100`）。不認得的 incompat bit 拒絕。解析 `etc/kano-autooff.nonce` 與 `etc/init/kano-autooff.rc`（含目錄符號連結；`..` 走出 vendor 根目錄也拒絕）。解析到一般檔就拒絕。
+
 **`kano-nvme-install.sh`**：每個遠端步驟都是一個 `set -euo pipefail` 的 `bash -s` 腳本，開頭先跑防呆
 （NVMe 的 `TRAN`、PCI ID、序號；維護系統根目錄在指定序號的隨身碟；NVMe 沒有東西掛載、swap 或被佔用），
 所以防呆和其後的 `blkdiscard`／`dd` 在同一次呼叫裡執行，中間重開機也溜不過去。「沒有掛載／swap／佔用」的查詢失敗
@@ -101,10 +124,10 @@ NVMe 不是根目錄碟；NVMe 上沒有任何分割被掛載、當 swap 或被�
 `$KANO_RUNS/nvme-install/run-<時間>-<pid>/`，每步的輸出寫在那裡；一步要 ssh exit 0 **且**這次的輸出裡有一整行是該步的標記（腳本最後一個指令，`set -e` 下才印得出來）才算通過，
 否則立即停止。不再讀累積的 `install.log`，舊的成功標記不會被當成這次的結果。`blkdiscard` 之前先把 NVMe 的
 前 1 MiB 與最後 1 MiB（主、備份 GPT）存到 run 目錄，和 KANO 上算的 sha256 比對，不符就停止。這只是 GPT 的備份，
-**不是** NVMe 上資料的備份。
+**不是** NVMe 上資料的備份。寫入前會把檢查器送到維護系統，比對 SHA-256，並要求它印出剛好一行 `vendor clean`；`blkdiscard` 前再掃一次。接著確認 `sda1` 的 PARTLABEL 是 `userdata`，才以 `-o ro` 掛上（f2fs 仍可能補先前的 fsync）。只有 `lstat` 的 ENOENT 算沒有 `kano-autooff.nonce`；已有一般檔、符號連結或目錄，或列出根目錄／查找失敗，就拒絕。複製過來的 userdata 掛上之後清掉那個名字（`rm -f` 不跟隨符號連結；目錄在 python3 裡用 `shutil.rmtree` 刪除，`avoids_symlink_attacks` 必須為真，檔名不交回 shell）。卸載後再唯讀掛上，`lstat` 必須是 ENOENT，然後再卸載。這一步是這條複製路的安全保證：掛載失敗、根目錄列不出來、查找錯誤（errno 不是 ENOENT）、刪不掉、重新掛載、複查或卸載失敗，就停止，不再 `resize.f2fs`、`fsck.f2fs`，也不再寫 ESP。任何 lstat 發生 ENOENT 以外的查找錯誤就停止；刪除後及重新掛載後的確認，必須得到 ENOENT，成功查到任何物件也停止。vendor 掃描是縱深防禦。`dd` 完成之後、清除成功之前的任何停止（行程被殺掉、斷電、ssh 中斷）都可能留下檔案。
 
 **`kano-nvme-update.sh`**：開始時刪掉同一版本上次留下的 `bootconfig.txt`、`initrd-nvme.sha256` 等產物；每一步檢查 exit status，
-結果只從這次寫出的檔案讀。推送前從 NVMe 讀出 boot_a 的 unique GUID（`sgdisk -i 13`，並確認名稱是 boot_a），
+結果只從這次寫出的檔案讀。dry-run 之前與真正呼叫 `kano-delta-push-nvme.py` 之前各掃一次新映像，必須印出 `vendor clean`。直接呼叫推送程式不會掃描；它只寫 super 與 vbmeta，寫不了 userdata。推送前從 NVMe 讀出 boot_a 的 unique GUID（`sgdisk -i 13`，並確認名稱是 boot_a），
 必須等於 `KANO_NVME_BOOT_A_GUID`。adb 只連 `KANO_ADB_ADDR` 這一個位址，而且只有對面有 `KANO_ANDROID_ID_PROP`
 屬性時才送 `adb reboot -p`；更新後開機若沒認出這個 Android，就不再對那個位址送任何 `adb shell`。
 遠端防呆和安裝一樣，查詢失敗就拒絕。bootconfig 傳輸失敗、遠端 ESP 改寫的任何檢查失敗、看守程式非 0 結束，都會讓整個更新失敗。

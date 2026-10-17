@@ -177,8 +177,11 @@ class Watch(HarnessCase):
         for argv in (["0"], ["nan"], ["-5"], ["inf"], ["5", "--observe-timeout", "0"],
                      ["5", "--stall-timeout", "nan"], ["5", "--ec-timeout", "-1"], ["5", "--camera-every", "-1"]):
             with self.subTest(argv=argv):
-                r = self.fk.run(["python3", HARNESS / "kano-gbos-watch.py", self.log, argv[0], self.fk.tmp / "frames",
-                                 *argv[1:]], timeout=30)
+                try:
+                    r = self.fk.run(["python3", HARNESS / "kano-gbos-watch.py", self.log, argv[0], self.fk.tmp / "frames",
+                                     *argv[1:]], timeout=30)
+                except subprocess.TimeoutExpired as e:
+                    self.fail(f"watcher did not refuse an invalid duration: {e}")
                 self.assertEqual(r.returncode, 5, self.explain(r))
                 self.assertFalse((self.fk.tmp / "frames").exists())
         self.assertEqual(self.ec_writes(), [])
@@ -229,7 +232,10 @@ class Watch(HarnessCase):
 
     def test_hung_ec_port_times_out(self):
         self.writer([GOOD_USB, "[    2.000000] x\n", "[    3.000000] tpm tpm0: starting up\n"], then_idle=False)
-        r = self.watch(60, *FAST, "--ec-timeout", "2", replies=OFF, timeout=80, FAKE_SERIAL_HANG="1")
+        try:
+            r = self.watch(60, *FAST, "--ec-timeout", "2", replies=OFF, timeout=80, FAKE_SERIAL_HANG="1")
+        except subprocess.TimeoutExpired as e:
+            self.fail(f"the hung EC port did not time out within the test limit: {e}")
         self.assertEqual(r.returncode, 6, self.explain(r))
         self.reason("timed out", r.stdout)
         self.assertLess(r.elapsed, 40)

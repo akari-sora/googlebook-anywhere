@@ -1,0 +1,6 @@
+processor: 0
+vendor_id: GenuineIntel
+cpu family: 6
+model: 154
+model name: alice (at) example.com
+stepping: 3

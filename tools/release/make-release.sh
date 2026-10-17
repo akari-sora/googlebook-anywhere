@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Make the installer release archive from a commit: what a user needs to run install/install.sh (no images, no
+# Make the installer release archive from a commit: what a user needs to run install/install.sh (no disk/firmware images, no
 # third-party files, no research notes, no developer harness). usage: tools/release/make-release.sh <version> [commit]
 # The version must look like v1.2.3. An existing archive of that version is never overwritten; the archive and its
 # checksum are built and checked in a temporary directory and moved into out/release/ only when every check passed.
@@ -17,7 +17,7 @@ TMP=$(mktemp -d "$OUT/.release-tmp.XXXXXX")
 trap 'rm -rf "$TMP"' EXIT
 git -C "$ROOT" diff --quiet "$SHA" -- || echo "note: the working tree differs from $C; the archive is made from $SHA"
 git -C "$ROOT" archive --format=tar --prefix="$N/" "$SHA" -- README.md LICENSE base builder install profiles docs \
-    tests/builder tests/install tests/stick tests/probe tests/update tools/release/png-ok.py tools/release/published-images.sha256 \
+    tests/builder tests/install tests/stick tests/probe tests/report tests/update tools/mesa tools/release/png-ok.py tools/release/published-images.sha256 \
     | gzip -n -9 > "$TMP/$N.tar.gz"
 
 # content checks: only regular files and directories, nothing that looks like a disk image or a binary; the only binary
@@ -28,14 +28,20 @@ tar -tzf "$TMP/$N.tar.gz" > "$TMP/names"
 if grep -E '\.(img|bin|zip|pem|apex|ko)$' "$TMP/names"; then echo "refusing: binary-looking file in the archive"; exit 1; fi
 mkdir "$TMP/x"; tar -C "$TMP/x" -xzf "$TMP/$N.tar.gz"
 while IFS= read -r -d '' f; do
-    if ! LC_ALL=C tr -d '\000' < "$f" | cmp -s - "$f"; then
-        case "${f#"$TMP/x/$N/"}" in
-            docs/images/*.png)
-                why=$(python3 "$ROOT/tools/release/png-ok.py" --pinned "$ROOT/tools/release/published-images.sha256" --as "${f#"$TMP/x/$N/"}" "$f") \
-                    || { echo "refusing: ${f#"$TMP/x/"}: ${why#*: }"; exit 1; } ;;
-            *) echo "refusing: binary file in the archive: ${f#"$TMP/x/"}"; exit 1 ;;
-        esac
-    fi
+    case "${f#"$TMP/x/$N/"}" in
+        docs/images/*|*.[pP][nN][gG])
+            why=$(python3 "$ROOT/tools/release/png-ok.py" --pinned "$TMP/x/$N/tools/release/published-images.sha256" --as "${f#"$TMP/x/$N/"}" "$f") \
+                || { echo "refusing: ${f#"$TMP/x/"}: ${why#*: }"; exit 1; }
+            case "${f#"$TMP/x/$N/"}" in
+                docs/images/*/*) echo "refusing: ${f#"$TMP/x/"}: only docs/images/*.png screenshots are allowed"; exit 1 ;;
+                docs/images/*.png) ;;
+                *) echo "refusing: ${f#"$TMP/x/"}: only docs/images/*.png screenshots are allowed"; exit 1 ;;
+            esac ;;
+        *)
+            if ! LC_ALL=C tr -d '\000' < "$f" | cmp -s - "$f"; then
+                echo "refusing: binary file in the archive: ${f#"$TMP/x/"}"; exit 1
+            fi ;;
+    esac
 done < <(find "$TMP/x" -type f -print0)
 
 if command -v sha256sum > /dev/null; then ( cd "$TMP" && sha256sum "$N.tar.gz" > "$N.tar.gz.sha256" )

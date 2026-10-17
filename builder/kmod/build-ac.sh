@@ -96,6 +96,9 @@ cp "$WORK/gki.config" "$K/.config"
 "${M[@]}" olddefconfig
 cmp -s "$K/.config" "$WORK/gki.config" || { diff "$WORK/gki.config" "$K/.config" | head -20; echo "olddefconfig changed the GKI config (different compiler?)"; exit 1; }
 "${M[@]}" modules_prepare
+# modules_prepare writes include/config/kernel.release. gbos-report.sh does not print that string.
+# A dev kernel is dev-kernel. When this tree's .config matches the pinned GKI hash it also says config pass;
+# a readable config that does not match says config fail. A release that is not pinned and not this tree is "other".
 # modpost: the GKI's own exports with their CRCs, and the MODULE_SIG_PROTECT list. That list only names GKI modules
 # whose exports get protected; ac.ko is not one of them, so an empty list changes nothing for it (check-ko.py below
 # still refuses any symbol that a GKI module exports).

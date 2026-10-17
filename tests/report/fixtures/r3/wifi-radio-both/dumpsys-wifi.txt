@@ -1,0 +1,3 @@
+Wi-Fi is enabled
+Wi-Fi is disabled
+mWifiInfo SSID: <unknown ssid>, Supplicant state: DISCONNECTED

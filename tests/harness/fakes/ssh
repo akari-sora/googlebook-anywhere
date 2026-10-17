@@ -14,6 +14,7 @@ occurs in the command or script ("when" may be omitted = every call):
   {"when": "...", "files": {"rel/path": "content"}}   write files into FAKE_ROOT, then run normally (state flip)
   {"when": "...", "remove": ["rel/path"]}              remove a file or an empty dir, then run normally
   {"when": "...", "overwrite": {"rel/src": "rel/dst"}} write src's bytes over the start of dst, then run normally
+  {"when": "...", "host_copy": {"/abs/src": "/abs/dst"}} replace dst with a full copy of src (host paths, not FAKE_ROOT)
   {"when": "...", "exit": 255}                        do not run; exit with that status, no output (ssh failure)
   {"when": "...", "truncate": 1000}                   run, but pass on only the first N bytes of stdout
   {"when": "...", "corrupt": true}                    run, but flip one byte of stdout
@@ -63,6 +64,8 @@ for n, rule in enumerate(rules):
     for src, dst in rule.get("overwrite", {}).items():
         with open(R / dst, "r+b") as f:
             f.write((R / src).read_bytes())
+    for src, dst in rule.get("host_copy", {}).items():
+        Path(dst).write_bytes(Path(src).read_bytes())
     for rel in rule.get("remove", []):
         p = R / rel
         if p.is_dir():
@@ -84,7 +87,8 @@ def rewrite(s):
     return PATHS.sub(lambda m: f"{R}/{m.group(1)}", s)
 
 
-env = {"PATH": f"{R}/bin/remote:{R}/bin/safe", "FAKE_ROOT": str(R), "HOME": str(R / "root"), "LC_ALL": "C"}
+env = {"PATH": f"{R}/bin/remote:{R}/bin/safe", "FAKE_ROOT": str(R), "HOME": str(R / "root"), "LC_ALL": "C",
+       "PYTHONPATH": str(R / "pyfault"), "PYTHONDONTWRITEBYTECODE": "1"}
 bash = str(R / "bin" / "safe" / "bash")
 r = subprocess.run([bash, "-c", rewrite(cmd)], input=rewrite(script).encode() if script is not None else stdin,
                    env=env, capture_output=True, cwd=str(R / "root"))

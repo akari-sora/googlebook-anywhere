@@ -1,0 +1,2 @@
+DRIVER=amdgpu
+PCI_ID=1002:73bf

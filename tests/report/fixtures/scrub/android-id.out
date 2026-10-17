@@ -1,0 +1,5 @@
+[ro.boot.android_id]: [android-id]
+android_id=[android-id]
+keep a1b2c3d4e5f67890
+gpu 8086:46a6
+[persist.sys.android_id]: [android-id]

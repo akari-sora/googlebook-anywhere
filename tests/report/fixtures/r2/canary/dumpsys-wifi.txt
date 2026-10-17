@@ -1,0 +1,5 @@
+Wi-Fi is enabled
+curState=ConnectedState
+mWifiInfo SSID: "CanarySsid9f3a", BSSID: 02:aa:bb:cc:dd:11, Supplicant state: COMPLETED
+mBssid=001122334455
+SSID: "Cafe, Home"

@@ -1,4 +1,4 @@
-# Blocked drivers that module_blacklist cannot stop because the maintenance kernel (Arch 7.2.3-arch1-3) builds them in
+# Blocked drivers that module_blacklist cannot stop because the maintenance kernel (7.2.7-arch1-1) builds them in
 # (CONFIG_TCG_TPM=y, CONFIG_TCG_TIS=y, nvram): each is kept from starting with initcall_blacklist=<its initcall>.
 #   <module>  <initcall>                        the initcall is blocked in the installer entry
 #   <module>  -  <initcall>,<initcall>...       no initcall of its own; accepted only while all listed initcalls are blocked

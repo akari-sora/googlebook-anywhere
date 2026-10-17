@@ -1,0 +1,32 @@
+{
+  "audio": {
+    "card_ids": ["sofna8825"]
+  },
+  "bluetooth": [{"device": "0000:00:14.3", "name": "hci0"}],
+  "cpu": {
+    "cpu family": "6",
+    "model": "154",
+    "model name": "12th Gen Intel(R) Core(TM) i7-1260P",
+    "stepping": "3",
+    "vendor_id": "GenuineIntel"
+  },
+  "dmi": {
+    "bios_date": "2026-01-01",
+    "bios_vendor": "coreboot",
+    "bios_version": "MrChromebox-4.0",
+    "board_name": "Kano",
+    "board_vendor": "Google",
+    "product_name": "Kano",
+    "product_version": "1.0",
+    "sys_vendor": "Google"
+  },
+  "input": [
+    {"kind": "touchpad", "name": "ELAN2701:00 04F3:323C Touchpad", "vendor": "04f3", "product": "323c"},
+    {"kind": "touchscreen", "name": "ELAN900C:00 04F3:2D5B", "vendor": "04f3", "product": "2d5b"}
+  ],
+  "net": [{"name": "wlan0", "wireless": true}],
+  "pci": [
+    {"class": "030000", "driver": "xe", "id": "8086:46a6", "slot": "0000:00:02.0"},
+    {"class": "028000", "driver": "iwlwifi", "id": "8086:51f0", "slot": "0000:00:14.3"}
+  ]
+}

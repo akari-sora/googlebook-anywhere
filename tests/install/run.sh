@@ -265,8 +265,10 @@ pretend_cases() {  # every case on the pretend disk; with DRY=1 each one is only
     mksys
     expect "refuses when sgdisk is missing (needed for the final GPT check), nothing written" 2 "sgdisk is needed" \
         PATH="$T/bin:$T/nosg" -- "${C[@]}" "$spare"
-    touch "$T/x.img.not-self-tested"
-    expect "warns about an image that was never booted in QEMU" 0 "WARNING: .*--no-selftest" -- "${C[@]}" "$spare"
+    printf '%s\n' "installer stick was not booted in QEMU by make-installer-stick" > "$T/x.img.not-self-tested"
+    expect "warns about an image that was never booted in QEMU" 0 "WARNING: .*not booted in QEMU" -- "${C[@]}" "$spare"
+    has "the warning quotes the marker's first line" "marker: installer stick was not booted in QEMU by make-installer-stick"
+    lacks "the warning does not claim --no-selftest" "--no-selftest"
     rm "$T/x.img.not-self-tested"
     lacks "... and the warning is the only difference (no refusal)" "refusing"
     (cd "$T" && sha256sum bad.img > bad.img.sha256)

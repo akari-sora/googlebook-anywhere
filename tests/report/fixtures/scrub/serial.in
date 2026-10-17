@@ -1,0 +1,21 @@
+[ro.serialno]: [SYNTHSERIAL001]
+Serial: SYNTHSERIAL002
+serial number: SYNTHSERIAL003
+product_serial=SYNTHSERIAL004
+board_serial: SYNTHSERIAL005
+[ro.boot.serialno]: [BOOTSERIAL999]
+gpu pci: 8086:46a6
+build: CL3B.260622.271.R1
+[gsm.serial]: [RILSERIAL777]
+[ril.serialnumber]: [RILSERIAL888]
+[persist.radio.serialno]: [PERSISTRADIO999]
+mSerialNumber=EDIDSERIAL123
+serial number: "Battery Ada Lovelace"
+U: Uniq=SYNTH_INPUT_777
+UniqueId: SYNTH_UNIQUE_777
+Descriptor: SYNTH_DESC_777
+uniqueId="local:4619827259835644672"
+uniqueId="local:0"
+mUniqueId=local:4619827259835644672
+adb: device 'SYNTH_USB_777' not found
+Uniq=001a7dda7113

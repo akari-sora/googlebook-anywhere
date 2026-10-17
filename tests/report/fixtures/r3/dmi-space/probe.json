@@ -1,0 +1,18 @@
+{
+ "dmi": {
+  "sys_vendor": "Dell Inc.",
+  "product_name": "XPS 13 9310",
+  "board_vendor": "MiniPC Works",
+  "board_name": "HX370 Mini",
+  "bios_vendor": "American Megatrends International, LLC.",
+  "bios_version": "1.05",
+  "bios_date": "06/01/2026"
+ },
+ "cpu": {
+  "vendor_id": "AuthenticAMD",
+  "cpu family": "26",
+  "model": "96",
+  "stepping": "0",
+  "model name": "AMD Ryzen AI 9 HX 370 w/ Radeon 890M"
+ }
+}

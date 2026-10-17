@@ -1,0 +1,2 @@
+DRIVER=xe
+PCI_ID=8086:46a6

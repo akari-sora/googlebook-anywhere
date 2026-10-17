@@ -12,6 +12,10 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DOCKER=${GBOS_DOCKER:-docker}
 TAG=googlebook-anywhere-builder:1
 die() { echo "$*"; exit 2; }
+# Developer-only. Refused before Docker: a set value must not be dropped and then built as a normal image.
+if [ -n "${GBOS_TEST_AUTOOFF:-}" ]; then
+    die "GBOS_TEST_AUTOOFF is developer-only (TEST images); docker-install.sh does not accept it"
+fi
 WORK=''; ARGS=()
 while [ $# -gt 0 ]; do
     case "$1" in

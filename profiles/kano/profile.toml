@@ -1,4 +1,4 @@
-# KANO: Acer Chromebook Spin 714 (CP714-1WN, Alder Lake-P, brya/kano) with MrChromebox UEFI firmware.
+# KANO: Acer Chromebook Spin 714 (CP714-1WN / CP714-2WN, Alder Lake-P/U & Raptor Lake-P/U, brya/kano) with MrChromebox UEFI firmware.
 # Every model-specific value the builder uses (builder/lib/devprofile.py checks this file against profiles/_safety.toml).
 # A new model is a new directory next to this one: docs/NEW-DEVICE.md, and install/gbos-probe.sh writes a draft.
 schema = 1
@@ -10,8 +10,10 @@ kmods = ["ac", "gbos_wakefilter"]
 
 [model]
 id = "kano"
-name = "Acer Chromebook Spin 714 (CP714-1WN)"
+name = "Acer Chromebook Spin 714 (CP714-1WN / CP714-2WN)"
 status = "verified"                  # verified | experimental | probe-only
+# "verified" is the 46a6 Alder Lake-P K0 engineering sample only. Other KANO SKUs are untested
+# (docs/STATUS-KANO.md). image.py warns when status is not verified, so this stays verified for that sample.
 image_name = "googlebook-kano.img"
 dmi = { sys_vendor = "Google", product_name = "Kano" }
 
@@ -23,9 +25,33 @@ debug = "Googlebook KANO safe serial-debug"
 # stock lapis options removed for this model (superseded by the tail below, or a lapis SoundWire mask the KANO lacks)
 stock_drop = ["snd_intel_sdw_acpi.sdw_link_mask=0x5", "xe.enable_psr=1", "snd_sof_pci.ipc_type=1"]
 # appended to the stock options of every entry; the quiet entry drops the console/earlycon/log-level ones again.
-# Serial: COM1 plus the KANO's LPSS UART 00:1e.0 (MMIO 0xfe03e000, Cr50 AP console). xe does not list ADL-P (46a6).
-add = ["loglevel=8", "ignore_loglevel", "console=ttyS0,115200n8", "console=ttyS4,115200n8",
-       "console=uart8250,mmio32,0xfe03e000,115200n8", "earlycon=uart8250,mmio32,0xfe03e000,115200n8", "xe.force_probe=46a6"]
+# Serial-debug keeps earlycon (MMIO 0xfe03e000, Cr50 AP UART) plus keep_bootcon, which devprofile.make_entries adds
+# on the debug entry only. That is printk on the bootconsole, not a login tty. The three console= tokens
+# (ttyS0, ttyS4, uart8250 mmio) stay off: CONFIG_SERIAL_8250_RUNTIME_UARTS=0, debug drops 8250.nr_uarts=4, and
+# pci-stub holds 8086:51a8, so they never register a tty. Putting them back also exceeds the bootloader budget
+# (COMMAND_LINE_SIZE 2048 - NUL - len(CONFIG_CMDLINE) - the setup.c separator space, minus 64 bytes for kano-boot.sh).
+# xe.force_probe: 46a6 first, no '*'. 7 ids map to retail KANO SKUs; 5 are platform candidates
+# (ADL-P/RPL-U macro members), KANO mapping unconfirmed — see docs/COMPATIBILITY.md.
+# The retail mapping is the one written in docs/STATUS-KANO.md and docs/COMPATIBILITY.md
+# (Acer retail model numbers and coreboot's KANO list). Each id is inside adl_p_desc
+# (xe_pci.c:366-369 binds INTEL_ADLP_IDS, INTEL_RPLU_IDS and INTEL_RPLP_IDS; require_force_probe;
+# pciids.h #define lines 669-687, 709-714, 717-722):
+#   46a6  retail KANO SKU: verified i7-1260P (CBI SKU 131073); also coreboot-listed i5-1240P and i7-1280P
+#   46a3  platform candidate (ADL-P/RPL-U macro member); KANO mapping unconfirmed
+#   46a8  retail KANO SKU: i5-1235U and coreboot-listed i7-1255U
+#   4626  retail KANO SKU: 1-channel memory variant of 46a6
+#   4628  retail KANO SKU: 1-channel memory variant of 46a8
+#   46b2  platform candidate (ADL-P/RPL-U macro member); KANO mapping unconfirmed
+#   46b3  retail KANO SKU: i3-1215U
+#   a721  platform candidate (ADL-P/RPL-U macro member); KANO mapping unconfirmed; INTEL_RPLU_IDS, not INTEL_RPLP_IDS
+#   a7a1  retail KANO SKU: i5-1335U / i7-1355U
+#   a7a9  retail KANO SKU: i3-1315U
+#   a7ac  platform candidate (ADL-P/RPL-U macro member); KANO mapping unconfirmed
+#   a7ad  platform candidate (ADL-P/RPL-U macro member); KANO mapping unconfirmed
+# Omitted: ADL-N, RPL-S, RPL-P (a720, a7a0, a7a8, a7aa, a7ab) and ADLP IDs with no KANO SKU row (46a0-46a2, 46aa,
+# 462a, 46b0, 46b1, 46c0-46c3). 46aa is not the i7-1280P ID; that part is 46a6 or 1-channel 4626.
+add = ["loglevel=8", "ignore_loglevel", "earlycon=uart8250,mmio32,0xfe03e000,115200n8",
+       "xe.force_probe=46a6,46a3,46a8,4626,4628,46b2,46b3,a721,a7a1,a7a9,a7ac,a7ad"]
 # after the safety tail: xe on 6.18.21 faults scanning tiled framebuffers through a DPT in stolen memory
 # (CVE-2026-80915, upstream fc648757908304aedbad74f74bf58192aec383db); max98373 + nau8825 on SOF ships for IPC3 only
 tail = ["xe.enable_dpt=0", "xe.enable_psr=0", "xe.enable_fbc=0", "snd_sof_pci.ipc_type=0"]
@@ -105,6 +131,16 @@ src = "sof-bin-2025.12.2/sof/community/sof-tgl.ri"
 sha256 = "e3489dcb277e87eee8bc091ab7d51163a63c85541c22522775122b54263769f3"
 [[firmware]]
 path = "intel/sof-tplg/sof-adl-max98373-nau8825.tplg"
+from = "sof-bin"
+src = "sof-bin-2025.12.2/sof-tplg/sof-adl-max98373-nau8825.tplg"
+sha256 = "4beb29400d9beed0c80bcc11b3f4e82aad70a54d6e851638c81eb087a10d4de5"
+[[firmware]]                         # RPL cAVS (CP714-2WN, 8086:51ca/51cb) requests community/sof-rpl.ri. In sof-bin
+path = "intel/sof/community/sof-rpl.ri"  # v2025.12.2 that member is a symlink to sof-tgl.ri; pin the regular file.
+from = "sof-bin"
+src = "sof-bin-2025.12.2/sof/community/sof-tgl.ri"
+sha256 = "e3489dcb277e87eee8bc091ab7d51163a63c85541c22522775122b54263769f3"
+[[firmware]]                         # same bytes as the ADL tplg. SOF v2.2.13 rpl.m4 includes adl.m4 (sof-bin
+path = "intel/sof-tplg/sof-rpl-max98373-nau8825.tplg"  # v2025.12.2 has no RPL-named file). Untested on 13th-gen hardware.
 from = "sof-bin"
 src = "sof-bin-2025.12.2/sof-tplg/sof-adl-max98373-nau8825.tplg"
 sha256 = "4beb29400d9beed0c80bcc11b3f4e82aad70a54d6e851638c81eb087a10d4de5"

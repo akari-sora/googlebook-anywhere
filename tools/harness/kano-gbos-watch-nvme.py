@@ -4,8 +4,9 @@
 usage: kano-gbos-watch-nvme.py <ap-uart.log> <seconds> <frames-dir> [options of kano-gbos-watch.py]
 
 This is kano-gbos-watch.py --profile nvme: the NVMe controller appearing is expected, and the kernel command line
-must carry initcall_blacklist=mei_me_driver_init (nvme_init allowed). Same limits as kano-gbos-watch.py: serial-debug
-entry only, a supplementary detector, "unobservable" (exit 4) when this boot cannot be seen.
+must carry initcall_blacklist=mei_me_driver_init (nvme_init allowed). Same limits as kano-gbos-watch.py: the
+serial-debug entry only (earlycon + keep_bootcon, not an interactive tty), a supplementary detector,
+"unobservable" (exit 4) when this boot cannot be seen.
 """
 import os, sys
 from pathlib import Path

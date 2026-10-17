@@ -1,0 +1,1 @@
+Linux alice-2.4-laptop 6.6.30-lapis #1 SMP PREEMPT_DYNAMIC

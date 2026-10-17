@@ -1,0 +1,12 @@
+SSID: "SyntheticCafe"
+ssid=SyntheticCafe
+mWifiInfo SSID: "SyntheticCafe", BSSID: 02:00:00:00:00:01
+BSSID: 02:00:00:00:00:01
+SSID: "Cafe "AdaLovelace" Home", BSSID: 02:11:22:33:44:55
+SSID: My Home WiFi, BSSID: 02:11:22:33:44:55
+mWifiSsid=MyHomeWiFi
+wifiSsid=MyHomeWiFi
+ConfigKey:"MyHomeWiFi"WPA_PSK
+<string name="SSID">&quot;HiddenHome&quot;</string>
+SSID: <unknown ssid>
+ 02:11:22:33:44:55    2412      -40   0.000  AdaLovelaceHome                  [WPA2-PSK-CCMP][ESS]

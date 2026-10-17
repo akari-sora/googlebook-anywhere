@@ -1,0 +1,3 @@
+gbos-probe report for Other Laptop
+firmware: OtherBIOS 1.0 2020-01-01; UEFI yes, Secure Boot off
+planted: mac 02:11:22:33:44:55 path /home/synthuser/gbos-probe

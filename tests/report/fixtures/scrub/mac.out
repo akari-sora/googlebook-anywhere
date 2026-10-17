@@ -1,0 +1,8 @@
+BSSID: [mac]
+MAC: [mac]
+time 12:00:00.000
+gpu pci: 8086:46a6
+[ro.boot.wifimacaddr]: [mac]
+[ro.boot.btmacaddr]: [mac]
+Uniq=[mac]
+BSSID: [mac]

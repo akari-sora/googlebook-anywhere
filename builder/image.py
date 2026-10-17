@@ -35,6 +35,9 @@ EDITOR = os.environ.get("GBOS_LOADER_EDITOR", "no")
 ADB = bool(os.environ.get("GBOS_ADB_PUBKEY"))
 SKIP_SELFTEST = os.environ.get("GBOS_SKIP_SELFTEST") == "1"
 GENERIC = PROF["display"]["stack"] == "gop-swiftshader"   # GOP framebuffer + SwiftShader (profiles/generic-x86)
+AMD_HX370 = PROF["model"]["id"] == "amd-hx370"
+# Both generic-x86 and amd-hx370's safe default entry use the GOP framebuffer + SwiftShader path in QEMU self-tests.
+GOP = GENERIC or AMD_HX370
 # Opt-in EC features (default: none, and then every byte below is as without this switch). Each one releases an
 # audited set of ChromeOS EC kernel drivers (docs/SAFETY.md, "EC 功能變體"); the EC userspace channels and every EC
 # writer stay blocked in every variant. KANO only (its hooks.vendor has the ec() hook).
@@ -43,6 +46,10 @@ assert set(EC_FEATURES) <= {"sensors", "typec", "buttons"} and len(set(EC_FEATUR
 assert not EC_FEATURES or PROF["model"]["id"] == "kano", "GBOS_EC is audited for the KANO only"
 KMOD_AC = "ac" in PROF["kmods"]   # vendor carries ac.ko (builder/kmod/build-ac.sh; builder/vendor.sh checks the pin)
 KMOD_WAKEFILTER = "gbos_wakefilter" in PROF["kmods"]   # vendor carries gbos_wakefilter.ko (build-gbos_wakefilter.sh)
+# Developer-only. Empty = no auto-off service (install.sh refuses a non-empty value). When set, QEMU has no
+# /data/kano-autooff.nonce, so the serial log must show the rc parsed, the nonce gate staying on, and the
+# oneshot exited 0. When empty, the serial log must not mention the service.
+TEST_AUTOOFF = os.environ.get("GBOS_TEST_AUTOOFF", "")
 if FINAL.exists():
     sys.exit(f"refusing: {FINAL} already exists")
 ENTRIES = ("lapis-debug.conf", "lapis-quiet.conf")
@@ -168,17 +175,35 @@ def entry(title, o): return f"title {title}\nlinux /kernel.efi\ninitrd /initrd.i
 SERIAL = devprofile.SERIAL
 STUB_OPT = "pci-stub.ids=" + ",".join(PROF["cmdline"]["pci_stub_ids"])
 assert (not STUB or STUB_OPT in quiet) and not any(o.startswith(SERIAL) for o in quiet)
-# quiet differs from the QEMU-tested serial-debug options only by the serial console/log-level parameters
-assert sorted(set(debug) ^ set(quiet)) == sorted(set(o for o in debug if o.startswith(SERIAL)) |
-       {"keep_bootcon", "printk.devkmsg=on", "loglevel=4"} | (set(debug) & {"ignore_loglevel", "loglevel=8"})), set(debug) ^ set(quiet)
+# quiet differs from the serial-debug entry only by the serial console/log-level parameters and the profile's
+# optional quiet_drop / quiet_add (used by amd-hx370 so the default entry is the safe GOP + SwiftShader path).
+debug_nobl = [o for o in debug if not o.startswith("module_blacklist=")]
+quiet_nobl = [o for o in quiet if not o.startswith("module_blacklist=")]
+assert sorted(set(debug_nobl) ^ set(quiet_nobl)) == sorted(
+    set(o for o in debug_nobl if o.startswith(SERIAL))
+    | {"keep_bootcon", "printk.devkmsg=on", "loglevel=4"}
+    | (set(debug_nobl) & {"ignore_loglevel", "loglevel=8"})
+    | set(PROF["cmdline"]["quiet_drop"])
+), set(debug_nobl) ^ set(quiet_nobl)
+debug_bls = [x for x in debug if x.startswith("module_blacklist=")][0].split("=", 1)[1].split(",")
+quiet_bls = [x for x in quiet if x.startswith("module_blacklist=")][0].split("=", 1)[1].split(",")
+assert quiet_bls == debug_bls + [m for m in PROF["blacklist"]["quiet_add"] if m not in debug_bls and m not in released], (debug_bls, quiet_bls)
+if AMD_HX370:
+    assert "amdgpu" in quiet_bls and "amdgpu" not in debug_bls, (quiet_bls, debug_bls)
+    assert not any(o.startswith("amdgpu.") for o in quiet), quiet
+    assert {"amdgpu.modeset=1", "amdgpu.dc=1", "amdgpu.dcdebugmask=0x10"} <= set(debug), debug
 SAFE = PROF["_safety"]
 # EC_NEVER is part of the project-wide required blacklist, so every entry of every profile and variant blocks it
 assert set(EC_NEVER) <= set(SAFE["blacklist"]["required"]), set(EC_NEVER) - set(SAFE["blacklist"]["required"])
 # a profile for other machines must not carry a machine-specific MMIO console (it would write that address)
-assert not GENERIC or not any(o.split("=", 1)[0] in ("console", "earlycon") and "mmio" in o for o in normal + debug + quiet)
+assert not GOP or not any(o.split("=", 1)[0] in ("console", "earlycon") and "mmio" in o for o in normal + debug + quiet)
 for name, o in (("debug", debug), ("quiet", quiet)):
-    n = len(" ".join(o)) + len("initrd=\\initrd.img ")
-    print(name, "command line length", n); assert n < 2000, name
+    n = devprofile.boot_cmdline_len(o)
+    limit = devprofile.X86_BOOT_CMDLINE_MAX - devprofile.CMDLINE_HEADROOM
+    slack = devprofile.X86_BOOT_CMDLINE_MAX - n
+    print(f"{name} command line length {n}; kernel max {devprofile.X86_BOOT_CMDLINE_MAX}; "
+          f"headroom {devprofile.CMDLINE_HEADROOM}; limit {limit}; slack {slack}")
+    assert devprofile.cmdline_within_limit(n), name
     bl = [x for x in o if x.startswith("module_blacklist=")]; assert len(bl) == 1
     bls = bl[0].split("=", 1)[1].split(",")
     for m in SAFE["blacklist"]["required"]:
@@ -187,6 +212,8 @@ for name, o in (("debug", debug), ("quiet", quiet)):
     assert not EC_FEATURES or (not released & set(bls) and set(EC_EXTRA_BLOCK) <= set(bls)), name
     for m in PROF["blacklist"]["allow"]:
         assert m not in bls, (name, m)
+    if name == "quiet":
+        assert set(PROF["blacklist"]["quiet_add"]) <= set(bls), (name, PROF["blacklist"]["quiet_add"])
     assert "efi=noruntime" in o and not any(x.startswith("spi-intel.") for x in o), name
     assert [x for x in o if x.startswith("efi=")] == ["efi=noruntime"], name
 (OUT / "lapis-quiet.conf").write_text(entry(PROF["entries"]["quiet"], quiet))
@@ -211,7 +238,61 @@ assert present == sorted(ENTRIES), f"ESP loader/entries holds {present}, expecte
 assert mtype(IMG, "::/loader/loader.conf") == (OUT / "loader.conf").read_text()
 run("mcopy", "-o", "-i", f"{IMG}{ESP}", "::/initrd.img", OUT / "readback-initrd.img")
 assert (OUT / "readback-initrd.img").read_bytes() == (OUT / "initrd.img").read_bytes()
-run("mcopy", "-o", "-i", f"{IMG}{ESP}", "::/kernel.efi", OUT / "kernel.efi")
+def install_checked_kernel(prof, kernel_dir, debug_opts, quiet_opts, read_bzimage, copy_kernel, read_shipped):
+    """GBOS_DEV_KERNEL_DIR checks in this file, then the ESP copy of kernel.efi.
+
+    The build calls this. Tests call it with stub readers: dropping the call, skipping
+    either SHA-256 check, or turning the length check into a constant fails those tests.
+    read_bzimage() is the bzImage after check_kconfig. copy_kernel(path) writes the ESP.
+    read_shipped() is the kernel.efi readback. debug_opts is the serial entry.
+    """
+    checked = devprofile.check_kconfig(prof, kernel_dir)
+    dev_bz = Path(kernel_dir) / "bzImage"
+    kb = read_bzimage()
+    try:
+        devprofile.require_same_bzimage(
+            kb, checked.bzimage_sha256, f"{dev_bz} changed after check-kconfig read it"
+        )
+    except devprofile.ProfileError as e:
+        sys.exit(str(e))
+    assert kb[:2] == b"MZ" and kb[0x202:0x206] == b"HdrS", f"{dev_bz} is not an EFI-stub bzImage"
+    # arch/x86/kernel/setup.c strlcat's the builtin CONFIG_CMDLINE in front of this
+    # line. The 2000-character check above does not see that prefix.
+    builtin_cmd = devprofile.builtin_cmdline_text(checked)
+    for name, o in (("serial", debug_opts), ("quiet", quiet_opts)):
+        n = len(" ".join(o)) + len("initrd=\\initrd.img ")
+        assert devprofile.x86_cmdline_fits(n, builtin_cmd), (
+            f"{name} command line ({n}) plus builtin CONFIG_CMDLINE ({len(builtin_cmd)}) "
+            f"does not fit in x86 COMMAND_LINE_SIZE ({devprofile.X86_COMMAND_LINE_SIZE})"
+        )
+    copy_kernel(dev_bz)
+    shipped = read_shipped()
+    try:
+        devprofile.require_same_bzimage(
+            shipped, checked.bzimage_sha256, "kernel.efi is not the bzImage check-kconfig verified"
+        )
+    except devprofile.ProfileError as e:
+        sys.exit(str(e))
+    return checked
+
+
+DEV_KERNEL_DIR = os.environ.get("GBOS_DEV_KERNEL_DIR", "")
+if DEV_KERNEL_DIR:
+    def _read_checked_bz():
+        return (Path(DEV_KERNEL_DIR) / "bzImage").read_bytes()
+
+    def _copy_kernel(dev_bz):
+        run("mcopy", "-o", "-i", f"{IMG}{ESP}", dev_bz, "::/kernel.efi")
+
+    def _read_shipped_kernel():
+        run("mcopy", "-o", "-i", f"{IMG}{ESP}", "::/kernel.efi", OUT / "kernel.efi")
+        return (OUT / "kernel.efi").read_bytes()
+
+    install_checked_kernel(
+        PROF, DEV_KERNEL_DIR, debug, quiet, _read_checked_bz, _copy_kernel, _read_shipped_kernel
+    )
+else:
+    run("mcopy", "-o", "-i", f"{IMG}{ESP}", "::/kernel.efi", OUT / "kernel.efi")
 print("ESP free:", subprocess.run(["mdir", "-i", f"{IMG}{ESP}", "::/"], capture_output=True, text=True).stdout.strip().splitlines()[-1])
 
 # QEMU runs: image on USB (writes go to a throw-away snapshot), blank NVMe attached, until QEMU_SECONDS have passed.
@@ -252,8 +333,8 @@ def qemu(tag, extra):
     shutil.copy(OVMF_VARS, vars_fd)
     cmd = [QEMU, "-machine", "q35,accel=kvm", "-cpu", "host", "-m", "8192",
            "-smp", "4", "-no-reboot", "-vga", "none", "-display", "none",
-           # gop-swiftshader: a plain GOP framebuffer (OVMF drives bochs-display; romfile= because no VGA BIOS is needed)
-           *(["-device", "bochs-display,id=gfx,romfile=,bus=pcie.0,addr=0x5"] if GENERIC else []),
+           # GOP framebuffer (OVMF drives bochs-display; romfile= because no VGA BIOS is needed)
+           *(["-device", "bochs-display,id=gfx,romfile=,bus=pcie.0,addr=0x5"] if GOP else []),
            "-drive", f"if=pflash,format=raw,readonly=on,file={OVMF_CODE}",
            "-drive", f"if=pflash,format=raw,file={vars_fd}",
            "-device", "qemu-xhci,id=xhci,bus=pcie.0,addr=0x3",
@@ -270,10 +351,10 @@ def qemu(tag, extra):
     alive, stats = p.poll() is None, None
     if alive:
         try:
-            # gop-swiftshader: the screen of the GOP framebuffer first, on the same QMP connection
-            shot = [("screendump", {"filename": str(OUT / f"{tag}-screen.png"), "format": "png", "device": "gfx"})] if GENERIC else []
+            # GOP framebuffer: capture the screen first, on the same QMP connection
+            shot = [("screendump", {"filename": str(OUT / f"{tag}-screen.png"), "format": "png", "device": "gfx"})] if GOP else []
             res = qmp_query(sock, *shot, "query-blockstats")
-            if GENERIC: print(tag, "screendump", res[0])
+            if GOP: print(tag, "screendump", res[0])
             r = res[-1]["return"]
             stats = next(d["stats"] for d in r if d.get("device") == "usbdisk" or d.get("qdev", "").endswith("usbdisk"))
         except Exception as e:
@@ -299,8 +380,18 @@ if SKIP_SELFTEST:
     print(FINAL.name, "sha256", after)
     print("IMAGE OK (NOT SELF-TESTED)", FINAL)
     sys.exit(0)
-# 1. functional: the debug entry's options with the console on COM1
-q = [o for o in debug if not o.startswith(("console=", "earlycon="))] + ["console=ttyS0,115200n8", "earlycon=uart8250,io,0x3f8,115200n8"]
+# 1. functional: for amd-hx370, boot the SAFE default entry (quiet: amdgpu blacklisted, no amdgpu.*, gbos_efifb +
+# SwiftShader) with COM1 serial logging enabled; for other profiles, boot the debug entry's options with COM1 console.
+# QEMU has no KANO MMIO UART (0xfe03e000), so console= and earlycon= are removed and replaced with COM1
+# (console=ttyS0,115200n8 and earlycon=uart8250,io,0x3f8). This checks Android. It does not
+# show that the KANO AP UART still prints. On hardware, serial-debug keeps earlycon plus
+# keep_bootcon (printk on the bootconsole, not an interactive tty).
+if AMD_HX370:
+    q = ([("loglevel=8" if o == "loglevel=4" else o) for o in quiet]
+         + ["ignore_loglevel", "keep_bootcon", "printk.devkmsg=on",
+            "console=ttyS0,115200n8", "earlycon=uart8250,io,0x3f8,115200n8"])
+else:
+    q = [o for o in debug if not o.startswith(("console=", "earlycon="))] + ["console=ttyS0,115200n8", "earlycon=uart8250,io,0x3f8,115200n8"]
 def ec_ssdt():
     """GBOS_EC self-test only: an SSDT with the KANO's EC ACPI devices (\\_SB.CREC = GOOG0004 with GOOG0014, GOOG0007 and
     GOOG0003 below it) and no EC behind them, so ueventd loads the released drivers under this kernel and they must
@@ -354,9 +445,9 @@ checks.update({
        "EC variant: no /dev/cros_ec": not has(r"/dev/cros_(ec|fp|ish)\b")}),
     "kano audiotest rc parsed": has(r"init: Parsing file /vendor/etc/init/kano-audiotest.rc"),
     "kano-services rc parsed": has(r"init: Parsing file /vendor/etc/init/kano-services.rc"),
-    "no vendor rc rejections": not has(r"(?i)init: .*(kano-services|kano-audiotest|kano-hw|kano-diag|kano-adb).*(error|invalid|failed to parse|not allowed)"),
+    "no vendor rc rejections": not has(r"(?i)init: .*(kano-services|kano-audiotest|kano-hw|kano-diag|kano-adb|kano-autooff|amd-hx370-graphics).*(error|invalid|failed to parse|not allowed)"),
 })
-if GENERIC:
+if GOP:
     checks.update({
         "generic: GOP framebuffer handed to gbos_efifb": has(r"gbos-efifb: GOP \d+x\d+ depth 32"),
         "generic: gbos_efifb registered as vkms": has(r"gbos_efifb: \d+x\d+ stride \d+ at 0x[0-9a-f]+ \((?:XRGB|XBGR)\), registered as vkms \(scanout\)"),
@@ -364,11 +455,37 @@ if GENERIC:
         "generic: graphics allocator stays up": not has(r"Service 'vendor\.graphics\.allocator' \(pid \d+\) exited"),
         "generic: surfaceflinger not restarted": not has(r"Sending SIGKILL to service 'surfaceflinger'|Service 'surfaceflinger' \(pid \d+\) received SIG"),
         "generic: boot completed": has(r"sys\.boot_completed=1"),
-        "generic: composer is DRM master": not has(r"Failed to set drm master|DRM/KMS master access required"),
+        "generic: no DRM master failure": not has(r"Failed to set drm master|DRM/KMS master access required"),
     })
     # a uniform frame (black, or the firmware logo on black) compresses to a few KB; the setup wizard is over 40 KB
     shot = OUT / "functional-screen.png"
-    checks["generic: GOP screen shows Android (screendump over 20 KB)"] = shot.exists() and shot.stat().st_size > 20000
+    checks["generic: non-blank GOP screendump (PNG over 20 KB)"] = shot.exists() and shot.stat().st_size > 20000
+if AMD_HX370:
+    checks.update({
+        "amd-hx370 safe: graphics helper selected safe entry": has(r"amd-hx370: safe entry: ro\.hardware\.vulkan=pastel hwui=false renderengine=false"),
+        "amd-hx370 safe: amdgpu not modprobed": not has(r"modprobe [^\n]*\bamdgpu\b"),
+        "amd-hx370 safe: amdgpu not in /proc/modules": not has(r"gbos-dev-modules: [^\n]*\bamdgpu\b"),
+        "amd-hx370 radv-probe: vkprop redirected ro.hardware.vulkan": has(r"vkprop: ro\.hardware\.vulkan -> vendor\.gbos\.radv_probe"),
+        "amd-hx370 radv-probe: vulkan.radeon.so mapped in process": has(r"radv-probe: mapped [^\n]*/vendor/lib64/hw/vulkan\.radeon\.so"),
+        "amd-hx370 radv-probe: vkCreateInstance succeeded": has(r"radv-probe: vkCreateInstance -> 0\b"),
+        "amd-hx370 radv-probe: vkEnumeratePhysicalDevices succeeded (0 AMD GPUs in QEMU)": has(r"radv-probe: vkEnumeratePhysicalDevices -> 0 count=0\b"),
+    })
+if DEV_KERNEL_DIR:
+    checks["dev-kernel: self-built Linux version"] = has(r"Linux version 6\.18\.21-android17-5\S* \(gbos@gbos\)")
+    checks["dev-kernel: rust_binder loaded"] = has(r"rust_binder: Loaded Rust Binder\.")
+    checks["dev-kernel: no module symbol/CRC/protection errors"] = not has(r"Cannot use protected symbol|disagrees about version of symbol|Unknown symbol in module")
+    if AMD_HX370:
+        checks["dev-kernel: gbos_efifb live in /proc/modules on safe entry"] = has(r"gbos-dev-modules: .*\bgbos_efifb\b")
+        checks["dev-kernel: simpledrm not modprobed or live in /proc/modules on amd-hx370"] = (
+            not has(r"modprobe [^\n]*\bsimpledrm\b") and not has(r"gbos-dev-modules: [^\n]*\bsimpledrm\b")
+        )
+    elif (Path(DEV_KERNEL_DIR) / "modules/amdgpu.ko").is_file():
+        checks["dev-kernel: amdgpu.ko modprobe ran"] = has(r"Service 'exec \d+ \(/vendor/bin/modprobe --dirname=/vendor/lib/dev-modules amdgpu\)' \(pid \d+\) exited with status 0")
+        checks["dev-kernel: amdgpu + audio + simpledrm live in /proc/modules"] = (
+            has(r"gbos-dev-modules: .*\bamdgpu\b")
+            and has(r"gbos-dev-modules: .*\bsnd_sof_amd_acp70\b")
+            and has(r"gbos-dev-modules: .*\bsimpledrm\b")
+        )
 if KMOD_AC:
     checks.update({
         "ac.ko modprobe ran (profile kmods: ac)": has(r"Service 'exec \d+ \(/vendor/bin/modprobe --dirname=/vendor/lib/kano ac\)' \(pid \d+\) exited with status 0"),
@@ -389,18 +506,32 @@ if ADB:
     checks["kano-adb rc parsed (GBOS_ADB_PUBKEY set)"] = has(r"init: Parsing file /vendor/etc/init/kano-adb.rc")
 else:
     checks["no kano-adb (GBOS_ADB_PUBKEY not set)"] = not has(r"kano-adb|kano_adb")
+def autooff_log_checks(log, enabled):
+    """QEMU serial checks for GBOS_TEST_AUTOOFF. enabled is the env value; empty means the service is absent."""
+    found = lambda p: re.search(p, log) is not None
+    if enabled:
+        return {
+            "kano-autooff rc parsed (GBOS_TEST_AUTOOFF)": found(r"init: Parsing file /vendor/etc/init/kano-autooff\.rc"),
+            "kano-autooff refuses QEMU (no /data nonce, staying on)": found(r"KANO-AUTOOFF: nonce gate closed, staying on"),
+            "kano-autooff did not power off (no /data nonce)": not found(r"KANO-AUTOOFF: powering off"),
+            "kano_autooff exited 0": found(r"Service .kano_autooff. .*exited with status 0"),
+        }
+    return {"no kano-autooff (GBOS_TEST_AUTOOFF not set)": not found(r"kano-autooff|kano_autooff|KANO-AUTOOFF")}
+checks.update(autooff_log_checks(log, TEST_AUTOOFF))
 
-# 2. boot chain: no -kernel, so OVMF boots the image's ESP, systemd-boot reads loader.conf and starts the default
-# entry. The quiet entry has no serial console; Android formatting and writing /data shows the chain booted. The other
-# entries put earlycon on the KANO's LPSS UART (MMIO 0xfe03e000), which QEMU does not have, so they crawl there.
+# 2. boot chain: no -kernel, so OVMF boots the image's own ESP and systemd-boot starts the default
+# entry with the options stored on that ESP (nothing is rewritten to COM1). Ran only when the
+# default is quiet: quiet has no earlycon, and disk writes show Android reached /data. The debug
+# entry's earlycon is the KANO MMIO UART, which QEMU does not have, so this test is not a hardware
+# UART log of the debug entry.
 if DEFAULT_ENTRY == "lapis-quiet.conf":
     alive, stats, clog = qemu("chain", [])
     wrote = (stats or {}).get("wr_bytes", 0); top = (stats or {}).get("wr_highest_offset", 0)
     checks["QEMU still running at the end (chain)"] = alive
     checks["chain: default entry keeps the serial console silent"] = "Linux version" not in clog and "Boot in" in clog
-    if GENERIC:
+    if GOP:
         cshot = OUT / "chain-screen.png"
-        checks["chain (generic): GOP screen shows Android (screendump over 20 KB)"] = cshot.exists() and cshot.stat().st_size > 20000
+        checks["chain (generic): non-blank GOP screendump (PNG over 20 KB)"] = cshot.exists() and cshot.stat().st_size > 20000
     checks["chain: Android wrote /data (>= 16 MiB, into userdata)"] = wrote >= (16 << 20) and USERDATA["start"] <= top <= USERDATA["end"]
     print("chain: usbdisk wr_bytes", wrote, "wr_highest_offset", top, "userdata", USERDATA["start"], "-", USERDATA["end"])
     template = Path(OVMF_VARS).read_bytes(); after_vars = (OUT / "chain-vars.fd").read_bytes()

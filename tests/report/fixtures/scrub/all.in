@@ -1,0 +1,29 @@
+[ro.serialno]: [SYNTHSERIAL001]
+[ro.boot.serialno]: [BOOTSERIAL999]
+androidboot.serialno=BOOTSERIAL888
+BSSID: 02:00:00:00:00:01
+MAC: 02-00-00-00-00-02
+IP: /203.0.113.10
+ipv6 2001:db8::10
+[gsm.imei]: [490154203237518]
+IMEI: 490154203237518
+MEID: A1000000000001
+keep: 123456789012345
+Account {name=ada.lovelace@example.com, type=com.google}
+mail ada.lovelace@example.com
+SSID: "SyntheticCafe"
+Linux synth-laptop 6.1.75-android14 #1 SMP x86_64 Android
+Linux version 6.1.75-android14 (synthuser@synth-build) (clang version 17.0.2)
+[net.hostname]: [synth-laptop]
+[ro.boot.android_id]: [a1b2c3d4e5f67890]
+android_id=a1b2c3d4e5f67890
+path /home/synthuser/crash.txt and C:\Users\synthuser\AppData\crash.txt
+gpu pci: 8086:46a6
+build: CL3B.260622.271.R1
+ipv6 2001:db8:12:34:56:78:9a:bc
+keep (WindowToken@1a2b3c4)
+bios version 1.14.0.0
+[ro.build.user]: [alice]
+[persist.radio.meid]: [A1000000000007]
+Uniq=001a7dda7113
+psk=CANARYPSK9F3A2C

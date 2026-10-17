@@ -100,7 +100,12 @@ check("hx370: SATA controller and SATA disk are unsupported, the NVMe is fine",
       "SATA/AHCI: NOT SUPPORTED" in h["coverage.txt"] and "sdb sata" in h["report.txt"] and "NOT usable: no SATA in lapis" in h["report.txt"]
       and "nvme0n1 nvme" in h["report.txt"])
 check("hx370: the fTPM is reported as blocked on purpose", "MSFT0101  ->  TPM 2.0: blocked on purpose" in h["coverage.txt"])
-check("hx370: warns that there is no GPU driver", "no lapis GPU driver for this machine's GPU" in h["report.txt"])
+check("hx370: warns that there is no GPU driver and directs Strix Point / HX 370 to profiles/amd-hx370",
+      "no lapis GPU driver for this machine's GPU" in h["report.txt"]
+      and "profiles/amd-hx370" in h["report.txt"]
+      and "use profiles/amd-hx370/profile.toml" in h["profile.draft.toml"])
+check("hx370: warns to back up 48-digit BitLocker recovery key before changing Secure Boot",
+      "48-digit BitLocker recovery key" in h["report.txt"] and "Suspend-BitLocker is not an alternative" in h["report.txt"])
 check("hx370: CPU line", "AuthenticAMD family 26 model 36" in h["report.txt"])
 
 # draft profiles pass the builder's loader (in a profiles/<id>/ directory next to a _safety.toml)
@@ -158,6 +163,73 @@ check("gen-module-list.py: a directory without .ko files gives an empty list, no
 (T / "kos").mkdir(); (T / "kos" / "fake.ko").write_bytes(b"not an elf")
 r = subprocess.run([sys.executable, ROOT / "install/probe/gen-module-list.py", T / "y.tsv", T / "kos"], capture_output=True, text=True)
 check("gen-module-list.py refuses a .ko that is not ELF64", r.returncode != 0 and "not an ELF64" in r.stderr + r.stdout)
+
+def mini_pci(name, mode):
+    root = T / name
+    (root / "proc").mkdir(parents=True)
+    (root / "sys").mkdir()
+    (root / "proc" / "cpuinfo").write_text("processor\t: 0\nvendor_id\t: GenuineIntel\n")
+    devices = root / "sys" / "bus" / "pci" / "devices"
+    if mode == "empty":
+        devices.mkdir(parents=True)
+    elif mode == "unreadable":
+        devices.mkdir(parents=True)
+        os.chmod(devices, 0)
+    return root
+
+for mode in ("missing", "empty", "unreadable"):
+    root = mini_pci("pci-" + mode, mode)
+    out = T / ("pci-" + mode + "-out")
+    r = probe(root, out)
+    if mode == "unreadable":
+        os.chmod(root / "sys" / "bus" / "pci" / "devices", 0o755)
+    blob = ""
+    if out.is_dir():
+        blob = "\n".join((out / p.name).read_text() for p in out.iterdir())
+    pci_val = None
+    if (out / "probe.json").is_file():
+        pci_val = __import__("json").loads((out / "probe.json").read_text()).get("pci", "absent-key")
+    if mode == "empty":
+        check("empty PCI directory is a read empty bus", r.returncode == 0 and pci_val == [] and "bus not read" not in blob, blob[-400:])
+    else:
+        check("unreadable or missing PCI directory is not an empty bus" if mode == "unreadable" else "missing PCI directory is not an empty bus",
+              r.returncode == 0 and pci_val is None and "PCI device list was not read" in blob and "pci  (bus not read)" in blob,
+              f"rc={r.returncode} pci={pci_val!r} {r.stderr[-300:]}")
+        draft = (out / "profile.draft.toml").read_text(encoding="utf-8") if (out / "profile.draft.toml").is_file() else ""
+        check("unread PCI does not pick a display stack",
+              'stack = "unknown"' in draft and "PCI bus not read; choose after a full probe" in draft
+              and re.search(r"(?m)^kmods = \[\]\s*$", draft) is not None and "gbos_efifb" not in draft,
+              draft[draft.find("[display]")-80:draft.find("[display]")+180] if draft else "no draft")
+
+def unread_pci(slot, label):
+    root = T / ("unread-" + slot.replace(":", "").replace(".", ""))
+    root.mkdir()
+    fixtures.kano(root)
+    (root / "sys" / "bus" / "pci" / "devices" / slot / "vendor").unlink()
+    out = T / (root.name + "-out")
+    r = probe(root, out)
+    draft = (out / "profile.draft.toml").read_text(encoding="utf-8") if (out / "profile.draft.toml").is_file() else ""
+    report = (out / "report.txt").read_text(encoding="utf-8") if (out / "report.txt").is_file() else ""
+    check(label + ": exits 0", r.returncode == 0, r.stderr[-300:])
+    check(label + ": an unread slot is not an empty GPU list",
+          "no display controller found" not in report and "PCI list incomplete" in report,
+          report[report.find("gpu"):report.find("gpu") + 240] if report else "no report")
+    check(label + ": stack stays unknown and kmods stays empty",
+          'stack = "unknown"' in draft and "PCI device unread; choose after a full probe" in draft
+          and re.search(r"(?m)^kmods = \[\]\s*$", draft) is not None and "gbos_efifb" not in draft,
+          draft[draft.find("[display]") - 40:draft.find("[display]") + 240] if draft else "no draft")
+    dest = T / ("load-" + root.name) / "kano"
+    dest.mkdir(parents=True)
+    (dest / "profile.toml").write_text(draft, encoding="utf-8")
+    try:
+        devprofile.load(dest)
+        check(label + ": devprofile.py rejects display.stack unknown", False, "loaded")
+    except devprofile.ProfileError as exc:
+        check(label + ": devprofile.py rejects display.stack unknown",
+              "display.stack must be native or gop-swiftshader" in str(exc), str(exc))
+
+unread_pci("0000:00:02.0", "unread GPU slot")
+unread_pci("0000:00:14.0", "unread non-GPU slot")
 
 shutil.rmtree(T, ignore_errors=True)
 print(f"probe tests: {passed} passed, {failed} failed")

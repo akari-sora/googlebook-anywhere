@@ -1,0 +1,3 @@
+Wi-Fi is enabled
+History:
+  mWifiInfo SSID: "R3OldCafe9F3A", Supplicant state: COMPLETED

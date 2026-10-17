@@ -1,0 +1,9 @@
+{
+  "dmi": {"sys_vendor": "Other", "product_name": "Laptop", "bios_version": "leak.person@example.test"},
+  "cpu": {"vendor_id": "GenuineIntel", "cpu family": "6", "model": "1", "stepping": "1",
+          "model name": "02:99:88:77:66:55"},
+  "input": [{"kind": "touchpad", "name": "Pad", "bus": "0003",
+             "vendor": "canary.probe@example.test", "product": "/sdcard/Download/CANARYTAX9F3A.pdf"}],
+  "audio": {"card_ids": ["canary.person@example.test"]},
+  "net": [{"name": "wlan0", "wireless": true}]
+}

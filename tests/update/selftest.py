@@ -17,6 +17,15 @@ ENGINE = Path(os.environ.get("GBOS_UPDATE_ENGINE") or ROOT / "install/gbos-updat
 W = Path(sys.argv[1]).resolve()
 if W.exists() and any(W.iterdir()):
     sys.exit(f"{W} must be empty")
+MISSING_MTOOLS = [
+    name for name in ("mformat", "mmd", "mcopy", "mdir", "mdel", "minfo", "mtype")
+    if shutil.which(name) is None
+]
+if MISSING_MTOOLS:
+    sys.exit(
+        "needs mtools (package mtools: mformat, mmd, mcopy, mdir, mdel, minfo, mtype); missing: "
+        + ", ".join(MISSING_MTOOLS)
+    )
 W.mkdir(parents=True, exist_ok=True)
 ENV = dict(os.environ, MTOOLS_SKIP_CHECK="1", GBOS_UPDATE_TEST="1", PYTHONDONTWRITEBYTECODE="1")
 MIB = 1 << 20

@@ -31,6 +31,22 @@ export GBOS_PROFILE GBOS_ADB_PUBKEY="${GBOS_ADB_PUBKEY:-}"
 export GBOS_EC="${GBOS_EC:-}"
 [[ "$GBOS_EC" =~ ^((sensors|typec|buttons)(,(sensors|typec|buttons))*)?$ ]] \
     || { echo "GBOS_EC must be empty or a comma list of sensors, typec, buttons, not $GBOS_EC"; exit 2; }
+# GBOS_TEST_AUTOOFF (developer-only; install/install.sh refuses it): empty = off; else seconds 60..7200.
+# Canonical decimal, no leading zeros. Check the text before any arithmetic: bash wraps 2^64+60 to 60.
+if [ -n "${GBOS_TEST_AUTOOFF:-}" ]; then
+    [[ "$GBOS_TEST_AUTOOFF" =~ ^[1-9][0-9]{1,3}$ ]] \
+        || { echo "GBOS_TEST_AUTOOFF must be empty or an integer 60..7200, not $GBOS_TEST_AUTOOFF"; exit 2; }
+    [ "$GBOS_TEST_AUTOOFF" -ge 60 ] && [ "$GBOS_TEST_AUTOOFF" -le 7200 ] \
+        || { echo "GBOS_TEST_AUTOOFF must be empty or an integer 60..7200, not $GBOS_TEST_AUTOOFF"; exit 2; }
+    export GBOS_TEST_AUTOOFF
+fi
+export GBOS_DEV_KERNEL_DIR="${GBOS_DEV_KERNEL_DIR:-}"
+if [ -n "$GBOS_DEV_KERNEL_DIR" ]; then
+    [ -f "$GBOS_DEV_KERNEL_DIR/bzImage" ] || { echo "GBOS_DEV_KERNEL_DIR must have bzImage, not $GBOS_DEV_KERNEL_DIR"; exit 2; }
+    [ -d "$GBOS_DEV_KERNEL_DIR/modules" ] && [ -f "$GBOS_DEV_KERNEL_DIR/modules/modules.dep" ] \
+        && compgen -G "$GBOS_DEV_KERNEL_DIR/modules/*.ko" > /dev/null \
+        || { echo "GBOS_DEV_KERNEL_DIR must have modules/*.ko and modules/modules.dep, not $GBOS_DEV_KERNEL_DIR"; exit 2; }
+fi
 if [ -n "$GBOS_ADB_PUBKEY" ]; then
     # an adb public key is exactly one line "<base64 of the 524-byte RSAPublicKey> [user@host]"; anything else (a private
     # key, a second line, control characters) never goes into the image
@@ -53,6 +69,9 @@ if len(key) != 524 or struct.unpack_from("<I", key, 0)[0] != 64 or struct.unpack
 PY
 fi
 python3 "$HERE/lib/devprofile.py" check "$GBOS_PROFILE" || exit 2
+if [ -n "$GBOS_DEV_KERNEL_DIR" ]; then
+    python3 "$HERE/lib/devprofile.py" check-kconfig "$GBOS_PROFILE" "$GBOS_DEV_KERNEL_DIR" || exit 2
+fi
 AUDIO_LIST=$(python3 "$HERE/lib/devprofile.py" get "$GBOS_PROFILE" audio.sources)
 if [ -n "$AUDIO_LIST" ]; then
     grep -v '^#' "$GBOS_PROFILE/$AUDIO_LIST" | awk 'NF == 3 {print $3 "  " $1}' | ( cd "$GBOS_AUDIO_SRC" && sha256sum -c ) >/dev/null \
@@ -238,6 +257,7 @@ from pathlib import Path
 sys.path.insert(0, sys.argv[2])
 import rebuild
 import devprofile
+import kano_autooff
 import importlib.util
 import types
 
@@ -457,6 +477,19 @@ if KANO_KMODS:
     kmod_load = "".join(KMOD_LOAD[k] + f"    exec_background u:r:vendor_modprobe:s0 -- /vendor/bin/modprobe --dirname=/vendor/lib/kano {k}\n"
                         for k in KANO_KMODS)
     hw_head = (hw_head[:-1] + kmod_load + "\n") if hw_head else ("on early-boot\n" + kmod_load + "\n")
+dev_kmod_boot = ""
+dev_wifi_hook = ""
+if os.environ.get("GBOS_DEV_KERNEL_DIR") and (Path(os.environ["GBOS_DEV_KERNEL_DIR"]) / "modules/amdgpu.ko").is_file():
+    # amd-hx370 handles graphics in /vendor/etc/amd-hx370-graphics.sh on early-boot (safe entry: gbos_efifb +
+    # pastel with amdgpu blacklisted; experimental native entry: modprobe amdgpu once, never gbos_efifb).
+    # Other profiles keep the QEMU-proven boot_completed load of amdgpu + snd-sof-amd-acp70 + simpledrm.
+    if prof["model"]["id"] != "amd-hx370":
+        dev_kmod_boot = (
+            "    exec_background u:r:vendor_modprobe:s0 -- /vendor/bin/modprobe --dirname=/vendor/lib/dev-modules amdgpu\n"
+            "    exec_background u:r:vendor_modprobe:s0 -- /vendor/bin/modprobe --dirname=/vendor/lib/dev-modules snd-sof-amd-acp70\n"
+            "    exec_background u:r:vendor_modprobe:s0 -- /vendor/bin/modprobe --dirname=/vendor/lib/dev-modules simpledrm\n"
+        )
+    dev_wifi_hook = 'sleep 5; echo "<6>gbos-dev-modules: $(cut -d\' \' -f1 /proc/modules | tr \'\\n\' \' \')" > /dev/kmsg\n'
 (tree / "etc/init/kano-hw.rc").write_text(hw_head + """# KANO: join the Wi-Fi network described in /data/kano-wifi.conf (written by the maintenance OS, never in this image).
 service kano_wifi /system/bin/sh /vendor/etc/kano-wifi.sh
     oneshot
@@ -466,14 +499,14 @@ service kano_wifi /system/bin/sh /vendor/etc/kano-wifi.sh
 
 on property:sys.boot_completed=1
     start kano_wifi
-""")
+""" + dev_kmod_boot)
 (tree / "etc/kano-wifi.sh").write_text("""#!/system/bin/sh
 # KANO: /data/kano-wifi.conf holds two lines, SSID and WPA2 passphrase (root 0600, written by the maintenance OS).
 # cmd passes its stdio fds to system_server, so always pipe through cat (the policy lets system_server use our pipes).
 C=/data/kano-wifi.conf
 D=/data/kano-diag
 mkdir -p $D
-[ -r $C ] || { echo "no $C" > $D/wifi.txt; exit 0; }
+""" + dev_wifi_hook + """[ -r $C ] || { echo "no $C" > $D/wifi.txt; exit 0; }
 SSID=$(sed -n 1p $C); PSK=$(sed -n 2p $C)
 for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
   timeout 20 /system/bin/cmd wifi set-wifi-enabled enabled < /dev/null 2>&1 | cat > /dev/null
@@ -808,6 +841,14 @@ if CAM:
     if not (hooks and hasattr(hooks, "camera")):
         raise SystemExit("GBOS_CAMERA_OVERLAY needs a profile whose hooks.vendor has camera() (profiles/kano/vendor.py)")
     hooks.camera(ctx, Path(CAM))
+# GBOS_TEST_AUTOOFF (developer-only; empty = the autooff files are not in the image). The script and rc
+# copy etc/init/fwupd.rc; the nonce is mode 0444. install() also writes $GBOS_OUT/image/autooff.nonce.
+# The rc seclabel is u:r:kano_kmsg_logcat:s0; init starts it on nonencrypted (QEMU never sets
+# boot_completed) and on boot_completed.
+_autooff = os.environ.get("GBOS_TEST_AUTOOFF", "")
+if _autooff:
+    kano_autooff.install(tree, vmap, int(_autooff))
+    print("kano-autooff:", _autooff, "seconds")
 # adb over TCP is opt-in: without GBOS_ADB_PUBKEY the three adb files are not part of the image.
 if not os.environ.get("GBOS_ADB_PUBKEY"):
     for f in ("etc/kano-adb_keys", "etc/kano-adb.sh", "etc/init/kano-adb.rc"):
@@ -820,7 +861,7 @@ if not os.environ.get("GBOS_ADB_PUBKEY"):
             if b"service.adb.listen_addrs" in t or b"kano-adb" in t or b"ro.adb.secure=0" in t:
                 raise SystemExit(f"adb left enabled in {f.relative_to(tree)}")
     print("adb: not included (GBOS_ADB_PUBKEY not set)")
-# --- generic-x86 target: machines whose GPU has no driver in this kernel (AMD, older Intel, QEMU) ---
+# --- generic-x86 target: machines whose GPU has no driver in this kernel (for example AMD, QEMU; CPU: Intel 12th gen / AMD Zen 5 or newer, see docs/COMPATIBILITY.en.md "Minimum CPU") ---
 # Display: gbos_efifb.ko drives the UEFI GOP framebuffer as a DRM device named "vkms" (minigbm's dumb-buffer backend);
 # vendor init reads the framebuffer geometry from /sys/kernel/boot_params/data and passes it as module parameters.
 # Drawing: SwiftShader (vulkan.pastel.so, from Cuttlefish), whose JIT needs execmem in the four domains Cuttlefish allows.
@@ -905,6 +946,284 @@ on init
 (allow zygote_202604 self (process (execmem)))
 """)
     print("generic-x86: gbos_efifb + SwiftShader added")
+if os.environ.get("GBOS_DEV_KERNEL_DIR"):
+    import shutil
+    dev_mod_dir = Path(os.environ["GBOS_DEV_KERNEL_DIR"]) / "modules"
+    ref = next(k for k in sorted(vmap) if k.startswith("lib64/") and vmap[k]["selinux"] == "u:object_r:vendor_file:s0"
+               and vmap[k]["mode"] == 0o644 and (tree / k).is_file() and not (tree / k).is_symlink())
+    (tree / "lib/dev-modules").mkdir()
+    (tree / "lib/dev-modules").chmod(0o755)
+    vmap["lib/dev-modules"] = dict(vmap["lib"])
+    dev_files = sorted(
+        [p.name for p in dev_mod_dir.glob("*.ko")]
+        + [m for m in ("modules.dep", "modules.alias", "modules.softdep", "modules.order") if (dev_mod_dir / m).is_file()]
+    )
+    if not any(f.endswith(".ko") for f in dev_files) or "modules.dep" not in dev_files:
+        raise SystemExit("GBOS_DEV_KERNEL_DIR/modules missing .ko or modules.dep")
+    for fname in dev_files:
+        src = dev_mod_dir / fname
+        if fname.endswith(".ko") and b"SMP preempt mod_unload modversions " not in src.read_bytes():
+            raise SystemExit(f"dev-modules: {fname} missing expected vermagic flags")
+        rel = f"lib/dev-modules/{fname}"
+        shutil.copyfile(src, tree / rel)
+        (tree / rel).chmod(0o644)
+        vmap[rel] = dict(vmap[ref])
+    print(f"dev-modules: {len(dev_files)} files staged in /vendor/lib/dev-modules")
+if prof["model"]["id"] == "amd-hx370":
+    import hashlib, re, shutil, subprocess
+    root = Path(sys.argv[2]).resolve().parents[1]
+    script = (root / "tools/mesa/build-radv.sh").read_text()
+    checker = root / "tools/mesa/check-radv-elf.py"
+
+    def pinned(name):
+        m = re.search(rf"^{name}=([0-9a-f]{{64}})$", script, re.M)
+        if not m:
+            raise SystemExit(f"{name} is not a 64-hex pin in tools/mesa/build-radv.sh")
+        return m.group(1)
+
+    def sha(path):
+        return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+    def place(rel, src, like, mode):
+        if (tree / rel).exists() or like not in vmap:
+            raise SystemExit("amd-hx370: unexpected vendor layout at " + rel)
+        shutil.copyfile(src, tree / rel)
+        (tree / rel).chmod(mode)
+        meta = dict(vmap[like])
+        meta["mode"] = mode
+        vmap[rel] = meta
+
+    radv = Path(os.environ["GBOS_RADV"])
+    probe = Path(os.environ["GBOS_RADV_PROBE"])
+    vkprop = Path(os.environ["GBOS_RADV_VKPROP"])
+    pastel = Path(os.environ["GBOS_GENERIC_PASTEL"])
+    ko = Path(os.environ["GBOS_GENERIC_KO"])
+    if sha(radv) not in {pinned("RADV_SHA"), pinned("RADV_STRIP_UNNEEDED_SHA")}:
+        raise SystemExit("vulkan.radeon.so is not the build pinned in tools/mesa/build-radv.sh")
+    for label, path, pin_name in (
+        ("radv-probe", probe, "PROBE_SHA"),
+        ("libvkprop.so", vkprop, "VKPROP_SHA"),
+    ):
+        if sha(path) != pinned(pin_name):
+            raise SystemExit(f"{label} is not the build pinned in tools/mesa/build-radv.sh")
+    if sha(pastel) != "5232e4829d8e6bba2d81cc0ff64d227504601090d2ac7b9fa105536e38c680a3":
+        raise SystemExit("vulkan.pastel.so is not the pinned Cuttlefish 16373615 build")
+    kb = ko.read_bytes()
+    if b"vermagic=6.18.21-android17-5-g3938c8d97142-ab16302624 SMP preempt mod_unload modversions " not in kb or b"name=gbos_efifb" not in kb:
+        raise SystemExit("GBOS_GENERIC_KO is not a gbos_efifb.ko for this kernel")
+    efifb_pin = re.search(r"^EFIFB_KO_SHA=([0-9a-f]{64})$", (Path(sys.argv[2]).parent / "kmod/build-gbos_efifb.sh").read_text(), re.M)
+    if not efifb_pin or sha(ko) != efifb_pin.group(1):
+        raise SystemExit("GBOS_GENERIC_KO is not the gbos_efifb.ko pinned in builder/kmod/build-gbos_efifb.sh")
+    chk = subprocess.run([sys.executable, str(checker), str(radv)], capture_output=True, text=True)
+    if chk.returncode != 0:
+        raise SystemExit("vulkan.radeon.so ELF check failed:\n" + chk.stdout + chk.stderr)
+    notices = root / "tools/mesa/NOTICES.txt"
+    if not notices.is_file():
+        raise SystemExit("missing tools/mesa/NOTICES.txt")
+    notices_text = notices.read_text()
+    for pin_name in ("MESA_SHA256", "LIBDRM_SHA256", "NDK_SHA256", "GLSLANG_SHA256"):
+        if pinned(pin_name) not in notices_text:
+            raise SystemExit(f"tools/mesa/NOTICES.txt does not list the pinned {pin_name}")
+    bin_like = next(k for k in sorted(vmap) if k.startswith("bin/") and not k.startswith("bin/hw/")
+                    and vmap[k]["mode"] & 0o111 and (tree / k).is_file() and not (tree / k).is_symlink())
+    lib_like = next(k for k in sorted(vmap) if k.startswith("lib64/") and vmap[k]["selinux"] == "u:object_r:vendor_file:s0"
+                    and vmap[k]["mode"] == 0o644 and (tree / k).is_file() and not (tree / k).is_symlink())
+    place("lib64/hw/vulkan.radeon.so", radv, "lib64/hw/vulkan.intel.so", 0o644)
+    place("lib64/hw/vulkan.pastel.so", pastel, "lib64/hw/vulkan.intel.so", 0o644)
+    place("lib64/gbos_efifb.ko", ko, "lib64/libhardware.so", 0o644)
+    place("lib64/libvkprop.so", vkprop, lib_like, 0o644)
+    place("bin/radv-probe", probe, bin_like, 0o755)
+    place("etc/NOTICES-amd-hx370-radv.txt", notices, "etc/init/fwupd.rc", 0o644)
+    (tree / "etc/gbos-efifb.sh").write_text("""#!/system/bin/sh
+# GOP framebuffer as a DRM device named vkms (minigbm). Loaded only by the default safe entry.
+log() { echo "<6>gbos-efifb: $*" > /dev/kmsg; }
+B=/sys/kernel/boot_params/data
+set -- $(od -An -v -tu1 -N64 $B 2> /dev/null)
+[ $# -eq 64 ] || { log "cannot read $B"; exit 1; }
+i=0; for v in "$@"; do eval "b$i=$v"; i=$((i + 1)); done
+[ "$b15" -eq 112 ] || { log "no EFI framebuffer (video type $b15)"; exit 0; }
+w=$((b18 + b19 * 256)); h=$((b20 + b21 * 256)); depth=$((b22 + b23 * 256)); stride=$((b36 + b37 * 256))
+lo=$(printf '%02x%02x%02x%02x' $b27 $b26 $b25 $b24)
+hi=00000000; [ $((b54 & 2)) -ne 0 ] && hi=$(printf '%02x%02x%02x%02x' $b61 $b60 $b59 $b58)
+log "GOP ${w}x${h} depth $depth stride $stride base 0x$hi$lo red_pos $b39"
+/system/bin/insmod /vendor/lib64/gbos_efifb.ko fb_base=0x$hi$lo fb_width=$w fb_height=$h fb_stride=$stride fb_bpp=$depth fb_red_pos=$b39 \\
+    || log "insmod failed"
+""")
+    (tree / "etc/amd-hx370-graphics.sh").write_text("""#!/system/bin/sh
+# amd-hx370 boot-entry graphics selector (run synchronously by init on early-boot, before surfaceflinger/hwcomposer/zygote).
+# No runtime graphics switching: the systemd-boot entry chosen at boot time decides the stack.
+#   - Default "Googlebook AMD HX370 safe" (no amdgpu.modeset=1 on /proc/cmdline; module_blacklist includes amdgpu):
+#     never modprobes amdgpu; loads gbos_efifb.ko for the UEFI GOP framebuffer, selects the vkms scanout card
+#     (the later gbos_efifb device: id 1, not the id 0 allocator), and selects SwiftShader (pastel).
+#   - "Googlebook AMD HX370 native amdgpu (experimental)" (amdgpu.modeset=1 on /proc/cmdline):
+#     never loads gbos_efifb.ko; modprobes amdgpu once from /vendor/lib/dev-modules, polls sysfs up to 20 x 0.1s for
+#     DRIVER=amdgpu, selects RADV (radeon), and points vendor.hwc.drm.device at the DRM card whose sysfs device/uevent
+#     reports DRIVER=amdgpu (preferring a connected output).
+KMSG="${GBOS_KMSG_FILE:-/dev/kmsg}"
+CMDLINE="${GBOS_CMDLINE_FILE:-/proc/cmdline}"
+MODULES="${GBOS_MODULES_FILE:-/proc/modules}"
+SYSFS_DRM="${GBOS_SYSFS_DRM:-/sys/class/drm}"
+MODPROBE="${GBOS_MODPROBE_BIN:-/vendor/bin/modprobe}"
+SETPROP="${GBOS_SETPROP_BIN:-setprop}"
+GETPROP="${GBOS_GETPROP_BIN:-getprop}"
+EFIFB_SH="${GBOS_EFIFB_SH:-/vendor/etc/gbos-efifb.sh}"
+SH_BIN="${GBOS_SH_BIN:-/system/bin/sh}"
+SLEEP_BIN="${GBOS_SLEEP_BIN:-sleep}"
+log() { echo "<6>amd-hx370: $*" >> "$KMSG"; }
+
+select_amdgpu_card() {
+  first=""
+  connected=""
+  for u in "$SYSFS_DRM"/card[0-9]*/device/uevent; do
+    [ -f "$u" ] || continue
+    grep -q '^DRIVER=amdgpu$' "$u" || continue
+    c_dir="${u%/device/uevent}"
+    c_name="${c_dir##*/}"
+    case "$c_name" in
+      card[0-9]*-*) continue ;;
+      card[0-9]*) ;;
+      *) continue ;;
+    esac
+    [ -n "$first" ] || first="/dev/dri/$c_name"
+    for st in "$c_dir"/"$c_name"-*/status "$SYSFS_DRM"/"$c_name"-*/status; do
+      [ -f "$st" ] || continue
+      if [ "$(cat "$st" 2>/dev/null)" = "connected" ]; then
+        connected="/dev/dri/$c_name"
+        break
+      fi
+    done
+    [ -n "$connected" ] && break
+  done
+  if [ -n "$connected" ]; then
+    echo "$connected"
+  elif [ -n "$first" ]; then
+    echo "$first"
+  fi
+}
+
+wait_amdgpu_card() {
+  i=0
+  while [ "$i" -lt 20 ]; do
+    c="$(select_amdgpu_card)"
+    if [ -n "$c" ]; then
+      echo "$c"
+      return 0
+    fi
+    i=$((i + 1))
+    "$SLEEP_BIN" 0.1
+  done
+  select_amdgpu_card
+}
+
+select_vkms_scanout_card() {
+  # gbos_efifb registers two DRM devices, both DRIVER=gbos_efifb with a Virtual connector:
+  # id 0 (allocator, lower card number; minigbm takes DRM master) then id 1 (scanout).
+  # Keep the highest card index whose device/uevent matches DRIVER=(gbos_efifb|vkms).
+  # If sysfs uevent files are unreadable, fall back to /dev/dri/card1 (the scanout index).
+  scanout=""
+  scanout_n=-1
+  for v in "$SYSFS_DRM"/card[0-9]*/card[0-9]*-Virtual-* "$SYSFS_DRM"/card[0-9]*-Virtual-*; do
+    [ -e "$v" ] || continue
+    v_name="${v##*/}"
+    c_name="${v_name%%-Virtual-*}"
+    case "$c_name" in
+      card[0-9]*-*) continue ;;
+      card[0-9]*) ;;
+      *) continue ;;
+    esac
+    n="${c_name#card}"
+    case "$n" in
+      *[!0-9]*) continue ;;
+    esac
+    u="$SYSFS_DRM/$c_name/device/uevent"
+    if [ -f "$u" ] && grep -Eq '^DRIVER=(gbos_efifb|vkms)$' "$u"; then
+      if [ "$n" -gt "$scanout_n" ]; then
+        scanout="/dev/dri/$c_name"
+        scanout_n=$n
+      fi
+    fi
+  done
+  if [ -n "$scanout" ]; then
+    echo "$scanout"
+  else
+    echo "/dev/dri/card1"
+  fi
+}
+
+"$SETPROP" vendor.gbos.radv_probe radeon
+if grep -Eq '(^| )amdgpu\\.modeset=1( |$)' "$CMDLINE"; then
+  "$MODPROBE" --dirname=/vendor/lib/dev-modules amdgpu
+  log "native entry: modprobe amdgpu exit $?"
+  card="$(wait_amdgpu_card)"
+  echo "<6>gbos-dev-modules: $(cut -d' ' -f1 "$MODULES" | tr '\\n' ' ')" >> "$KMSG"
+  "$SETPROP" ro.hardware.vulkan radeon
+  "$SETPROP" ro.hwui.use_vulkan true
+  "$SETPROP" debug.renderengine.vulkan true
+  if [ -n "$card" ]; then
+    "$SETPROP" vendor.hwc.drm.device "$card"
+    log "native entry: amdgpu card=$card ro.hardware.vulkan=$("$GETPROP" ro.hardware.vulkan) hwui=$("$GETPROP" ro.hwui.use_vulkan) renderengine=$("$GETPROP" debug.renderengine.vulkan)"
+  else
+    log "native entry: no DRIVER=amdgpu card in $SYSFS_DRM (black screen expected; reboot into 'Googlebook AMD HX370 safe')"
+  fi
+  exit 0
+fi
+
+"$SETPROP" ro.hardware.vulkan pastel
+"$SETPROP" ro.hwui.use_vulkan false
+"$SETPROP" debug.renderengine.vulkan false
+log "safe entry: amdgpu blacklisted; vulkan=pastel; gbos_efifb for the GOP framebuffer"
+"$SH_BIN" "$EFIFB_SH"
+scanout_card="$(select_vkms_scanout_card)"
+"$SETPROP" vendor.hwc.drm.device "$scanout_card"
+echo "<6>gbos-dev-modules: $(cut -d' ' -f1 "$MODULES" | tr '\\n' ' ')" >> "$KMSG"
+log "safe entry: ro.hardware.vulkan=$("$GETPROP" ro.hardware.vulkan) hwui=$("$GETPROP" ro.hwui.use_vulkan) renderengine=$("$GETPROP" debug.renderengine.vulkan) drm.device=$scanout_card"
+""")
+    (tree / "etc/init/amd-hx370-graphics.rc").write_text("""# amd-hx370: boot-entry graphics selector (safe: GOP + pastel; native: amdgpu + radeon).
+# early-boot runs synchronously before surfaceflinger, drm_hwcomposer, graphics.allocator, and zygote.
+service amd_hx370_graphics /system/bin/sh /vendor/etc/amd-hx370-graphics.sh
+    oneshot
+    disabled
+    user root
+    seclabel u:r:gbos_efifb:s0
+
+service amd_hx370_radv_probe /vendor/bin/radv-probe
+    oneshot
+    disabled
+    user root
+    seclabel u:r:gbos_efifb:s0
+    setenv LD_PRELOAD /vendor/lib64/libvkprop.so
+
+on early-boot
+    exec_start amd_hx370_graphics
+
+on property:sys.boot_completed=1
+    start amd_hx370_radv_probe
+""")
+    for f in ("etc/gbos-efifb.sh", "etc/amd-hx370-graphics.sh", "etc/init/amd-hx370-graphics.rc"):
+        (tree / f).chmod(0o644)
+        vmap[f] = dict(vmap["etc/init/fwupd.rc"])
+    logcat = tree / "etc/kano-logcat.sh"
+    old = "'*:E' SystemServer:I"
+    text = logcat.read_text()
+    if old not in text:
+        raise SystemExit("amd-hx370: kano-logcat filter not found")
+    logcat.write_text(text.replace(old, "'*:E' vulkan:V radv-probe:V SystemServer:I", 1))
+    cg = tree / "etc/selinux/vendor_sepolicy.cil"
+    cg.write_text(cg.read_text().rstrip("\n") + """
+;; amd-hx370: GOP safe-entry loader and the RADV probe. Permissive like kano_bootfix.
+;; noatsecure is allowed so the kernel does not set AT_SECURE=1 and strip LD_PRELOAD=libvkprop.so on amd_hx370_radv_probe.
+;; SwiftShader (pastel) needs the same execmem allows as profiles/generic-x86.
+(type gbos_efifb)
+(roletype object_r gbos_efifb)
+(typeattributeset domain (gbos_efifb))
+(typepermissive gbos_efifb)
+(allow init_202604 gbos_efifb (process (transition siginh rlimitinh noatsecure)))
+(allow bootanim_202604 self (process (execmem)))
+(allow surfaceflinger_202604 self (process (execmem)))
+(allow system_server_202604 self (process (execmem)))
+(allow zygote_202604 self (process (execmem)))
+""")
+    print("amd-hx370: vulkan.radeon.so", sha(radv), "safe default (pastel + gbos_efifb) + native amdgpu entry")
 n = rebuild.write_configs(
     "/vendor",
     tree,
@@ -1012,6 +1331,20 @@ if kano_kmods:
     expect_new = sorted(expect_new + ["lib/kano", "lib/kano/modules.dep"] + [f"lib/kano/{k}.ko" for k in kano_kmods])
 if prof["display"]["stack"] == "gop-swiftshader":
     expect_new = sorted(expect_new + ["etc/gbos-efifb.sh", "etc/init/gbos-efifb.rc", "lib64/gbos_efifb.ko", "lib64/hw/vulkan.pastel.so"])
+if os.environ.get("GBOS_TEST_AUTOOFF"):
+    expect_new = sorted(expect_new + ["etc/kano-autooff.sh", "etc/init/kano-autooff.rc", "etc/kano-autooff.nonce"])
+if prof["model"]["id"] == "amd-hx370":
+    expect_new = sorted(expect_new + [
+        "bin/radv-probe", "etc/NOTICES-amd-hx370-radv.txt", "etc/amd-hx370-graphics.sh", "etc/gbos-efifb.sh",
+        "etc/init/amd-hx370-graphics.rc",
+        "lib64/gbos_efifb.ko", "lib64/hw/vulkan.pastel.so", "lib64/hw/vulkan.radeon.so", "lib64/libvkprop.so"])
+if os.environ.get("GBOS_DEV_KERNEL_DIR"):
+    dev_mod_dir = Path(os.environ["GBOS_DEV_KERNEL_DIR"]) / "modules"
+    dev_files = sorted(
+        [p.name for p in dev_mod_dir.glob("*.ko")]
+        + [m for m in ("modules.dep", "modules.alias", "modules.softdep", "modules.order") if (dev_mod_dir / m).is_file()]
+    )
+    expect_new = sorted(expect_new + ["lib/dev-modules"] + [f"lib/dev-modules/{f}" for f in dev_files])
 if only_old != expect_old or only_new != expect_new or changed != expect_changed:
     raise SystemExit("vendor tree diff is not the expected set of KANO changes (see the three lists above)")
 

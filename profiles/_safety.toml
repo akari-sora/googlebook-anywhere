@@ -17,12 +17,15 @@ forbidden_prefixes = ["module_blacklist=", "initcall_blacklist=", "efi=", "efi_p
 
 [blacklist]
 # every entry blocks these (the v0.1 hard blacklist, whole): the TPM on every transport (tpm, tpm_tis*, the Cr50 one), the
-# ChromeOS EC on every transport (LPC, SPI, I2C, ISH, USB) with its core, chardev, debugfs, sysfs, VBC and every EC-backed
+# ChromeOS EC on LPC, SPI, I2C, ISH and USB with its core, chardev, debugfs, sysfs, VBC and every EC-backed
 # peripheral driver (I2C tunnel, chargers, Type-C, sensors, keyboard, lightbar, LEDs, CEC, Wilco), SPI flash (controller,
 # MTD, SPI NOR, spidev), Google SMI (GSMI writes firmware variables), chromeos_acpi, NVRAM, i2c-dev, AT24 EEPROMs,
 # Thunderbolt (DMA, USB4 retimer NVM), the touch controllers' QuickI2C/QuickSPI hosts (touch firmware), HPS and the hammer
 # keyboard. Blocking a module a machine does not have costs nothing. A GBOS_EC image (KANO only) releases exactly
 # builder/image.py's EC_CORE and the chosen features' drivers; everything in EC_NEVER stays in every entry.
+# UART (cros_ec_uart) and RPMSG (cros_ec_rpmsg) are not in this pinned v0.1 list; the dev-kernel gate
+# refuses CONFIG_CROS_EC_UART / CONFIG_CROS_EC_RPMSG as =y and as =m unless the profile blacklist names them, and
+# EC variants append both via builder/image.py EC_EXTRA_BLOCK.
 required = ["cros_ec_debugfs", "tpm_tis_i2c_cr50", "cros_ec_lpcs", "cros_ec_usb", "spi_intel_pci", "spi_intel",
             "i2c_dev", "thunderbolt", "tpm", "tpm_tis", "tpm_tis_core", "tpm_tis_spi", "cros_ec",
             "cros_ec_dev", "cros_ec_chardev", "gsmi", "chromeos_acpi", "nvram", "mtd", "spi_nor", "spidev",

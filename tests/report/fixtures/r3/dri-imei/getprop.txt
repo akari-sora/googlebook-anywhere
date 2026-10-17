@@ -1,0 +1,2 @@
+[ro.build.display.id]: [CL3B.1]
+[gsm.imei]: [490154203237518]

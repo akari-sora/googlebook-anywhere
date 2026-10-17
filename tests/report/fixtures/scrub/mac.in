@@ -1,0 +1,8 @@
+BSSID: 02:00:00:00:00:01
+MAC: 02-00-00-00-00-02
+time 12:00:00.000
+gpu pci: 8086:46a6
+[ro.boot.wifimacaddr]: [aabbccddeeff]
+[ro.boot.btmacaddr]: [001122334455]
+Uniq=001a7dda7113
+BSSID: 001122334455

@@ -1,0 +1,28 @@
+Event Hub State:
+  Devices:
+    4: ELAN900C:00 04F3:2D5B
+      Classes: KEYBOARD
+      Path: /dev/input/event6
+      Descriptor: LEAKDESC9F3A2C
+      Location: pci-0000:00:15.0-platform-i2c_designware.0
+      UniqueId: LEAKUNIQ9F3A2C
+      Identifier: bus=0x0018, vendor=0x04f3, product=0x2d5b, version=0x0000
+      KeyLayoutFile: /system/usr/keylayout/Generic.kl
+      ConfigurationFile:
+      VideoDevice: <none>
+      Classes: 0x00000014
+    8: LeakNick9f3a Magic Touchpad
+      Classes: 0x00100000
+      Path: /dev/input/event8
+      Descriptor: LEAKDESC9F3A2C
+      Uniq: LEAKUNIQ9F3A2C
+      Identifier: bus=0x0018, vendor=0x04f3, product=0x1234, version=0x0000
+Input Reader State:
+  Device 4: ELAN900C:00 04F3:2D5B
+    Generation: 12
+    IsExternal: false
+    AssociatedDisplayUniqueId: local:4619827259835644999
+    Sources: 0x00001002
+  Device 9: SYNA0000:00 06CB:CE92
+    Generation: 4
+    Sources: 0x00100008

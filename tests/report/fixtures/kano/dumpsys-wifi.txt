@@ -1,0 +1,6 @@
+Wi-Fi is enabled
+curState=ConnectedState
+mWifiInfo SSID: "SyntheticCafe", BSSID: 02:00:00:00:00:01, MAC: 02-00-00-00-00-02, IP: /203.0.113.10
+IPv6: 2001:db8::10
+Supplicant state: COMPLETED
+ssid=SyntheticCafe

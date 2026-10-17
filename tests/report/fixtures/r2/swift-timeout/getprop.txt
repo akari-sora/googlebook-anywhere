@@ -1,0 +1,2 @@
+[ro.hardware.egl]: [swiftshader]
+[ro.hardware.vulkan]: [pastel]

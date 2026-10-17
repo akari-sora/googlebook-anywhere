@@ -1,0 +1,15 @@
+gbos-probe report for Google Kano (Kano)
+firmware: coreboot MrChromebox-4.0 2026-01-01; UEFI yes, coreboot yes, Secure Boot off
+cpu: GenuineIntel family 6 model 154 stepping 3 (12th Gen Intel(R) Core(TM) i7-1260P)
+gpu:
+  8086:46a6: xe (needs xe.force_probe=46a6)
+wifi:
+  wlan0 8086:51f0 host driver iwlwifi: lapis module: iwlwifi
+audio:
+  8086:51c8 host driver snd_sof_pci_intel_tgl: lapis module: snd_sof_pci_intel_tgl
+input:
+  touchpad: ELAN2701:00 04F3:323C Touchpad (i2c)
+  touchscreen: ELAN900C:00 04F3:2D5B (i2c)
+bluetooth: hci0
+warnings: none
+planted: mac 02:11:22:33:44:55 path /home/synthuser/gbos-probe

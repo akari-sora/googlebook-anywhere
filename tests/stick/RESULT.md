@@ -2,6 +2,8 @@
 
 ## Current status (2026-10-13)
 
+A stick assembled from the committed maint.pins uses kernel 7.2.7-arch1-1. The Arch 7.2.3-arch1-3 notes in this file are the 2026-10-13 measurement of an older stick.
+
 - `tests/stick/selftest.py`: **64/64** on macOS and on Linux (43 earlier checks + 21 for round 3: `check-cmdline`,
   setup-stick's `blacklist()`, and the installer's `in_use` on fake `/proc`, `/sys` and `lsblk`).
 - `tests/stick/qemu-install.py` on Linux + KVM with the dumps of the real installer stick (its first and last MiB, its
@@ -9,6 +11,23 @@
   holds, running the current installer: **71/71, `STICK INSTALLER TEST OK (71/71)`, exit 0 (was 64/64; +7 checks: module-blacklist.txt injection in the read-back, the nomodule case 4 checks, the runtime command-line line in cancel and both installs). NVMe-only boots: install-flex wr_bytes 149476352, highest write 73776439296; install-blank 149742592 / 73776447488; userdata 19069403136-127999983104**. Cases: nolockdown, noinitcall, nomodule (refused, zero
   NVMe writes), super-mismatch (refused before the prompt), cancel, install over a Flex-like NVMe, install on a blank
   NVMe, each install then booted from the NVMe alone (Android writes /data inside userdata).
+- `tests/stick/qemu-install.py --asis` and `--produced` on Linux + KVM (2026-10-15) with the image produced by
+  `install/make-installer-stick.sh` (maintenance kernel `7.2.7-arch1-1`, no `debugfs` injection):
+  - `--asis`: **40/40, `AS-IS ACCEPTANCE OK (40/40)`, exit 0**. The boot copy's own SHA-256 equals the produced stick
+    before QEMU and after every case (`snapshot=on`; no boot entry, kernel command line, loader default, or timeout
+    rewritten). Driven via QMP `send-key` on the ordinary console: (a) default Install entry with no key → reaches the
+    serial prompt, 0 NVMe writes/discards at prompt and after 180 s; (b) wrong 4 digits (`9999`) → cancelled, 0 NVMe
+    writes/discards; (c) right 4 digits (`7Q4Z`) → 0 writes before confirmation, the ordinary console shows `INSTALL OK`
+    and `Press Enter to reboot`, and the full install passes GPT, partition SHA-256, userdata head, and NVMe ESP checks;
+    (d) keyboard `["up", "ret"]` selects Update on the installed disk with non-zero data in the `userdata` head (`USER-DATA-HEAD--`) and a `USER-DATA-MARKER` at +64 MiB in `userdata` → 0 writes
+    before confirmation, the ordinary console shows `UPDATE OK` and `Press Enter to reboot`, and the update to slot `b`
+    preserves the GPT, userdata head (first 16 MiB), userdata marker, metadata/misc/frp, and slot `a`. A prompt with no
+    completion line does not pass (c) or (d).
+  - `--produced` (reported separately): **98/98, `STICK INSTALLER TEST OK (98/98)`, exit 0**. Verifies the delivered
+    `gbos-install.conf`, `gbos-update.conf`, and `loader.conf`, then points the boot copy's ESP `loader.conf` default at
+    the extra serial entries (leaving the source stick file unchanged before and after the run) to run `nolockdown`,
+    `noinitcall`, `nomodule`, `super-mismatch`, `cancel`, `install-flex`, `install-blank`, `update-blank`, and
+    `update2-blank` (plus NVMe-only Android boots).
 - Real KANO (2026-10-13): the installer entry booted with lockdown, `efi=noruntime`, the TPM/nvram initcalls blocked and
   no TPM or nvram device; the installer's checks passed and a wrong answer cancelled with nothing written; the internal
   disk booted again afterwards. That run used the installer from before the round-3 changes (no whole-`module_blacklist`

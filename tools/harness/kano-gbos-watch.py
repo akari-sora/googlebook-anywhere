@@ -7,8 +7,9 @@ usage: kano-gbos-watch.py <ap-uart.log> <seconds> <frames-dir> [--profile usb|nv
        controller appearing is expected and the command line keeps nvme_init allowed.)
 
 Limits - read before relying on it:
-- It only sees what the AP UART prints, so it only works with the serial-debug boot entry (earlycon + console on the
-  UART). The quiet entry has no serial console; with it, the watcher reports "unobservable", never "no danger".
+- It only sees what the AP UART prints, so it only works with the serial-debug boot entry (earlycon +
+  keep_bootcon: printk on the bootconsole, not an interactive tty). The quiet entry has no serial
+  console; with it, the watcher reports "unobservable", never "no danger".
 - It is a supplementary detector, not a guarantee. It polls the log once a second and reacts to lines after they
   were printed, so anything that happens before, or without, a matching line is not prevented. The protections are
   the kernel command line guards and the updaters removed from the image; this watcher checks the guards are there.

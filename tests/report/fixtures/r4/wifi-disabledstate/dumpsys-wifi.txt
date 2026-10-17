@@ -1,0 +1,3 @@
+Wi-Fi is enabled
+curState=DisabledState
+mWifiInfo SSID: "Synthetic", Supplicant state: INTERFACE_DISABLED

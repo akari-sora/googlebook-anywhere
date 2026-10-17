@@ -139,3 +139,4 @@ def hx370(root):
     _ln(root, "sys/block/sdb", "../devices/pci0000:00/0000:04:00.0/ata1/host1/target1:0:0/1:0:0:0/block/sdb", make_target=True)
     _w(root, "sys/block/sdb/size", "1953525168"); _w(root, "sys/block/sdb/removable", "0"); _w(root, "sys/block/sdb/device/model", "SATA SSD 1TB")
     _w(root, "sys/class/tpm/tpm0/tpm_version_major", "2")
+    (Path(root) / "sys/firmware/efi/efivars/SecureBoot-8be4df61-93ca-11d2-aa0d-00e098032b8c").write_bytes(b"\x06\x00\x00\x00\x01")

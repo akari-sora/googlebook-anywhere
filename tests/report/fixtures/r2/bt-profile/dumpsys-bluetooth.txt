@@ -1,0 +1,5 @@
+A2DP profile
+  enabled: true
+Bluetooth Status
+  enabled: false
+  state: OFF

@@ -1,0 +1,5 @@
+[ro.build.display.id]: [CL3B.260622.271.R1]
+[ro.product.manufacturer]: [ASUS]
+[ro.product.model]: [lapis]
+[ro.product.device]: [generic]
+[ro.product.name]: [lapis]

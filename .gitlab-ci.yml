@@ -2,6 +2,11 @@
 # archive on tags. The containers have no loop devices, so tests/install/run.sh skips its fake-disk cases here; those run
 # on a Linux developer host. The full build (official zip -> image -> QEMU) needs about 80 GB, KVM and 7.7 GB of download, so it
 # runs on a developer host (tests/builder/e2e.sh) and its result is recorded in the release notes.
+# Platform skips (not a failed job). The stick job runs the offline make-maint suite on gitlab-ci. macOS and a Linux
+# developer host run that same command by hand. It is not in the skip list.
+#   gitlab-ci: qemu-install.py real boot (no KVM); tests/builder/e2e.sh; tests/install/run.sh pretend-disk cases (install-tools still runs and prints each SKIP)
+#   macos: qemu-install.py real boot; tests/builder/e2e.sh; tests/install/run.sh Linux guard section
+#   linux-dev: none of those three
 stages: [test, package, release]
 
 default:
@@ -12,11 +17,12 @@ variables:
   DEBIAN_FRONTEND: noninteractive
   PYTHONDONTWRITEBYTECODE: "1"
   PYTHONPYCACHEPREFIX: /tmp/pycache   # py_compile writes .pyc even with PYTHONDONTWRITEBYTECODE; keep it out of the repo
+  GIT_DEPTH: "0"   # full history: the private-scan checks look at every ref's history, not only the last 20 commits
 
 .deps: &deps
   before_script:
     - apt-get update -qq
-    - apt-get install -y -qq --no-install-recommends bash coreutils util-linux procps python3 mtools zstd lz4 shellcheck git file gdisk > /dev/null
+    - apt-get install -y -qq --no-install-recommends bash coreutils util-linux procps python3 python3-yaml mtools zstd lz4 shellcheck git file gdisk > /dev/null
     # the runner reuses the checkout between jobs and the test jobs hand it to the tester user; root's git would refuse it
     - git config --global --add safe.directory "$CI_PROJECT_DIR"
 
@@ -32,8 +38,11 @@ builder:
   stage: test
   <<: *deps
   script:
-    - bash tests/builder/run.sh
-    - python3 tests/probe/probe-test.py
+    # Docker is root; the report and autooff tests assume a normal user (root may follow its own symlinks and read mode 000).
+    - useradd -m tester && chown -R tester:tester "$CI_PROJECT_DIR"
+    - runuser -u tester -- bash tests/builder/run.sh
+    - runuser -u tester -- python3 tests/probe/probe-test.py
+    - runuser -u tester -- bash tests/report/report-test.sh
 
 stick:
   stage: test
@@ -42,6 +51,11 @@ stick:
     - python3 tests/stick/selftest.py "$(mktemp -d)/w"
     - python3 tests/update/selftest.py "$(mktemp -d)/w"
     - python3 tests/update/mutate.py -j 2      # each listed guard of gbos-update.py reverted in a copy must turn the self-test red
+    # Docker is root. This suite is the normal-user path (no network, no disk), same python entry as the lines above.
+    - useradd -m tester && chown -R tester:tester "$CI_PROJECT_DIR"
+    - runuser -u tester -- python3 -I tests/stick/run_make_maint_test.py
+    - runuser -u tester -- python3 -I tests/stick/public-export-test.py
+    - python3 -I tests/stick/release-notes-gate.py   # tag gate: line 3 is release-status released, no unpublished wording anywhere in the file
 
 # Docker executor jobs run as root; some guards differ for normal users, and the harness tests refuse root on purpose
 install-tools:
@@ -67,8 +81,10 @@ package:
   rules:
     - if: $CI_COMMIT_TAG
   script:
-    # the release notes must be written for this tag (their first line names it); a later tag must not ship old notes
-    - head -n 1 docs/RELEASE-NOTES.md | tr " " "\n" | grep -qxF "$CI_COMMIT_TAG" || { echo "docs/RELEASE-NOTES.md is not for $CI_COMMIT_TAG"; exit 1; }
+    # Fixed position: line 1 is `# Googlebook Anywhere $CI_COMMIT_TAG`, line 2 is empty,
+    # line 3 is the released status. Markdown only (no raw HTML outside code spans, char refs, escaped [ ], or non-plain
+    # 1-line link targets); each line and segment (paragraph/list item/table row/heading, also in >) is scanned (2 Latin + 1 CJK views).
+    - if test ! -f docs/RELEASE-NOTES.md; then echo "docs/RELEASE-NOTES.md line 1 expected '# Googlebook Anywhere $CI_COMMIT_TAG'"; echo "docs/RELEASE-NOTES.md line 2 expected empty"; echo "docs/RELEASE-NOTES.md line 3 expected '<!-- release-status:" " released -->'"; exit 1; fi; LC_ALL=C awk -v tag="$CI_COMMIT_TAG" 'function has_cjk(line) { if (index(line, "未發布") || index(line, "還沒有發布") || index(line, "還沒發布")) return 1; if (index(line, "待發布") || index(line, "即將發布") || index(line, "沒正式發布")) return 1; if (index(line, "沒有正式發布") || index(line, "未正式發布") || index(line, "未發佈")) return 1; if (index(line, "還沒有發佈") || index(line, "還沒發佈") || index(line, "未发布")) return 1; return 0; } function has_latin(low) { return index(low, "unreleased") || index(low, "unpublished") || index(low, "not yet released"); } function seg_check(    t, a, b, c) { if (seg == "") return; t = seg; gsub(/\]\([^)]*\)/, "", t); gsub(/\]\[[^]\\\n]*\]/, "]", t); gsub(/!\[/, "[", t); gsub(/[{[][+]|[+][]}]|[{]-|-[}]|\$`|`\$/, "", t); a = t; gsub(/[][*_~`\\>-]/, "", a); gsub(/[ \t\r\n]+/, " ", a); b = t; gsub(/[][*_~`\\>\/-]/, " ", b); gsub(/[ \t\r\n]+/, " ", b); c = t; gsub(/[][*_~`\\> \t\r\n-]/, "", c); if (has_latin(tolower(a)) || has_latin(tolower(b)) || has_cjk(c)) { print "docs/RELEASE-NOTES.md lines " start "-" last " expected no unpublished wording (after removing link targets, markup and line breaks)"; bad = 1; } seg = ""; } BEGIN { expect1 = "# Googlebook Anywhere " tag; released = "<!-- release-status:" " released -->"; bad = 0; seg = ""; } { if (NR == 1 && $0 != expect1) { print "docs/RELEASE-NOTES.md line 1 expected " expect1; bad = 1; } if (NR == 2 && $0 != "") { print "docs/RELEASE-NOTES.md line 2 expected empty"; bad = 1; } if (NR == 3 && $0 != released) { print "docs/RELEASE-NOTES.md line 3 expected " released; bad = 1; } if ($0 ~ /&#[0-9xX]|&[A-Za-z][A-Za-z0-9]*;/) { print "docs/RELEASE-NOTES.md line " NR " expected no character reference"; bad = 1; } h = $0; gsub(/`[^`]*`/, "", h); if (NR != 3 && h ~ /<[A-Za-z\/!?]/) { print "docs/RELEASE-NOTES.md line " NR " expected no raw HTML (Markdown only; line 3 is the status comment)"; bad = 1; } if ($0 ~ /\]\([^)]*[ \t"\047(<`]/ || $0 ~ /\]\([^)]*$/) { print "docs/RELEASE-NOTES.md line " NR " expected a link target without spaces, quotes, parentheses or a title, on one line"; bad = 1; } if ($0 ~ /\\[][()]/) { print "docs/RELEASE-NOTES.md line " NR " expected no escaped bracket or parenthesis"; bad = 1; } if (NR != 3 && $0 ~ /<!--/) { print "docs/RELEASE-NOTES.md line " NR " expected no HTML comment (line 3 is the status comment)"; bad = 1; } if (h ~ /\]\[/ || h ~ /^[ \t>]*\[[^]]*\]:/) { print "docs/RELEASE-NOTES.md line " NR " expected no reference-style link or definition (use [text](target))"; bad = 1; } if (has_latin(tolower($0)) || has_cjk($0)) { print "docs/RELEASE-NOTES.md line " NR " expected no unpublished wording"; bad = 1; } if ($0 ~ /^[ \t\r>]*$/ || $0 ~ /^[ \t>]*(=+|-+|\*+|_+)[ \t\r]*$/) { seg_check(); } else { if ($0 ~ /^[ \t>]*([-*+]|[0-9]+[.)])[ \t]/ || $0 ~ /^[ \t>]*\|/ || $0 ~ /^[ \t>]*#/) seg_check(); if (seg == "") start = NR; seg = seg "\n" $0; last = NR; } } END { seg_check(); if (NR < 1) { print "docs/RELEASE-NOTES.md line 1 expected " expect1; bad = 1; } if (NR < 2) { print "docs/RELEASE-NOTES.md line 2 expected empty"; bad = 1; } if (NR < 3) { print "docs/RELEASE-NOTES.md line 3 expected " released; bad = 1; } exit bad; }' docs/RELEASE-NOTES.md
     - apt-get install -y -qq --no-install-recommends curl ca-certificates > /dev/null
     - bash tools/release/make-release.sh "$CI_COMMIT_TAG" "$CI_COMMIT_SHA"
     - |
@@ -87,7 +103,7 @@ release:
     - if: $CI_COMMIT_TAG
   needs: [package]
   script:
-    - head -n 1 docs/RELEASE-NOTES.md | tr " " "\n" | grep -qxF "$CI_COMMIT_TAG" || { echo "docs/RELEASE-NOTES.md is not for $CI_COMMIT_TAG"; exit 1; }
+    - test "$(head -n 1 docs/RELEASE-NOTES.md)" = "# Googlebook Anywhere $CI_COMMIT_TAG" || { echo "docs/RELEASE-NOTES.md line 1 expected '# Googlebook Anywhere $CI_COMMIT_TAG'"; exit 1; }
     - echo "release $CI_COMMIT_TAG"
   release:
     tag_name: $CI_COMMIT_TAG
@@ -95,7 +111,7 @@ release:
     description: ./docs/RELEASE-NOTES.md
     assets:
       links:
-        - name: googlebook-anywhere-$CI_COMMIT_TAG.tar.gz (installer scripts; no images)
+        - name: googlebook-anywhere-$CI_COMMIT_TAG.tar.gz (installer scripts; no disk/firmware images)
           url: $CI_API_V4_URL/projects/$CI_PROJECT_ID/packages/generic/installer/$CI_COMMIT_TAG/googlebook-anywhere-$CI_COMMIT_TAG.tar.gz
           link_type: package
         - name: SHA-256

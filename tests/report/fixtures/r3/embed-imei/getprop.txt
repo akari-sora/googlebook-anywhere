@@ -1,0 +1,2 @@
+[ro.build.display.id]: [gbos-490154203237518-userdebug]
+[gsm.imei]: [490154203237518]

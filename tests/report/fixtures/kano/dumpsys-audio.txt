@@ -1,0 +1,2 @@
+Cards: 1
+  0: sof-nau8825

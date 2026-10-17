@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""png-ok.py [--pinned LIST --as RELPATH] <file>...: exit 0 only if every file is a plain screenshot PNG that can be
-published.
+"""png-ok.py <file>... | png-ok.py --pinned LIST --as RELPATH <file>: exit 0 only if every file is a plain screenshot
+PNG that can be published.
 
 With --pinned, the file must ALSO be listed in LIST (lines "<sha256>  <relpath>", tools/release/published-images.sha256)
 under RELPATH with exactly that SHA-256: a structural check cannot prove that a compressed stream carries no hidden bits
@@ -117,9 +117,12 @@ def main():
     listfile = rel = None
     if args[:1] == ["--pinned"]:
         if len(args) != 5 or args[2] != "--as" or not args[1] or not args[3]:
-            print("usage: png-ok.py [--pinned LIST --as RELPATH] FILE...")
+            print("usage: png-ok.py FILE... | png-ok.py --pinned LIST --as RELPATH FILE")
             return 2
         listfile, rel, args = args[1], args[3], args[4:]
+    if not args or any(a.startswith("-") for a in args):
+        print("usage: png-ok.py FILE... | png-ok.py --pinned LIST --as RELPATH FILE")
+        return 2
     for f in args:
         why = check(f) or (pinned(listfile, rel, f) if listfile is not None else None)
         if why:

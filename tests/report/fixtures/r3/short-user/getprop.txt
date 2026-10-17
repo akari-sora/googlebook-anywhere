@@ -1,0 +1,2 @@
+[ro.build.user]: [alice]
+[ro.build.display.id]: [eng.alice.20261014.123456]

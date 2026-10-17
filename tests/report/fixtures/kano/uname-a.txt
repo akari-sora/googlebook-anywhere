@@ -1,0 +1,1 @@
+Linux synth-laptop 6.1.75-android14 #1 SMP PREEMPT Tue Jan 1 00:00:00 UTC 2026 x86_64 Android

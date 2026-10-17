@@ -1,0 +1,3 @@
+AC powered: true
+USB powered: false
+level: 80

@@ -1,0 +1,9 @@
+processor: 0
+vendor_id: GenuineIntel
+cpu family: 6
+model: 154
+model name: 12th Gen Intel(R) Core(TM) i7-1260P
+stepping: 3
+Serial: LEAKARMSERIAL9F3A
+mSerialNumber=LEAKEDID9F3A
+serial number: "Battery LeakPerson"

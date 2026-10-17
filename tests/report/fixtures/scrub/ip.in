@@ -1,0 +1,9 @@
+IP: /203.0.113.10
+listen 198.51.100.20
+ipv6 2001:db8::10
+loopback ::1
+gpu 8086:46a6
+version 6.1.75-android14
+ipv6 2001:db8:12:34:56:78:9a:bc
+mapped ::ffff:203.0.113.8
+bios version 1.14.0.0

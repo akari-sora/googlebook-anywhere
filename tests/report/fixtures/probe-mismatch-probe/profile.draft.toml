@@ -1,0 +1,6 @@
+schema = 1
+
+[model]
+id = "other-laptop"
+name = "Other Laptop"
+status = "probe-only"

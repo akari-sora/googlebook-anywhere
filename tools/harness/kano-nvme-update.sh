@@ -8,6 +8,13 @@
 # - Results of an earlier run for the same version (bootconfig.txt, initrd-nvme.sha256, ...) are deleted first; every
 #   step's exit status is checked and its result is read from a file this run wrote.
 # - The NVMe's boot_a GUID is read from the disk and must equal KANO_NVME_BOOT_A_GUID before anything is written.
+# - Before the dry run, and again immediately before the push, kano-autooff-image.py scans the new image's
+#   super the same way kano-nvme-install.sh scans the stick (every LP metadata slot, primary then backup).
+#   The scan must print exactly "vendor clean". A vendor
+#   path etc/kano-autooff.nonce or etc/init/kano-autooff.rc that resolves to a regular file is a TEST image
+#   and is refused. The push itself (kano-delta-push-nvme.py) writes only super and vbmeta_a/b and refuses
+#   any other changed block, including userdata; it does not create /data/kano-autooff.nonce. This update
+#   never clears userdata. A TEST vendor with no /data nonce stays on.
 # - Remote scripts run with `set -euo pipefail` behind the target guards (see prelude); the block push has its own.
 # - adb talks to the fixed address KANO_ADB_ADDR only, and powers it off only if that device carries this project's
 #   vendor image (KANO_ANDROID_ID_PROP is set there); after the update boot, nothing is sent to it unless it was
@@ -98,6 +105,13 @@ log "1. final$N QEMU + dry run"
 [ -f "$W/kano-final$N.log" ] || die "no build log $W/kano-final$N.log"
 if grep -q FAIL "$W/kano-final$N.log"; then die "QEMU FAIL in kano-final$N.log"; fi
 grep -q "kano-final$N.img sha256" "$W/kano-final$N.log" || die "final$N not built"
+[ -f "$NEWIMG" ] || die "no image $NEWIMG"
+rc=0
+python3 "$HERE/kano-autooff-image.py" --file "$NEWIMG" > "$OUT/autooff.txt" 2>&1 || rc=$?
+show "$OUT/autooff.txt"
+if [ "$rc" -ne 0 ] || ! grep -qx 'vendor clean' "$OUT/autooff.txt"; then
+  die "TEST autooff super in $NEWIMG"
+fi
 rc=0; python3 "$HERE/kano-delta-push-nvme.py" "$OLDIMG" "$NEWIMG" "$KANO_IP" --dry-run > "$OUT/dryrun.txt" 2>&1 || rc=$?
 show "$OUT/dryrun.txt"
 [ $rc -eq 0 ] || die "dry run refused (exit $rc)"
@@ -159,6 +173,12 @@ GUID=$(sed -n 's/^BOOT_A_GUID=//p' "$OUT/nvme-id.out" | tail -n 1)
 [ "$(lower "$GUID")" = "$(lower "$KANO_NVME_BOOT_A_GUID")" ] || die "NVMe boot_a GUID is '$GUID', expected $KANO_NVME_BOOT_A_GUID"
 
 log "4. push super/vbmeta to the NVMe"
+rc=0
+python3 "$HERE/kano-autooff-image.py" --file "$NEWIMG" > "$OUT/autooff-push.txt" 2>&1 || rc=$?
+if [ "$rc" -ne 0 ] || ! grep -qx 'vendor clean' "$OUT/autooff-push.txt"; then
+  show "$OUT/autooff-push.txt"
+  die "TEST autooff super in $NEWIMG"
+fi
 rc=0; python3 "$HERE/kano-delta-push-nvme.py" "$OLDIMG" "$NEWIMG" "$KANO_IP" > "$OUT/push.txt" 2>&1 || rc=$?
 show "$OUT/push.txt"
 [ $rc -eq 0 ] || die "nvme push failed (exit $rc)"

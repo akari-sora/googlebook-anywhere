@@ -1,0 +1,29 @@
+{
+ "dmi": {
+  "sys_vendor": "Google",
+  "product_name": "Kano"
+ },
+ "cpu": {
+  "vendor_id": "AuthenticAMD",
+  "cpu family": "25",
+  "model": "117",
+  "stepping": "1",
+  "model name": "AMD CPU"
+ },
+ "pci": [
+  {
+   "class": "030000",
+   "id": "1002:150e",
+   "driver": "amdgpu"
+  }
+ ],
+ "firmware": {
+  "uefi": false,
+  "secure_boot": "on"
+ },
+ "audio": {
+  "card_ids": [
+   "live-linux-only-sound"
+  ]
+ }
+}

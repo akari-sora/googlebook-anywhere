@@ -1,0 +1,8 @@
+{
+  "input": [{"kind": "touchpad", "name": "ELAN Touchpad", "bus": "0003",
+    "vendor": "leak.person@example.test", "product": "x"},
+   {"kind": "touchpad", "name": "Touchpad", "bus": "0003",
+    "vendor": "02:99:88:77:66:55", "product": "ABCD"},
+   {"kind": "touchpad", "name": "", "bus": "0003",
+    "vendor": "review.owner@example.test", "product": "/sdcard/Download/REVIEW-TAX-777.pdf"}]
+}

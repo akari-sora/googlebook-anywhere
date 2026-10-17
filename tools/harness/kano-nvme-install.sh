@@ -15,6 +15,33 @@
 #   query that fails (unreadable /proc/self/mounts, /proc/swaps or holders) refuses; it never counts as "idle".
 # - Every local input (initrd bootconfig, the three entries) is copied into this run's dir and checked before the
 #   first remote call; the NVMe initrd and entries are made from those copies.
+# - Power-off arms only when /data/kano-autooff.nonce matches the vendor nonce. This script is the only
+#   path that copies stick userdata onto the internal disk, so the safety guarantee is the strip below:
+#   after that userdata is copied and mounted, kano-autooff.nonce (file, symlink, or directory) is removed
+#   before unmount. The root directory is listed; a read error stops. A regular file or a symlink is removed
+#   with rm -f and is not followed. A real directory is removed inside the same python3 helper that
+#   classifies it: os.lstat must show a directory and not a symlink, shutil.rmtree.avoids_symlink_attacks
+#   must be true (fd-based on Linux; otherwise the helper stops non-zero), and shutil.rmtree runs with an
+#   onexc/onerror that records any error and makes the helper exit non-zero. No filename text is passed
+#   back to the shell. Only an lstat errno of ENOENT means the name is absent; any other lstat error stops.
+#   After that unmount the userdata is mounted read-only again, the nonce name must lstat as ENOENT, and it
+#   is unmounted again. If the mount, the listing, the lstat, the delete, the remount, the recheck, or
+#   either unmount fails, the script stops non-zero and does not resize.f2fs, fsck.f2fs, or write the ESP.
+#   After the partition table is rewritten, the new p1 must be at least as long as the userdata
+#   copy (NEW_SECT >= OLD_SECT). The kernel start and the kernel length of p1 (sysfs start and
+#   size) must equal the new userdata start and length before any filesystem step. A shorter new
+#   p1, or a start or length mismatch, stops before the userdata dd, resize.f2fs, fsck.f2fs, and the ESP.
+#   A refuse while /mnt/ud is still mounted leaves that mount up; the next run stops in guard_idle.
+#   Any stop between dd and that strip (kill, power loss, ssh drop) can still leave the file; a failed
+#   strip does not continue. The vendor scan is defense in depth: it keeps the TEST service off the daily disk.
+#   It runs before any NVMe write and again after the guard, before blkdiscard. LP geometry is primary then
+#   backup. Every metadata slot is read the same way, then slot-suffixed names are adjusted the way liblp
+#   AdjustMetadataForSlot does (_a / _b). The installer keeps androidboot.slot_suffix, including _b. A copy
+#   liblp would reject falls through to that slot's backup; a checker limit refuses the image instead.
+#   etc/kano-autooff.nonce or etc/init/kano-autooff.rc resolving to a regular file is a TEST image; refuse.
+#   Before blkdiscard, /dev/sda1 must be PARTLABEL userdata and is mounted -o ro (f2fs may still replay a
+#   previous fsync). The stick userdata root is listed, then the nonce name is lstat'd. Only ENOENT continues.
+#   A file, symlink, directory, or any other lstat/list error refuses before blkdiscard.
 # - Each step's output goes to a file of THIS run (a fresh run dir under $KANO_RUNS/nvme-install/). A step passes
 #   only if ssh exits 0 and that file holds the step's marker line (echoed as the script's last command, under
 #   set -e); any failure stops before the next step.
@@ -40,14 +67,15 @@ trap 'rc=$?; [ $rc -eq 0 ] || echo "kano-nvme-install: stopped (exit $rc); this 
 log() { echo "[$(date +%T)] $*" | tee -a "$RUN/run.log"; }
 die() { log "ABORT: $*"; exit 1; }
 sha256() { if command -v sha256sum > /dev/null 2>&1; then sha256sum "$1"; else shasum -a 256 "$1"; fi | cut -c1-64; }
+AUTOOFF_SHA=$(sha256 "$HERE/kano-autooff-image.py")
 K() { "$HERE/kano-ssh.sh" "$@" < /dev/null; }
 END_SECT=37244880                   # first sector of the stick's XBOOTLDR = end of the Googlebook region
 BYTES=$((END_SECT * 512))
 
 # Top of every remote script: strict mode, constants, guard functions.
 prelude() {
-  printf 'set -euo pipefail\nNVME_SERIAL=%s\nNVME_PCI=%s\nSTICK_SERIAL=%s\nBYTES=%s\n' \
-    "$KANO_NVME_SERIAL" "$KANO_NVME_PCI" "$KANO_STICK_SERIAL" "$BYTES"
+  printf 'set -euo pipefail\nNVME_SERIAL=%s\nNVME_PCI=%s\nSTICK_SERIAL=%s\nBYTES=%s\nAUTOOFF_SHA=%s\n' \
+    "$KANO_NVME_SERIAL" "$KANO_NVME_PCI" "$KANO_STICK_SERIAL" "$BYTES" "$AUTOOFF_SHA"
   cat <<'EOF'
 D=/dev/nvme0n1; S=/dev/sda
 refuse() { echo "REFUSE: $*" >&2; exit 1; }
@@ -65,6 +93,86 @@ guard_id() {
 }
 # none <pattern> <file>: true if the file was read and no line matches; an unreadable file refuses (grep status 2)
 none() { local rc=0; grep -q -- "$1" "$2" || rc=$?; [ "$rc" -le 1 ] || refuse "cannot read $2"; [ "$rc" -eq 1 ]; }
+# nonce_kind <path>: print absent|file|dir|symlink. Exit 0 only for those. ENOENT is the only errno that
+# means absent; every other lstat error exits 1. lstat does not follow symlinks.
+nonce_kind() {
+  python3 -c 'import os, stat, sys
+p = sys.argv[1]
+try:
+    mode = os.lstat(p).st_mode
+except FileNotFoundError:
+    print("absent")
+    sys.exit(0)
+except OSError as e:
+    print("lstat %s: errno %s" % (p, e.errno), file=sys.stderr)
+    sys.exit(1)
+if stat.S_ISLNK(mode):
+    print("symlink")
+elif stat.S_ISDIR(mode):
+    print("dir")
+else:
+    print("file")
+' "$1"
+}
+# list_dir <path>: actually read the directory. Any error, including EIO, is non-zero. Empty is success.
+list_dir() {
+  python3 -c 'import os, sys
+p = sys.argv[1]
+try:
+    os.listdir(p)
+except OSError as e:
+    print("listdir %s: errno %s" % (p, e.errno), file=sys.stderr)
+    sys.exit(1)
+' "$1"
+}
+# nonce_rmdir <path>: remove a real directory inside this python3 process. os.lstat must show a
+# directory and not a symlink. shutil.rmtree.avoids_symlink_attacks must be true. An rmtree error is
+# recorded by onexc/onerror and the helper exits non-zero. No filename text is written back to the shell.
+nonce_rmdir() {
+  python3 -c 'import inspect, os, stat, sys, shutil
+p = sys.argv[1]
+try:
+    mode = os.lstat(p).st_mode
+except OSError as e:
+    print("nonce_rmdir lstat %s: errno %s" % (p, e.errno), file=sys.stderr)
+    sys.exit(1)
+if stat.S_ISLNK(mode) or not stat.S_ISDIR(mode):
+    print("not a real directory", file=sys.stderr)
+    sys.exit(1)
+if not getattr(shutil.rmtree, "avoids_symlink_attacks", False):
+    print("rmtree does not avoid symlink attacks", file=sys.stderr)
+    sys.exit(1)
+failed = []
+def note(path, exc):
+    failed.append(1)
+    print("rmtree %s: %s" % (path, exc), file=sys.stderr)
+def onerror(func, path, exc_info):
+    note(path, exc_info[1] if exc_info else "error")
+def onexc(func, path, exc):
+    note(path, exc)
+if "onexc" in inspect.signature(shutil.rmtree).parameters:
+    shutil.rmtree(p, onexc=onexc)
+else:
+    shutil.rmtree(p, onerror=onerror)
+if failed:
+    sys.exit(1)
+' "$1"
+}
+# strip_nonce <path>: delete the name unconditionally, then require a confirming lstat of ENOENT.
+# A directory is removed by nonce_rmdir (python3, no filename text). Anything else, including a
+# symlink or an already-absent name, uses rm -f and does not follow a symlink. A lookup error, a
+# delete error, or a confirming lstat that is not ENOENT returns 1.
+strip_nonce() {
+  local f kind
+  f=$1
+  kind=$(nonce_kind "$f") || return 1
+  case "$kind" in
+    dir) nonce_rmdir "$f" || return 1 ;;
+    *) rm -f -- "$f" || return 1 ;;
+  esac
+  kind=$(nonce_kind "$f") || return 1
+  [ "$kind" = absent ]
+}
 # the target is idle: nothing on the NVMe mounted, used as swap or held (device mapper, md, ...)
 guard_idle() {
   none '^/dev/nvme0n1' /proc/self/mounts || refuse "something on the NVMe is mounted"
@@ -78,6 +186,20 @@ guard_idle() {
   done
 }
 guard() { guard_id; guard_idle; echo "guards passed: $D is the idle internal NVMe $NVME_SERIAL, / is on the Kingston stick" >&2; }
+EOF
+}
+# The checker is a file this host just wrote. A truncated or swapped copy exits 0 with no "vendor clean"
+# and would otherwise let the copy step discard the disk. Hash it, then require that exact line.
+# Defined after `guard` in the two scripts that scan, so those scripts still run the guard first.
+autooff_fn() {
+  cat <<'EOF'
+autooff_scan() {
+  got=$(sha256sum /root/kano-autooff-image.py | cut -c1-64)
+  [ "$got" = "$AUTOOFF_SHA" ] || refuse "autooff checker sha256 mismatch"
+  out=$(python3 /root/kano-autooff-image.py --dd /dev/sda --bytes "$BYTES") || refuse "autooff scan failed"
+  printf '%s\n' "$out"
+  [ "$out" = "vendor clean" ] || refuse "autooff scan did not report vendor clean"
+}
 EOF
 }
 # remote <name> <marker> < body: prelude + body + "echo <marker>" as one remote script (set -e: the marker
@@ -175,6 +297,12 @@ for f in initrd.img $ENTRIES; do
     die "$SRC/$f is not what the stick's ESP holds; KANO_NVME_SRC must be the build of the image on the stick"
 done
 
+log "1c. read-only scan of the stick bytes this script copies (before any write)"
+[ -f "$HERE/kano-autooff-image.py" ] || die "missing kano-autooff-image.py"
+"$HERE/kano-ssh.sh" "cat > /root/kano-autooff-image.py" < "$HERE/kano-autooff-image.py" \
+  || die "cannot send the autooff image check"
+{ printf '%s\n' 'guard'; autooff_fn; printf '%s\n' 'autooff_scan'; } | remote 01-autooff AUTOOFF_OK
+
 log "2. save the NVMe's first and last MiB (primary + backup GPT) to $RUN"
 remote_bin 02-head <<'EOF'
 guard
@@ -202,11 +330,27 @@ done
 log "GPT backup verified: $RUN/02-head.bin, $RUN/02-tail.bin"
 
 log "3. copy the stick's Googlebook region to the NVMe ($BYTES bytes)"
-remote 03-copy DD_OK <<'EOF'
-guard
+{ printf '%s\n' 'guard'; autooff_fn; printf '%s\n' 'autooff_scan'; cat <<'EOF'
+[ "$(lsblk -no PARTLABEL /dev/sda1)" = userdata ] || refuse "sda1 is not userdata"
+mkdir -p /mnt/srcud
+mount -o ro /dev/sda1 /mnt/srcud
+if ! list_dir /mnt/srcud; then
+  umount /mnt/srcud
+  refuse "cannot read stick userdata"
+fi
+if ! kind=$(nonce_kind /mnt/srcud/kano-autooff.nonce); then
+  umount /mnt/srcud
+  refuse "cannot stat stick userdata"
+fi
+if [ "$kind" != absent ]; then
+  umount /mnt/srcud
+  refuse "stick userdata has kano-autooff.nonce"
+fi
+umount /mnt/srcud
 blkdiscard -f "$D"
 dd if="$S" of="$D" bs=16M count="$BYTES" iflag=fullblock,count_bytes oflag=direct conv=fsync status=none
 EOF
+} | remote 03-copy DD_OK
 remote 04-verify CMP_OK <<'EOF'
 guard
 cmp -n "$BYTES" "$S" "$D"
@@ -227,14 +371,43 @@ sgdisk -G "$D"
 partx -u "$D" 2>/dev/null || blockdev --rereadpt "$D"
 sleep 2
 NEW_START=$(sgdisk -i 1 "$D" | sed -n 's/^First sector: \([0-9]*\).*/\1/p')
-[ -n "$NEW_START" ] || refuse "cannot read the new start of p1"
+NEW_SECT=$(sgdisk -i 1 "$D" | sed -n 's/^Partition size: \([0-9]*\) sectors.*/\1/p')
+[ -n "$NEW_START" ] && [ -n "$NEW_SECT" ] || refuse "cannot read the new bounds of p1"
+[ "$NEW_SECT" -ge "$OLD_SECT" ] || refuse "new p1 is shorter than the userdata copy"
+# The kernel node for p1 must already be the rewritten start and length.
+# Comparing bytes at /dev/nvme0n1p1 is not that check. A missing sysfs value or
+# a mismatch stops before any filesystem step.
+KERN_START=$(cat /sys/block/nvme0n1/nvme0n1p1/start) || refuse "cannot read the kernel start of p1"
+[ "$KERN_START" = "$NEW_START" ] || refuse "kernel p1 start is not the new userdata start"
+KERN_SECT=$(cat /sys/block/nvme0n1/nvme0n1p1/size) || refuse "cannot read the kernel length of p1"
+[ "$KERN_SECT" = "$NEW_SECT" ] || refuse "kernel p1 length is not the new userdata length"
 dd if="$D" of="$D" bs=1M skip=$((OLD_START * 512)) seek=$((NEW_START * 512)) count=$((OLD_SECT * 512)) iflag=skip_bytes,count_bytes,fullblock oflag=seek_bytes,direct conv=notrunc,fsync status=none
 cmp -n $((OLD_SECT * 512)) <(dd if="$D" bs=1M skip=$((OLD_START * 512)) count=$((OLD_SECT * 512)) iflag=skip_bytes,count_bytes status=none) /dev/nvme0n1p1
 echo UD_COPY_OK
-# an rw mount replays the f2fs checkpoint, which resize.f2fs needs
+# Safety guarantee for this copy: the nonce is gone, then a read-only remount
+# lstats it as ENOENT, before resize. List the root (a read error stops). Delete
+# with rm -f, or inside python3 for a real directory (no filename text records).
+# Only ENOENT is absence. Any error, including the remount, the recheck, or either
+# unmount, stops before resize.f2fs, fsck.f2fs, and the ESP.
 mkdir -p /mnt/ud
-mount -t f2fs /dev/nvme0n1p1 /mnt/ud
-umount /mnt/ud
+if ! mount -t f2fs /dev/nvme0n1p1 /mnt/ud; then
+  refuse "cannot mount copied userdata"
+fi
+list_dir /mnt/ud || refuse "cannot read copied userdata"
+strip_nonce /mnt/ud/kano-autooff.nonce || refuse "cannot delete copied kano-autooff.nonce"
+umount /mnt/ud || refuse "cannot unmount copied userdata"
+if ! mount -o ro -t f2fs /dev/nvme0n1p1 /mnt/ud; then
+  refuse "cannot remount copied userdata"
+fi
+if ! kind=$(nonce_kind /mnt/ud/kano-autooff.nonce); then
+  umount /mnt/ud || true
+  refuse "cannot recheck copied kano-autooff.nonce"
+fi
+if [ "$kind" != absent ]; then
+  umount /mnt/ud || true
+  refuse "copied kano-autooff.nonce still present after unmount"
+fi
+umount /mnt/ud || refuse "cannot unmount copied userdata after recheck"
 resize.f2fs /dev/nvme0n1p1 | tail -n 2
 fsck.f2fs /dev/nvme0n1p1 | tail -n 2
 sgdisk -v "$D" | tail -n 1

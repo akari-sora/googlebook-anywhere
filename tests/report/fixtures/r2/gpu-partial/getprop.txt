@@ -1,0 +1,2 @@
+[ro.hardware.egl]: [mesa]
+[ro.hardware.vulkan]: [intel]

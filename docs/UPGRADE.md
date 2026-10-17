@@ -92,12 +92,13 @@ Google 新 build 換了 kernel 時就是這種情況：KANO 的 ESP 是 64 MiB�
 
 ## 內建碟使用者（安裝碟）
 
-安裝碟目前只有開發者能做（要有維護系統，見 `install/stick/README.md`），所以這一節也只適用於開發者：
+內建碟上的 Googlebook 要用安裝碟更新，不是 `write-usb.sh --keep-data`（那個指令會拒絕多了 XBOOTLDR 與 kano-maint 的碟）：
 
-1. 在開發機建出新映像，推到隨身碟的 Googlebook 分割區。發行包裡**沒有**做這件事的工具：開發者用 git repo 裡的
-   `tools/harness/kano-delta-push.py`；`write-usb.sh --keep-data` 會拒絕安裝碟（它的分割區多了維護系統與 XBOOTLDR）。
-2. 重做安裝碟：`make-pristine.py`，再到維護系統執行 `setup-stick.sh`。見 `install/stick/README.md`。
+1. 在自己的電腦建出新映像。用**同一個**映像跑 `install/stick/make-pristine.py`，再跑 `install/make-installer-stick.sh`（`--root` 與 `--xbootldr` 見 `install/stick/README.md`）。維護系統會寫進新的安裝碟檔，不必在隨身碟上再跑 `setup-stick.sh`。
+2. `sudo install/write-usb.sh <安裝碟檔> /dev/disk/by-id/usb-<你的隨身碟>`。不要加 `--keep-data`。
 3. 從隨身碟選單選「Update Googlebook on the internal disk (keep data)」。
+
+手上已經有一支維護系統隨身碟、只想換其中的 Googlebook 分割區時，開發者仍可用 git repo 裡的 `tools/harness/kano-delta-push.py`（發行包沒有這個工具），然後重做 pristine 與選單。那不是上面這條一般流程。
 
 這個選項和安裝程式用同一套開機防護：
 

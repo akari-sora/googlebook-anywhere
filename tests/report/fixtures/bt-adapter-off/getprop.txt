@@ -1,0 +1,3 @@
+[ro.build.display.id]: [CL3B.260622.271.R1]
+[init.svc.bluetooth]: [running]
+[init.svc.vendor.bluetooth-1-0]: [running]

@@ -1,0 +1,2 @@
+Bluetooth Status
+  state: TURNING_OFF

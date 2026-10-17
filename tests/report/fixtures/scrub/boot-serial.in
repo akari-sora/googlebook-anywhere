@@ -1,0 +1,4 @@
+[ro.boot.serialno]: [BOOTSERIAL999]
+androidboot.serialno=BOOTSERIAL888
+cmdline: androidboot.serialno=BOOTSERIAL888 quiet
+[ro.serialno]: [SYNTHSERIAL001]

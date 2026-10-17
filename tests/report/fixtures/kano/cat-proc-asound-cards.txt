@@ -1,0 +1,2 @@
+ 0 [sofna8825      ]: sof-nau8825 - sof-nau8825
+                      Google-Kano-1.0

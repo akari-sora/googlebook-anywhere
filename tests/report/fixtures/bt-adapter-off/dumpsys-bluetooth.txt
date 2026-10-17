@@ -1,0 +1,5 @@
+Bluetooth Status
+  enabled: false
+  state: OFF
+  name: LeakNickBT9f3a
+  address: 02:99:88:77:66:55

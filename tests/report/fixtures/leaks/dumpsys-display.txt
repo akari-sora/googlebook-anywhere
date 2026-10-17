@@ -1,0 +1,3 @@
+DisplayDeviceInfo{"Built-in Screen": uniqueId="local:0", 1920 x 1080}
+DisplayDeviceInfo{"External": uniqueId="local:4619827259835644999", 1920 x 1080}
+mScreenState=ON

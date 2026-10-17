@@ -65,8 +65,8 @@ Files changed: `install/write-usb.sh`, `install/docker-install.sh`, `install/ins
     without it the run is refused and nothing is written.
   - Compared with `sgdisk -e`, the result is byte for byte the same on a sparse 9 → 10 GiB test image. On a reflink copy
     of the real 19 GB image grown to 32 GB, the MBR, both GPTs and the old backup all match.
-- **write-usb.sh, `--no-selftest` images (Opus m8).** If `<image>.not-self-tested` exists, the script warns before the
-  prompt and asks you to type `untested` before the serial.
+- **write-usb.sh, sibling `.not-self-tested` (Opus m8).** If `<image>.not-self-tested` exists, the script warns before the
+  prompt, quotes that file's first line, and asks you to type `untested` before the serial. The installer stick writes this marker because that build does not boot the image.
 - **docker-install.sh.**
   - Empty argument arrays work under `set -u` with the bash 3.2 that macOS ships (Opus I5). The old script failed with
     `CARGS[*]: unbound variable`; the new test reproduces that failure on the old file.

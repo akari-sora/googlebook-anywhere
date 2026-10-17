@@ -1,0 +1,9 @@
+Linux synth-laptop 6.1.75-android14 #1 SMP x86_64 Android
+Linux version 6.1.75-android14 (synthuser@synth-build) (clang version 17.0.2)
+[net.hostname]: [synth-laptop]
+hostname=synth-laptop
+[ro.build.host]: [alice-mbp]
+[ro.build.user]: [alice]
+[dhcp.wlan0.hostname]: [alice-pixel]
+keep (WindowToken@1a2b3c4)
+(builder@build.google.com)

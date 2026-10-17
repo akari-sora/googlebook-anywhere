@@ -1,0 +1,28 @@
+{
+ "input": [
+  {
+   "kind": "touchscreen",
+   "vendor": "04f3",
+   "product": "2c82",
+   "bus": "0018"
+  },
+  {
+   "kind": "stylus",
+   "vendor": "04f3",
+   "product": "2c82",
+   "bus": "0018"
+  },
+  {
+   "kind": "touchpad",
+   "vendor": "04f3",
+   "product": "2c82",
+   "bus": "0003"
+  },
+  {
+   "kind": "touchpad",
+   "vendor": "04f3",
+   "product": "2c82",
+   "bus": "0018"
+  }
+ ]
+}

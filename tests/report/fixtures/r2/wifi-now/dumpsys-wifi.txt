@@ -1,0 +1,4 @@
+Wi-Fi is enabled
+curState=ConnectedState
+mWifiInfo SSID: <unknown ssid>, Supplicant state: COMPLETED
+Wi-Fi is disabled

@@ -16,10 +16,44 @@
                                             kernel parameter) drawn at column 2 of the menu's status row. Exit 0 seen,
                                             3 not seen, 4 no menu in the log. No port.
 
-EC console: only the commands in EC_ALLOW are sent (power button, AP shutdown, keyboard-matrix presses, simulated lid
-close/open and read-only queries). The line is checked before any port is opened: control characters (CR, LF, NUL, TAB, ...), non-ASCII
-characters, any command not on the allowlist and malformed arguments are refused with exit status 2. Command names
-are compared exactly (case-insensitively); the EC itself would accept unique prefixes, so a prefix never passes.
+EC console: only the commands in EC_ALLOW are sent, in these exact shapes:
+
+  apshutdown
+  powerbtn
+  powerbtn <ms>                    1..20000; the old rule still allows leading zeros
+  kbpress <col> <row>              col 0..17, one or two digits, leading zeros allowed; row 0..7, one digit
+  kbpress <col> <row> <0|1>        same col and row; state is the literal 0 or 1
+  version
+  battery
+  powerinfo
+  kblight                          read-only; any case, spaces normalized
+  kblight <p>                      canonical decimal 0..100; the raw line must already be exact
+  gpioget
+  gpioget <name>                   1..48 characters from [A-Za-z0-9_]
+  pwmduty                          the raw line must already be exact
+  pwmduty 0                        the raw line must already be exact
+  pwmduty 0 <d>                    d is -1 or canonical decimal 0..100; the raw line must already be exact
+  gpioset EC_KB_BL_EN_L <0|1>      the raw line must already be exact; the GPIO name is case-exact
+  sysinfo                          the raw line must already be exact
+  cbi                              the raw line must already be exact; arguments may enter CBI write
+                                   operations, so they are refused
+  lidclose
+  lidopen
+  lidstate
+
+This transport is a general maintenance tool. Its allowlist is a second layer that bounds which EC commands can be
+sent at all. Sessions go through kano-session-lib, which is narrower (no apshutdown, powerbtn only without a
+duration, and the session hardware lock). This transport does not check that lock.
+
+The line is checked before any port is opened: control characters (CR, LF, NUL, TAB, ...), non-ASCII characters, any
+command not on the allowlist and malformed arguments are refused with exit status 2. Older command names are
+compared case-insensitively and their spaces are normalized. The new shapes above (pwmduty, gpioset EC_KB_BL_EN_L,
+kblight <p>, sysinfo, cbi) are accepted only when the raw line is already lower-case, uses single ASCII spaces, and
+has no leading or trailing space. Arguments stay case-exact. The EC itself would accept unique prefixes, so a prefix
+never passes.
+
+Keyboard-backlight writes (pwmduty 0 <d>, gpioset EC_KB_BL_EN_L, kblight <p>) change EC RAM only. An EC reset
+restores them, and the EC re-drives EC_KB_BL_EN_L itself on AP suspend/resume.
 
 The allowlist covers the EC console only. The ap-* subcommands write free text or raw bytes to the AP UART (firmware
 and bootloader menus, a maintenance shell) and are not filtered: whatever you type there runs with the rights of
@@ -57,6 +91,11 @@ def require(*names, serial=False):
             sys.exit(2)
 
 
+def _canon_0_100(t):
+    """Canonical decimal 0..100: digits only, no sign, no leading zero, no hex."""
+    return re.fullmatch(r"0|[1-9][0-9]{0,2}", t) is not None and int(t) <= 100
+
+
 # command -> accepted argument shapes; each shape is a tuple of argument kinds (see ARG)
 EC_ALLOW = {
     "apshutdown": [()],
@@ -65,8 +104,15 @@ EC_ALLOW = {
     "version": [()],
     "battery": [()],
     "powerinfo": [()],
-    "kblight": [()],                 # read-only form only: `kblight <percent>` would set it
+    "kblight": [(), ("pct",)],      # read (old: case and spaces normalized); a percent is an exact raw shape
     "gpioget": [(), ("gpio",)],
+    # channel 0 is the keyboard backlight; channel 1 is the fan. Duty is -1 or canonical 0..100.
+    # Exact raw shape: lower-case name, single ASCII spaces, no leading or trailing space.
+    "pwmduty": [(), ("ch0",), ("ch0", "duty")],
+    # case-exact name; the second argument is 0 or 1. No other GPIO name is accepted. Exact raw shape.
+    "gpioset": [("kblgpio", "state")],
+    "sysinfo": [()],                 # exact raw shape; no-argument read only
+    "cbi": [()],  # exact raw shape; no-argument read only; arguments may enter CBI write operations, so they are refused
     # simulated lid close/open: the EC's debounced lid state in RAM plus the same hook and host event as the real lid
     # switch (common/lid_switch.c); no flash, CBI or power-sequencing write. Always end a session with lidopen.
     "lidclose": [()],
@@ -79,7 +125,21 @@ ARG = {
     "row": lambda t: re.fullmatch(r"[0-9]", t) is not None and int(t) <= 7,
     "state": lambda t: t in ("0", "1"),
     "gpio": lambda t: re.fullmatch(r"[A-Za-z0-9_]{1,48}", t) is not None,
+    "pct": lambda t: _canon_0_100(t),
+    "duty": lambda t: t == "-1" or _canon_0_100(t),
+    "ch0": lambda t: t == "0",       # literal channel 0; any other channel (the fan) is refused
+    "kblgpio": lambda t: t == "EC_KB_BL_EN_L",
 }
+
+
+def _exact_raw(name, args):
+    """True when the raw line must already equal its normalized form.
+
+    New shapes from kano-session-lib v11.7 `_kano_ec` (pwmduty, gpioset EC_KB_BL_EN_L, kblight <p>, sysinfo, cbi):
+    lower-case command name, single ASCII spaces, no leading or trailing space. Read-only kblight and the older
+    commands keep case-folding and collapsed spaces.
+    """
+    return name in ("pwmduty", "gpioset", "sysinfo", "cbi") or (name == "kblight" and bool(args))
 
 
 def check_ec_command(line):
@@ -101,7 +161,10 @@ def check_ec_command(line):
         return None, f"'{name}' is not on the EC allowlist"
     for shape in shapes:
         if len(shape) == len(args) and all(ARG[kind](a) for kind, a in zip(shape, args)):
-            return " ".join([name] + args), None
+            norm = " ".join([name] + args)
+            if _exact_raw(name, args) and line != norm:
+                return None, "not the exact raw shape"
+            return norm, None
     return None, f"arguments not allowed for '{name}': {' '.join(args)!r}"
 
 

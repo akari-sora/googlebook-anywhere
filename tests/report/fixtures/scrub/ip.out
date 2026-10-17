@@ -1,0 +1,9 @@
+IP: /[ip]
+listen [ip]
+ipv6 [ip]
+loopback [ip]
+gpu 8086:46a6
+version 6.1.75-android14
+ipv6 [ip]
+mapped [ip]
+bios version 1.14.0.0

@@ -6,10 +6,16 @@
 #      one module_blacklist with every module of the installer entry (module-blacklist.txt) and blocks the initcalls of
 #      the built-in TPM and nvram drivers (builtin-initcalls.txt), none of those modules is loaded and no TPM, nvram,
 #      cros_ec, MTD or spidev device exists;
-#   2. check everything it will write while the internal disk is untouched: the manifest, the image's partition table
-#      (head.img.zst: SHA-256 and GPT CRCs), every pristine file (zstd -t, SHA-256), this stick's super (SHA-256),
-#      512-byte sectors on both disks; a damaged stick stops here and never asks for the serial number;
-#   3. ask for the last 4 characters of the target's serial number; nothing is written before that;
+#   2. check the image and this stick before the NVMe driver is loaded: the manifest, the image's partition table
+#      (head.img.zst: SHA-256 and GPT CRCs), every pristine file (zstd -t, SHA-256), the image's boot files, and on
+#      this stick 512-byte sectors, GPT CRCs, mountable XBOOTLDR/EFI-SYSTEM loader files, and the super partition
+#      offset and size. Install mode also hashes this stick's super in this step. Update mode hashes the stick super after
+#      the serial matches, before the target is opened for write. Any failure in these step-2 checks stops here and
+#      never asks for the serial number; in update mode, a damaged stick super fails later, at that post-serial hash
+#      before the target is opened for write;
+#   3. load the NVMe driver so the serial can be read. The disk is visible from here. Ask for the last 4 characters
+#      of the target's serial number. Do not write, mount, or discard the internal disk until those characters match.
+#      Cancel or a wrong serial leaves the disk untouched. The target's sector size is read only after this load;
 #   4. write: the image's partition table, super copied from this stick, the pristine partitions, an empty userdata at
 #      the tail, new GUIDs, the NVMe ESP boot files, the stick's menu entry for the internal disk; every partition is
 #      read back from the disk (direct I/O) and checked against the manifest right after it is written;
@@ -21,9 +27,11 @@
 # /var/log/gbos-install-<time>.log on the stick.
 #
 # Update mode (kernel command line also has gbos.update=1, boot entry "Update Googlebook on the internal disk (keep
-# data)"): the same checks of this boot and of the installer data, then gbos-update.py (installed by setup-stick.sh)
-# puts this stick's image into the internal disk's other slot. /data, metadata and the running version stay; the
-# running version remains on the boot menus as "(previous version)". The serial number is confirmed the same way.
+# data)"): the same boot checks and the same installer-data checks, then the NVMe driver is loaded so the serial
+# can be read. Update mode hashes the stick super after the serial matches, before the target is opened for write.
+# gbos-update.py (installed by setup-stick.sh) then puts this stick's image into the internal disk's other slot.
+# /data, metadata and the running version stay; the running version remains on the boot menus as "(previous version)".
+# The serial number is confirmed the same way.
 set -Eeuo pipefail
 shopt -s inherit_errexit
 P=/var/lib/gbos-install/pristine
@@ -340,7 +348,8 @@ if [ -d /sys/class/tpm ] && [ -n "$(ls -A /sys/class/tpm)" ]; then PRESENT="$PRE
 [ -z "$PRESENT" ] || die "built-in drivers are not blocked:$PRESENT exists"
 log "ok   built-in drivers blocked: no TPM, nvram, cros_ec, MTD or spidev device"
 
-# --- 2. check everything before the internal disk is touched
+# --- 2. check the image and this stick before the NVMe driver is loaded.
+# The load below only reads the serial. Do not write, mount, or discard until the last 4 characters match.
 log "Checking the installer data on this stick (about a minute)..."
 [ -f "$P/manifest.txt" ] || die "no installer data in $P; set up the stick with setup-stick.sh"
 python3 "$W/gbos.py" verify-data "$P" "$W/head.img" || die "the installer data in $P is damaged; set up the stick again"
@@ -395,8 +404,11 @@ if [ "$MODE" = install ]; then   # (update mode: gbos-update.py checks super its
     log "ok   super on this stick matches the installer data"
 fi
 
-# The maintenance OS keeps the NVMe driver from loading on its own (install nvme /bin/false in modprobe.d), so that
-# nothing else ever touches the internal disk. Only the installer loads it, after every check above has passed.
+# On the generated initramfs path (pinned Arch modular kernel + assemble's mkinitcpio config), the maintenance OS does
+# not autoload the NVMe driver (install nvme /bin/false in modprobe.d), so every check above ran before the NVMe driver
+# is loaded and the installer loads it here with --ignore-install so the serial can be read (a prebuilt initramfs or a
+# kernel with builtin NVMe is not covered by that pre-load guarantee). The disk is visible from here. Do not write,
+# mount, or discard it until the last 4 characters match. Cancel or a wrong serial leaves the disk untouched.
 if ! ls /dev/nvme*n1 > /dev/null 2>&1; then
     modprobe --ignore-install nvme_core && modprobe --ignore-install nvme || die "cannot load the NVMe driver"
     udevadm settle

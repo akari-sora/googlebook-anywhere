@@ -4,8 +4,11 @@ The values are not in this file in any form (no literal, no hash): the test read
 tools/release/private-patterns.txt, the same list tools/release/make-public.sh scans the public export with, and runs
 the same `grep -E` over every file. That list is private (never exported), so in the public export the test is
 skipped; the synthetic test checks the scanner itself everywhere.
+
+The vendored v11.7 lib fixture (tests/harness/fixtures/kano-session-lib-v117.sh, its example LAN prefix replaced by
+the TEST-NET-1 prefix 192.0.2.) is scanned like every other file, with no exception. Any hit fails.
 """
-import os, subprocess, tempfile, unittest
+import os, re, subprocess, tempfile, unittest
 from pathlib import Path
 from helpers import HARNESS, REPO, TESTS
 
@@ -61,8 +64,8 @@ class NoPersonalData(unittest.TestCase):
         self.assertEqual(found, [], f"personal values in: {sorted(set(found))}")
 
     def test_this_file_holds_no_digest(self):
-        import re
         self.assertIsNone(re.search(r"\b[0-9a-f]{40,}\b", Path(__file__).read_text()))
+
 
 
 if __name__ == "__main__":

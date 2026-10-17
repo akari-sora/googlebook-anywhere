@@ -1,0 +1,5 @@
+vendor_id: GenuineIntel
+cpu family: 6
+model: 154
+model name: Intel CPU
+stepping: 3

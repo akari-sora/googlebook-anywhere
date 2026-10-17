@@ -136,16 +136,30 @@ try:
 except (OSError, IndexError):
     fw["secure_boot"] = "unknown"
 
-pci = []
-for d in ls("sys/bus/pci/devices"):
-    b = f"sys/bus/pci/devices/{d}"
-    ven, dev, cls = hexint(rd(f"{b}/vendor")), hexint(rd(f"{b}/device")), hexint(rd(f"{b}/class"))
-    if ven is None or dev is None or cls is None:
-        continue
-    sv, sd = hexint(rd(f"{b}/subsystem_vendor")) or 0, hexint(rd(f"{b}/subsystem_device")) or 0
-    alias = rd(f"{b}/modalias") or f"pci:v{ven:08X}d{dev:08X}sv{sv:08X}sd{sd:08X}bc{cls >> 16:02X}sc{(cls >> 8) & 0xFF:02X}i{cls & 0xFF:02X}"
-    pci.append({"slot": d, "id": f"{ven:04x}:{dev:04x}", "class": f"{cls:06x}", "driver": os.path.basename(link(f"{b}/driver")),
-                "alias": alias, "lapis": modules_for(alias)})
+def list_dir(rel):
+    """None when the directory is missing or cannot be listed. [] is a real empty directory."""
+    try:
+        return sorted(os.listdir(ROOT / rel))
+    except OSError:
+        return None
+
+
+pci_names = list_dir("sys/bus/pci/devices")
+if pci_names is None:
+    pci = None
+else:
+    pci = []
+    for d in pci_names:
+        b = f"sys/bus/pci/devices/{d}"
+        ven, dev, cls = hexint(rd(f"{b}/vendor")), hexint(rd(f"{b}/device")), hexint(rd(f"{b}/class"))
+        if ven is None or dev is None or cls is None:
+            pci.append({"slot": d, "unread": True})
+            continue
+        sv, sd = hexint(rd(f"{b}/subsystem_vendor")) or 0, hexint(rd(f"{b}/subsystem_device")) or 0
+        alias = rd(f"{b}/modalias") or f"pci:v{ven:08X}d{dev:08X}sv{sv:08X}sd{sd:08X}bc{cls >> 16:02X}sc{(cls >> 8) & 0xFF:02X}i{cls & 0xFF:02X}"
+        pci.append({"slot": d, "id": f"{ven:04x}:{dev:04x}", "class": f"{cls:06x}", "driver": os.path.basename(link(f"{b}/driver")),
+                    "alias": alias, "lapis": modules_for(alias)})
+pci_rows = pci if isinstance(pci, list) else []
 
 usb = []
 for d in ls("sys/bus/usb/devices"):
@@ -212,7 +226,10 @@ for line in rd("proc/bus/input/devices").splitlines() + [""]:
         continue
     t, _, v = line.partition(": ")
     if t == "I":
-        cur["bus"] = dict(x.split("=", 1) for x in v.split() if "=" in x).get("Bus", "")
+        parts = dict(x.split("=", 1) for x in v.split() if "=" in x)
+        cur["bus"] = parts.get("Bus", "")
+        cur["vendor"] = parts.get("Vendor", "")
+        cur["product"] = parts.get("Product", "")
     elif t == "N":
         cur["name"] = v.partition("=")[2].strip('"')
     elif t == "H":
@@ -249,7 +266,12 @@ facts = {"dmi": dmi, "cpu": cpu, "firmware": fw, "pci": pci, "usb": usb, "acpi":
 
 # ---- coverage
 cov, verdict = [], {}
-for p in pci:
+if pci is None:
+    cov.append("pci  (bus not read)")
+for p in pci_rows:
+    if p.get("unread"):
+        cov.append(f"pci  {p.get('slot', '')}  unread")
+        continue
     cls = int(p["class"], 16)
     if cls in BUILTIN_PCI_CLASS:
         v = BUILTIN_PCI_CLASS[cls]
@@ -272,7 +294,7 @@ for a in acpi:
     v = note or (("lapis module: " + ", ".join(a["lapis"])) if a["lapis"] else "")
     if v:
         cov.append(f"acpi {a['name']}  {a['hid']}  ->  {v}")
-gpus = [p for p in pci if p["class"].startswith("03")]
+gpus = [p for p in pci_rows if not p.get("unread") and str(p.get("class", "")).startswith("03")]
 gpu_lines = []
 force_probe = []
 for g in gpus:
@@ -286,22 +308,35 @@ for g in gpus:
         gpu_lines.append(f"{g['id']}: {', '.join(g['lapis'])}")
     else:
         gpu_lines.append(f"{g['id']}: NO lapis GPU driver -> only the generic UEFI framebuffer fallback (research: AMD/generic M1)")
-verdict["gpu"] = gpu_lines or ["no display controller found"]
-# a GPU lapis drives (xe) keeps the image's own stack; otherwise the GOP framebuffer + SwiftShader (profiles/generic-x86)
-stack = "native" if any(g["lapis"] for g in gpus) else "gop-swiftshader"
+# A GPU lapis drives (xe) keeps the image's own stack; otherwise the GOP framebuffer + SwiftShader.
+# Any unread slot is an incomplete list: not "no display controller", and not a stack choice.
+if pci is None:
+    verdict["gpu"] = ["PCI bus not read"]
+    stack = "unknown"
+    stack_note = "PCI bus not read; choose after a full probe"
+elif any(p.get("unread") for p in pci_rows):
+    verdict["gpu"] = ["PCI list incomplete"]
+    stack = "unknown"
+    stack_note = "PCI device unread; choose after a full probe"
+else:
+    verdict["gpu"] = gpu_lines or ["no display controller found"]
+    stack = "native" if any(g["lapis"] for g in gpus) else "gop-swiftshader"
+    stack_note = "native (a lapis GPU driver binds) | gop-swiftshader (GOP framebuffer, SwiftShader)"
 boot = [s for s in storage if s["kind"] in ("nvme", "emmc/sd", "sata") and not s["removable"]]
 verdict["internal disk"] = [f"{s['name']} {s['kind']} {s['size_gb']} GB {s['model']}" + ("  <- NOT usable: no SATA in lapis" if s["kind"] == "sata" else "")
                             for s in boot] or ["none found"]
 wl = [n for n in net if n["wireless"]]
 verdict["wifi"] = []
 for n in wl:
-    dev = next((p for p in pci if p["slot"] == n["device"]), None)
-    if dev:
+    dev = next((p for p in pci_rows if p.get("slot") == n["device"]), None)
+    if dev and not dev.get("unread"):
         verdict["wifi"].append(f"{n['name']} {dev['id']} host driver {dev['driver'] or '-'}: {dev['verdict']}")
+    elif dev:
+        verdict["wifi"].append(f"{n['name']} unread")
     else:
         verdict["wifi"].append(f"{n['name']} on {n['bus']} ({n['device']})")
 verdict["wifi"] = verdict["wifi"] or ["no wireless interface found"]
-audio_pci = [p for p in pci if p["class"].startswith("0403") or p["class"].startswith("0401") or p["class"].startswith("0480")]
+audio_pci = [p for p in pci_rows if not p.get("unread") and str(p.get("class", "")).startswith(("0403", "0401", "0480"))]
 verdict["audio"] = [f"{p['id']} host driver {p['driver'] or '-'}: {p['verdict']}" for p in audio_pci] + [f"codec {c}" for c in codecs] or ["no audio controller found"]
 verdict["input"] = [f"{i['kind']}: {i.get('name', '')} ({i['busname']})" for i in inputs if i["kind"] != "other"]
 acpi_hids = {a["hid"] for a in acpi if a["present"]}
@@ -309,7 +344,7 @@ warn = []
 if not fw["uefi"]:
     warn.append("not booted in UEFI mode: Googlebook needs UEFI (on a Chromebook: MrChromebox UEFI Full ROM, docs/FIRMWARE.md)")
 if fw["secure_boot"] == "on":
-    warn.append("Secure Boot is on: the Googlebook stick is not signed for it; turning it off can trigger a BitLocker recovery prompt on Windows machines")
+    warn.append("Secure Boot is on: the Googlebook stick is not signed for it; turning it off can trigger a BitLocker recovery prompt on Windows machines (REQUIRED before changing Secure Boot: back up the 48-digit BitLocker recovery key for every encrypted volume to another device; Suspend-BitLocker is not an alternative)")
 if any(s["kind"] == "sata" for s in boot) and not any(s["kind"] in ("nvme", "emmc/sd") for s in boot):
     warn.append("the only internal disk is SATA, which lapis cannot see: Googlebook can only run from USB here")
 if any(s["kind"] == "emmc/sd" for s in boot):
@@ -320,8 +355,12 @@ if cpu["vendor_id"] == "GenuineIntel" and cpu["model"] == "154" and cpu["steppin
     warn.append("Alder Lake-P stepping below 3: probably an engineering sample (see docs/FIRMWARE.md)")
 if "ACPI0003" in acpi_hids:
     warn.append("AC adapter (ACPI0003) has no lapis driver: no charging indicator")
-if not gpus or all("NO lapis GPU driver" in l for l in gpu_lines):
-    warn.append("no lapis GPU driver for this machine's GPU: graphics would need the generic framebuffer fallback (not done yet)")
+if pci is None:
+    warn.append("PCI device list was not read")
+elif any(p.get("unread") for p in pci_rows):
+    warn.append("PCI device unread")
+elif not gpus or all("NO lapis GPU driver" in l for l in gpu_lines):
+    warn.append("no lapis GPU driver for this machine's GPU: graphics needs the generic framebuffer fallback (profiles/generic-x86; on AMD Strix Point / HX 370 use profiles/amd-hx370 instead of profile.draft.toml for the AMD fTPM/PSP/SPI/SDHCI blacklist and dual safe/native boot entries; not hardware-tested); the CPU must be Intel 12th gen / AMD Zen 5 or newer (docs/COMPATIBILITY.md)")
 
 # ---- draft profile
 mid = re.sub(r"[^a-z0-9]+", "-", dmi["product_name"].lower()).strip("-") or "unknown"
@@ -338,10 +377,15 @@ def qlist(xs, indent=11):
 
 kbd = next((l["path"] for l in leds if "kbd_backlight" in l["name"] and l["path"]), "")
 kbd_leds = kbd.rsplit("/", 1)[0] if kbd.endswith("kbd_backlight") else ""
+amd_note = (
+    "# NOTE (AMD GPU 1002:*): on AMD Strix Point / Ryzen AI 9 HX 370, use profiles/amd-hx370/profile.toml (which carries\n"
+    "# the AMD fTPM/PSP/SPI/SDHCI blacklist and dual safe/native boot entries) instead of this bare gop-swiftshader draft.\n"
+    if any(g["id"].startswith("1002:") for g in gpus) else ""
+)
 draft = f"""# DRAFT made by install/gbos-probe.sh on {q(dmi['sys_vendor'])} {q(dmi['product_name'])}. Every value needs checking; status
 # stays probe-only until the image boots on this machine. Compare with profiles/kano/profile.toml and docs/NEW-DEVICE.md.
 # Put it in profiles/{mid}/profile.toml (the directory name must equal model.id).
-schema = 1
+{amd_note}schema = 1
 kmods = {qlist(["gbos_efifb"] if stack == "gop-swiftshader" else [])}
 
 [model]
@@ -386,7 +430,8 @@ sources = ""
 modprobe = []
 
 [display]
-stack = {q(stack)}                 # native (a lapis GPU driver binds) | gop-swiftshader (GOP framebuffer, SwiftShader)
+# {stack_note}
+stack = {q(stack)}
 hwc_backend = ""
 build_prop_set = []
 

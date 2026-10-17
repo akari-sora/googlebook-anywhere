@@ -1,0 +1,3 @@
+[ro.serialno]: [SYNTHFIXED001]
+[ro.build.display.id]: [02+aa+bb+cc+dd+11]
+[ro.build.id]: [02+aa+bb+cc+dd+11]

@@ -1,0 +1,1 @@
+cat: /sys/class/drm/card0/device/uevent: Permission denied

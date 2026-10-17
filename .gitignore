@@ -12,3 +12,5 @@ __pycache__/
 .omc/
 .omx/
 .octo-continue.md
+# personal harness settings; a public history must not contain this file
+tools/harness/kano-env.local.sh

@@ -1,0 +1,2 @@
+[ro.build.display.id]: [CL3B.260622.271.R1]
+[ro.hardware.egl]: [mesa]

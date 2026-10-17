@@ -1,0 +1,2 @@
+[ro.serialno]: [r3owner7f3a]
+[ro.build.display.id]: [CL3B.1]

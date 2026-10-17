@@ -20,7 +20,9 @@
 #    members and mounts in other namespaces that lsblk cannot see;
 #  - the image matches its .sha256, and its protective MBR and GPT (both copies) are valid;
 #  - sgdisk (package gdisk) is installed, for the final read-only GPT check;
-#  - an image built with --no-selftest (a .not-self-tested file next to it) is only written after you type "untested";
+#  - a sibling <image>.not-self-tested (the installer stick always writes one, because that build does not
+#    boot the image; a skipped QEMU self-test writes one too) is only written after you type "untested".
+#    The warning prints that file's first line; it does not assume which build flag created the marker;
 #  - you type the disk's serial. Its identity (what the argument resolves to, major:minor, sysfs device, size, sector
 #    size, TYPE, TRAN, full SERIAL) is recorded before the prompt; after the answer it is read again together with all
 #    the in-use checks, and any difference refuses.
@@ -591,8 +593,17 @@ CONFIRMED=$IDENT
 UNTESTED=0
 if [ -e "$IMG.not-self-tested" ]; then
     UNTESTED=1
-    echo "WARNING: $IMG was built with --no-selftest ($IMG.not-self-tested): it was never booted in QEMU, so nothing"
-    echo "         has shown that it starts. Prefer an image built on a Linux host with KVM."
+    MARKER="$IMG.not-self-tested"
+    echo "WARNING: $MARKER is present: this image was not booted in QEMU before this write."
+    if [ -f "$MARKER" ] && [ ! -L "$MARKER" ]; then
+        REASON=$(head -n 1 -- "$MARKER" || true)
+        if [ -n "$REASON" ]; then
+            printf '%s\n' "         marker: $REASON"
+        fi
+    else
+        echo "         the marker is not a regular file; type untested anyway."
+    fi
+    echo "         Prefer an image that has been booted on a Linux host with KVM."
 fi
 if [ "$KEEP" = 1 ]; then
     [ -f "$ENGINE" ] || refuse "--keep-data needs $ENGINE"

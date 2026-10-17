@@ -23,7 +23,7 @@ REAL_PARTS = [  # (number, name, start byte, size bytes)
 ]
 IMG = [(n, name, s, s + size) for n, name, s, size in REAL_PARTS]
 XB = 37244880 * 512                                   # the stick's XBOOTLDR start (kano-nvme-install.sh END_SECT)
-STICK = IMG + [(32, "XBOOTLDR", XB, XB + 512 * MiB), (33, "kano-maint", XB + 512 * MiB, XB + 12 * GiB)]
+STICK = IMG + [(32, "XBOOTLDR", XB, XB + 512 * MiB), (33, "kano-maint", XB + 512 * MiB, XB + 512 * MiB + 62 * 128 * MiB)]
 NVME = [(1, "userdata", 37246976 * 512, 128 * GiB - 34 * 512)] + IMG[1:]
 WRITES = [(712 * MiB, 714 * MiB), (13644 * MiB, 13645 * MiB)]      # in super and vbmeta_a
 

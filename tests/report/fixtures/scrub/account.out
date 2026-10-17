@@ -1,0 +1,6 @@
+Account {name=[account], type=com.google}
+account name: [account]
+type=com.google
+accountName=[account]
+identity=[account]
+Account[name=[account]]

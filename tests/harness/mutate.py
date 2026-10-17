@@ -5,9 +5,20 @@ KANO_HARNESS_DIR pointing at the copy. A mutation that leaves its tests green is
 
 usage: mutate.py [-j N] [--classify] [ID ...]      (default: all mutations, 4 in parallel)
 
---classify re-runs every killed mutation with HARNESS_BEHAVIOUR_ONLY=1, where the tests skip their message
-assertions. "effect" = still red: the mutant really sends/writes/discards/powers off something it must not, or exits
-wrongly. "message" = only the refusal reason changed: another guard layer still prevented the effect.
+--classify re-runs every mutation killed by an assertion failure with HARNESS_BEHAVIOUR_ONLY=1, where the tests skip
+their message assertions. "effect" = still an assertion failure: the mutant really sends/writes/discards/powers off
+something it must not, or exits wrongly. "message" = only the refusal reason changed: another guard layer still
+prevented the effect.
+
+A command line is parsed before anything runs: -j N and --classify are accepted in any order, any other -option or
+any id that names no mutation is refused with "unknown mutant id: <repr(id)>" (or "unknown option: <repr(id)>") on
+stderr and exit 2, and nothing is run at all. An id that was named but then skipped (the private-data mutations
+without the private files) fails the run too, so a typo can never look like a pass.
+
+An unmodified baseline of those tests must be green before any mutation runs. A mutant is killed only when the
+unittest summary has errors == 0 and failures > 0. Any run with errors > 0 is an error, even if it also has
+failures. A timeout is a timeout. Neither is counted as killed. --classify re-runs a pure assertion failure with
+HARNESS_BEHAVIOUR_ONLY=1; if that second pass errors or times out, the result stays an error or a timeout, not a kill.
 
 The copy sits at <tmp>/tools/harness next to links <tmp>/builder and <tmp>/profiles to the repo's builder/ and
 profiles/, the layout the watcher reads its guard list from (profiles/kano/profile.toml through builder/lib/devprofile.py). The personal-data mutations plant a real value into the copy, taken at run time from the private
@@ -56,6 +67,68 @@ MUTATIONS = [
     ("ser-eager-pyserial", "lazy import", "kano-ser.py",
      [("import os, re, sys, time\n", "import os, re, sys, time\nimport serial  # noqa\n")],
      ["test_ser.Cli.test_refused_commands_exit_2_without_loading_pyserial"]),
+    ("ser-pwm-channel", "channel check widened", "kano-ser.py",
+     [('lambda t: t == "0"', 'lambda t: t in ("0", "1")')],
+     ["test_ser.Allowlist.test_refused_with_the_right_reason"]),
+    ("ser-gpioset-case", "GPIO name case-insensitive", "kano-ser.py",
+     [('t == "EC_KB_BL_EN_L"', 't.upper() == "EC_KB_BL_EN_L"')],
+     ["test_ser.Allowlist.test_refused_with_the_right_reason"]),
+    ("ser-duty-upper", "pct/duty upper bound 101", "kano-ser.py",
+     [("int(t) <= 100", "int(t) <= 101")],
+     ["test_ser.Allowlist.test_refused_with_the_right_reason"]),
+    ("ser-duty-negative", "-1 widened to any negative", "kano-ser.py",
+     [('t == "-1"', 're.fullmatch(r"-[0-9]+", t) is not None')],
+     ["test_ser.Allowlist.test_refused_with_the_right_reason"]),
+    ("ser-cbi-args", "cbi any extra arity", "kano-ser.py",
+     [("if len(shape) == len(args) and all(ARG[kind](a) for kind, a in zip(shape, args)):",
+       'if (name == "cbi" and args) or (len(shape) == len(args) and all(ARG[kind](a) for kind, a in zip(shape, args))):')],
+     ["test_ser.Allowlist.test_refused_with_the_right_reason"]),
+    ("ser-sysinfo-args", "sysinfo any extra arity", "kano-ser.py",
+     [("if len(shape) == len(args) and all(ARG[kind](a) for kind, a in zip(shape, args)):",
+       'if (name == "sysinfo" and args) or (len(shape) == len(args) and all(ARG[kind](a) for kind, a in zip(shape, args))):')],
+     ["test_ser.Allowlist.test_refused_with_the_right_reason"]),
+    ("ser-kblight-args", "kblight any extra arity", "kano-ser.py",
+     [("if len(shape) == len(args) and all(ARG[kind](a) for kind, a in zip(shape, args)):",
+       'if (name == "kblight" and len(args) > 1) or (len(shape) == len(args) and all(ARG[kind](a) for kind, a in zip(shape, args))):')],
+     ["test_ser.Allowlist.test_refused_with_the_right_reason"]),
+    ("ser-gpioset-args", "gpioset any other arity", "kano-ser.py",
+     [("if len(shape) == len(args) and all(ARG[kind](a) for kind, a in zip(shape, args)):",
+       'if (name == "gpioset" and len(args) != 2) or (len(shape) == len(args) and all(ARG[kind](a) for kind, a in zip(shape, args))):')],
+     ["test_ser.Allowlist.test_refused_with_the_right_reason"]),
+    ("ser-pwmduty-args", "pwmduty any extra arity", "kano-ser.py",
+     [("if len(shape) == len(args) and all(ARG[kind](a) for kind, a in zip(shape, args)):",
+       'if (name == "pwmduty" and len(args) > 2) or (len(shape) == len(args) and all(ARG[kind](a) for kind, a in zip(shape, args))):')],
+     ["test_ser.Allowlist.test_refused_with_the_right_reason"]),
+    ("ser-exact-raw", "new shapes must already be exact", "kano-ser.py",
+     [("if _exact_raw(name, args) and line != norm:", "if False and line != norm:")],
+     ["test_ser.Allowlist.test_refused_with_the_right_reason",
+      "test_ser.Allowlist.test_new_commands_match_lib_shapes",
+      "test_ser.Allowlist.test_new_shape_sweep_matches_lib_copy"]),
+    ("ser-duty-minus-zero", "duty also accepts -0", "kano-ser.py",
+     [('"duty": lambda t: t == "-1" or _canon_0_100(t),',
+       '"duty": lambda t: t in ("-1", "-0") or _canon_0_100(t),')],
+     ["test_ser.Allowlist.test_new_shape_sweep_matches_lib_copy",
+      "test_ser.Allowlist.test_refused_with_the_right_reason"]),
+    ("ser-kblgpio-startswith", "kblgpio startswith", "kano-ser.py",
+     [('t == "EC_KB_BL_EN_L"', 't.startswith("EC_KB_BL_EN_L")')],
+     ["test_ser.Allowlist.test_new_shape_sweep_matches_lib_copy",
+      "test_ser.Allowlist.test_refused_with_the_right_reason"]),
+    ("ser-state-01", "state also accepts 01", "kano-ser.py",
+     [('t in ("0", "1")', 't in ("0", "1", "01")')],
+     ["test_ser.Allowlist.test_new_shape_sweep_matches_lib_copy",
+      "test_ser.Allowlist.test_refused_with_the_right_reason"]),
+    ("ser-ch0-signed-zero", "ch0 also accepts -0 and +0", "kano-ser.py",
+     [('"ch0": lambda t: t == "0",', '"ch0": lambda t: t in ("0", "-0", "+0"),')],
+     ["test_ser.Allowlist.test_new_shape_sweep_matches_lib_copy",
+      "test_ser.Allowlist.test_refused_with_the_right_reason"]),
+    ("ser-canon-0100", "canon also accepts 0100", "kano-ser.py",
+     [('return re.fullmatch(r"0|[1-9][0-9]{0,2}", t) is not None and int(t) <= 100',
+       'return t == "0100" or (re.fullmatch(r"0|[1-9][0-9]{0,2}", t) is not None and int(t) <= 100)')],
+     ["test_ser.Allowlist.test_new_shape_sweep_matches_lib_copy",
+      "test_ser.Allowlist.test_refused_with_the_right_reason"]),
+    ("ser-gpioset-any-name", "gpioset any name", "kano-ser.py",
+     [('t == "EC_KB_BL_EN_L"', 're.fullmatch(r"[A-Za-z0-9_]{1,48}", t) is not None')],
+     ["test_ser.Allowlist.test_refused_with_the_right_reason"]),
 
     ("stick-serial", "Codex C3 / Opus I2", "kano-delta-push.py",
      [("""    if not os.environ.get("KANO_STICK_SERIAL") or f.get("SERIAL", "").strip() != os.environ["KANO_STICK_SERIAL"]:""", "    if False:")],
@@ -151,7 +224,8 @@ MUTATIONS = [
      [("guard() { guard_id; guard_idle; echo", "guard() { guard_id; echo")],
      ["test_nvme_install.Install.test_mounted_nvme", "test_nvme_install.Install.test_held_nvme"]),
     ("install-guard-not-in-destructive-call", "Codex C1 (same invocation)", "kano-nvme-install.sh",
-     [("remote 03-copy DD_OK <<'EOF'\nguard\n", "remote 03-copy DD_OK <<'EOF'\n")],
+     [("{ printf '%s\\n' 'guard'; autooff_fn; printf '%s\\n' 'autooff_scan'; cat <<'EOF'",
+       "{ autooff_fn; printf '%s\\n' 'autooff_scan'; cat <<'EOF'")],
      ["test_nvme_install.Install.test_target_changes_between_guards_and_discard"]),
     ("install-backup-sha", "Codex I2", "kano-nvme-install.sh",
      [("""  [ -n "$want" ] && [ "$(sha256 "$f")" = "$want" ] || die""", "  true || die")],
@@ -163,8 +237,15 @@ MUTATIONS = [
      ["test_nvme_install.Install.test_backup_ssh_failure", "test_nvme_install.Install.test_backup_truncated"]),
     ("install-step-exit-status", "Codex I1", "kano-nvme-install.sh",
      [("""  [ "$rc" -eq 0 ] || die "$name: remote exit status $rc"\n  grep -qx""", """  :\n  grep -qx"""),
-      ("""remote 03-copy DD_OK <<'EOF'""", """remote 03-copy DD_OK <<'EOF' || true""")],
+      ("} | remote 03-copy DD_OK", "} | remote 03-copy DD_OK || true")],
      ["test_nvme_install.Install.test_copy_failure_stops_before_the_gpt_rewrite"]),
+    ("install-scan-exact-line", "Claude M3 (exact vendor clean)", "kano-nvme-install.sh",
+     [('[ "$out" = "vendor clean" ] || refuse "autooff scan did not report vendor clean"', "true")],
+     ["test_nvme_install.Install.test_scan_refuses_when_the_checker_does_not_print_vendor_clean"]),
+    ("update-second-scan", "Claude M3 (scan again before the writer)", "kano-nvme-update.sh",
+     [('python3 "$HERE/kano-autooff-image.py" --file "$NEWIMG" > "$OUT/autooff-push.txt" 2>&1 || rc=$?',
+       'echo "vendor clean" > "$OUT/autooff-push.txt" || rc=$?')],
+     ["test_nvme_update.Update.test_second_scan_sees_a_vendor_swapped_after_the_dry_run"]),
     ("install-source-binding", "Codex I2 (source bound to the stick)", "kano-nvme-install.sh",
      [("""    die "$SRC/$f is not what the stick's ESP holds""", """    true "$SRC/$f is not what the stick's ESP holds""")],
      ["test_nvme_install.Install.test_source_that_is_not_the_stick_image"]),
@@ -336,6 +417,196 @@ MUTATIONS = [
     ("watch-require-ec-tty", "personal-data split", "kano-gbos-watch.py",
      [("        sys.exit(5)\n", "        pass\n")],
      ["test_unconfigured.Unconfigured.test_watchers_do_not_start_without_a_way_to_cut_power"]),
+    ("lp-entry-cap-is-not-a-bad-copy", "Codex I1 (4096 cap must not select the backup)", "kano-autooff-image.py",
+     [('        _limit("LP table has more entries than this checker reads")',
+       '        _bad_copy("LP table has more entries than this checker reads")')],
+     ["test_nvme_install.Install.test_entry_cap_does_not_skip_a_valid_primary"]),
+    ("lp-slot-suffix", "round 14 slot suffix", "kano-autooff-image.py",
+     [("            if attrs & LP_PARTITION_ATTR_SLOT_SUFFIXED:",
+       "            if False and attrs & LP_PARTITION_ATTR_SLOT_SUFFIXED:")],
+     ["test_nvme_install.Install.test_slot_suffix_names_the_vendor_android_mounts"]),
+    ("install-nonce-delete-continues", "round 14 nonce strip fails closed", "kano-nvme-install.sh",
+     [('    *) rm -f -- "$f" || return 1 ;;\n'
+       '  esac\n'
+       '  kind=$(nonce_kind "$f") || return 1\n'
+       '  [ "$kind" = absent ]',
+       '    *) rm -f -- "$f" || true ;;\n'
+       '  esac\n'
+       '  true')],
+     ["test_nvme_install.Install.test_copied_nonce_delete_failure_stops",
+      "test_nvme_install.Install.test_copied_nonce_rm_eio_stops"]),
+    ("install-nonce-lstat-errors-are-absent", "round 15 ENOENT is the only absence", "kano-nvme-install.sh",
+     [('except OSError as e:\n'
+       '    print("lstat %s: errno %s" % (p, e.errno), file=sys.stderr)\n'
+       '    sys.exit(1)',
+       'except OSError:\n'
+       '    print("absent")\n'
+       '    sys.exit(0)')],
+     ["test_nvme_install.Install.test_copied_nonce_lookup_eio_stops",
+      "test_nvme_install.Install.test_stick_nonce_lookup_eio_stops_before_discard"]),
+    ("install-nonce-confirm-gone", "round 15 confirming lstat", "kano-nvme-install.sh",
+     [('  kind=$(nonce_kind "$f") || return 1\n'
+       '  [ "$kind" = absent ]\n',
+       '')],
+     ["test_nvme_install.Install.test_copied_nonce_confirm_lstat_eio_stops",
+      "test_nvme_install.Install.test_copied_nonce_still_present_when_rm_returns_0_stops"]),
+    ("install-copied-root-list-ignored", "round 15 copied userdata readdir", "kano-nvme-install.sh",
+     [('list_dir /mnt/ud || refuse "cannot read copied userdata"', ':')],
+     ["test_nvme_install.Install.test_copied_userdata_root_list_eio_stops"]),
+    ("install-stick-root-list-ignored", "round 15 stick userdata readdir", "kano-nvme-install.sh",
+     [('if ! list_dir /mnt/srcud; then\n'
+       '  umount /mnt/srcud\n'
+       '  refuse "cannot read stick userdata"\n'
+       'fi',
+       ':')],
+     ["test_nvme_install.Install.test_stick_root_list_eio_stops_before_discard"]),
+    ("install-nonce-rmdir-text-protocol", "round 16 filename text records", "kano-nvme-install.sh",
+     [(
+         "  python3 -c 'import inspect, os, stat, sys, shutil\n"
+         "p = sys.argv[1]\n"
+         "try:\n"
+         "    mode = os.lstat(p).st_mode\n"
+         "except OSError as e:\n"
+         "    print(\"nonce_rmdir lstat %s: errno %s\" % (p, e.errno), file=sys.stderr)\n"
+         "    sys.exit(1)\n"
+         "if stat.S_ISLNK(mode) or not stat.S_ISDIR(mode):\n"
+         "    print(\"not a real directory\", file=sys.stderr)\n"
+         "    sys.exit(1)\n"
+         "if not getattr(shutil.rmtree, \"avoids_symlink_attacks\", False):\n"
+         "    print(\"rmtree does not avoid symlink attacks\", file=sys.stderr)\n"
+         "    sys.exit(1)\n"
+         "failed = []\n"
+         "def note(path, exc):\n"
+         "    failed.append(1)\n"
+         "    print(\"rmtree %s: %s\" % (path, exc), file=sys.stderr)\n"
+         "def onerror(func, path, exc_info):\n"
+         "    note(path, exc_info[1] if exc_info else \"error\")\n"
+         "def onexc(func, path, exc):\n"
+         "    note(path, exc)\n"
+         "if \"onexc\" in inspect.signature(shutil.rmtree).parameters:\n"
+         "    shutil.rmtree(p, onexc=onexc)\n"
+         "else:\n"
+         "    shutil.rmtree(p, onerror=onerror)\n"
+         "if failed:\n"
+         "    sys.exit(1)\n"
+         "' \"$1\"\n",
+         "  local listing line typ path\n"
+         "  listing=$(python3 -c 'import os, stat, sys\n"
+         "def walk(p):\n"
+         "    mode = os.lstat(p).st_mode\n"
+         "    if stat.S_ISLNK(mode) or not stat.S_ISDIR(mode):\n"
+         "        sys.stdout.write(\"f\\t%s\\n\" % p)\n"
+         "        return\n"
+         "    for name in os.listdir(p):\n"
+         "        walk(os.path.join(p, name))\n"
+         "    sys.stdout.write(\"d\\t%s\\n\" % p)\n"
+         "walk(sys.argv[1])\n"
+         "' \"$1\") || return 1\n"
+         "  while IFS= read -r line; do\n"
+         "    [ -n \"$line\" ] || continue\n"
+         "    typ=${line%%$'\\t'*}\n"
+         "    path=${line#*$'\\t'}\n"
+         "    if [ \"$typ\" = d ]; then\n"
+         "      rmdir -- \"$path\" || return 1\n"
+         "    else\n"
+         "      rm -f -- \"$path\" || return 1\n"
+         "    fi\n"
+         "  done <<< \"$listing\"\n",
+     )],
+     ["test_nvme_install.Install.test_copied_nonce_directory_odd_names_do_not_escape"]),
+    ("install-nonce-rmtree-symlink-check", "round 16 avoids_symlink_attacks", "kano-nvme-install.sh",
+     [('if not getattr(shutil.rmtree, "avoids_symlink_attacks", False):\n'
+       '    print("rmtree does not avoid symlink attacks", file=sys.stderr)\n'
+       '    sys.exit(1)\n',
+       '')],
+     ["test_nvme_install.Install.test_copied_nonce_rmtree_requires_avoids_symlink_attacks"]),
+    ("install-nonce-rmtree-errors-ignored", "round 16 rmtree errors", "kano-nvme-install.sh",
+     [('failed = []\n'
+       'def note(path, exc):\n'
+       '    failed.append(1)\n'
+       '    print("rmtree %s: %s" % (path, exc), file=sys.stderr)\n'
+       'def onerror(func, path, exc_info):\n'
+       '    note(path, exc_info[1] if exc_info else "error")\n'
+       'def onexc(func, path, exc):\n'
+       '    note(path, exc)\n'
+       'if "onexc" in inspect.signature(shutil.rmtree).parameters:\n'
+       '    shutil.rmtree(p, onexc=onexc)\n'
+       'else:\n'
+       '    shutil.rmtree(p, onerror=onerror)\n'
+       'if failed:\n'
+       '    sys.exit(1)\n',
+       'shutil.rmtree(p, ignore_errors=True)\n')],
+     ["test_nvme_install.Install.test_copied_nonce_rmtree_reported_error_stops"]),
+    ("install-copied-umount-ignored", "round 16 copied userdata umount", "kano-nvme-install.sh",
+     [('umount /mnt/ud || refuse "cannot unmount copied userdata"\n',
+       'umount /mnt/ud || true\n')],
+     ["test_nvme_install.Install.test_copied_userdata_umount_failure_stops"]),
+    ("install-copied-remount-ignored", "round 16 read-only remount", "kano-nvme-install.sh",
+     [('if ! mount -o ro -t f2fs /dev/nvme0n1p1 /mnt/ud; then\n'
+       '  refuse "cannot remount copied userdata"\n'
+       'fi\n',
+       'if false; then\n  :\nfi\n')],
+     ["test_nvme_install.Install.test_copied_userdata_remount_failure_stops"]),
+    ("install-copied-recheck-ignored", "round 16 remount lstat", "kano-nvme-install.sh",
+     [('if [ "$kind" != absent ]; then\n'
+       '  umount /mnt/ud || true\n'
+       '  refuse "copied kano-autooff.nonce still present after unmount"\n'
+       'fi\n',
+       ':\n')],
+     ["test_nvme_install.Install.test_copied_nonce_recheck_sees_a_name_planted_on_remount"]),
+    ("install-copied-recheck-lstat-ignored", "round 16 remount lstat error", "kano-nvme-install.sh",
+     [('if ! kind=$(nonce_kind /mnt/ud/kano-autooff.nonce); then\n'
+       '  umount /mnt/ud || true\n'
+       '  refuse "cannot recheck copied kano-autooff.nonce"\n'
+       'fi\n',
+       'kind=absent\n')],
+     ["test_nvme_install.Install.test_copied_nonce_recheck_lstat_eio_stops"]),
+    ("install-copied-recheck-umount-ignored", "round 16 recheck umount", "kano-nvme-install.sh",
+     [('umount /mnt/ud || refuse "cannot unmount copied userdata after recheck"\n',
+       'umount /mnt/ud || true\n')],
+     ["test_nvme_install.Install.test_copied_userdata_recheck_umount_failure_stops"]),
+    ("lp-interior-nul-ignored", "round 16 LP interior NUL", "kano-autooff-image.py",
+     [('    if raw and b"\\0" in raw[:-1] and raw[-1] != 0:\n'
+       '        _limit("LP name has an interior NUL")\n',
+       '')],
+     ["test_nvme_install.Install.test_lp_name_with_interior_nul_refuses_without_reading_the_backup"]),
+    ("install-kernel-p1-start-ignored", "round 17 kernel p1 start", "kano-nvme-install.sh",
+     [('KERN_START=$(cat /sys/block/nvme0n1/nvme0n1p1/start) || refuse "cannot read the kernel start of p1"\n'
+       '[ "$KERN_START" = "$NEW_START" ] || refuse "kernel p1 start is not the new userdata start"\n',
+       '')],
+     ["test_nvme_install.Install.test_kernel_p1_start_mismatch_stops_before_filesystem"]),
+    ("install-kernel-p1-length-ignored", "integration: kernel p1 length", "kano-nvme-install.sh",
+     [('KERN_SECT=$(cat /sys/block/nvme0n1/nvme0n1p1/size) || refuse "cannot read the kernel length of p1"\n'
+       '[ "$KERN_SECT" = "$NEW_SECT" ] || refuse "kernel p1 length is not the new userdata length"\n',
+       '')],
+     ["test_nvme_install.Install.test_kernel_p1_length_mismatch_stops_before_filesystem"]),
+    ("install-new-p1-shorter-ignored", "new p1 shorter than copy", "kano-nvme-install.sh",
+     [('[ "$NEW_SECT" -ge "$OLD_SECT" ] || refuse "new p1 is shorter than the userdata copy"\n',
+       '')],
+     ["test_nvme_install.Install.test_new_p1_shorter_than_userdata_copy_stops_before_dd"]),
+    ("install-nonce-permission-is-absent", "round 17 PermissionError is not absence", "kano-nvme-install.sh",
+     [('except FileNotFoundError:\n'
+       '    print("absent")\n'
+       '    sys.exit(0)\n'
+       'except OSError as e:\n',
+       'except FileNotFoundError:\n'
+       '    print("absent")\n'
+       '    sys.exit(0)\n'
+       'except PermissionError:\n'
+       '    print("absent")\n'
+       '    sys.exit(0)\n'
+       'except OSError as e:\n')],
+     ["test_nvme_install.Install.test_copied_nonce_lookup_eacces_stops"]),
+    ("install-nonce-rm-status-ignored", "round 17 rm status after delete", "kano-nvme-install.sh",
+     [('    *) rm -f -- "$f" || return 1 ;;\n',
+       '    *) rm -f -- "$f" || true ;;\n')],
+     ["test_nvme_install.Install.test_copied_nonce_rm_error_after_delete_stops"]),
+    ("install-nonce-rmtree-onerror-ignored", "round 17 rmtree onerror", "kano-nvme-install.sh",
+     [('else:\n'
+       '    shutil.rmtree(p, onerror=onerror)\n',
+       'else:\n'
+       '    shutil.rmtree(p, ignore_errors=True)\n')],
+     ["test_nvme_install.Install.test_copied_nonce_rmtree_onerror_reports_and_stops"]),
 ]
 
 
@@ -361,42 +632,226 @@ def run_one(m, work, classify=False):
     env.pop("HARNESS_BEHAVIOUR_ONLY", None)
     t = time.time()
 
-    def red(extra):
-        try:
-            r = subprocess.run([sys.executable, "-m", "unittest", *tests], cwd=TESTS, env=dict(env, **extra),
-                               capture_output=True, text=True, timeout=600, stdin=subprocess.DEVNULL)
-            return r.returncode != 0, (r.stderr.strip().splitlines() or [""])[-1]
-        except subprocess.TimeoutExpired:
-            return True, "tests timed out (counts as red)"
+    def once(extra):
+        return run_unittest(tests, dict(env, **extra), 600)
     try:
-        killed, detail = red({})
-        verdict = "killed" if killed else "SURVIVED"
-        if killed and classify:
-            verdict = "killed:effect" if red({"HARNESS_BEHAVIOUR_ONLY": "1"})[0] else "killed:message"
+        kind, detail = once({})
+        second = None
+        if classify and kind == "fail":
+            second = once({"HARNESS_BEHAVIOUR_ONLY": "1"})
+        verdict, detail = fold_classify(kind, detail, second)
     finally:
         shutil.rmtree(top, True)
     return mid, finding, verdict, detail, time.time() - t
 
 
+def classify_result(returncode, stdout, stderr):
+    """('pass'|'fail'|'error', detail) from a finished unittest process.
+
+    The summary is read from stderr only. unittest writes it there; a line on stdout that looks like OK or FAILED
+    does not override it. errors > 0 is an error even when failures > 0. 'fail' means errors == 0 and failures > 0,
+    which is the only kind that can become a kill.
+    """
+    err = stderr or ""
+    out = stdout or ""
+    lines = (err or out).strip().splitlines()
+    detail = lines[-1] if lines else f"exit {returncode}"
+    if returncode == 0:
+        return "pass", detail
+    found = list(re.finditer(r"^(OK|FAILED)(?: \(([^)]*)\))?\s*$", err, re.M))
+    if not found:
+        return "error", detail
+    kind, inner = found[-1].group(1), found[-1].group(2) or ""
+    if kind == "OK":
+        return "error", detail
+    nums = dict(re.findall(r"(failures|errors)=(\d+)", inner))
+    failures = int(nums.get("failures", "0"))
+    errors = int(nums.get("errors", "0"))
+    if errors > 0:
+        return "error", detail
+    if failures > 0:
+        return "fail", detail
+    return "error", detail
+
+
+def fold_classify(kind, detail, second):
+    """Turn a unittest kind into a mutation verdict.
+
+    second is the (kind, detail) of the --classify behaviour-only re-run, or None. Only a pure assertion failure
+    can become a kill. An error or a timeout on the first run, or on that second pass, stays an error or a timeout.
+    """
+    if kind == "fail":
+        if second is None:
+            return "killed", detail
+        kind2, detail2 = second
+        if kind2 == "fail":
+            return "killed:effect", detail
+        if kind2 == "pass":
+            return "killed:message", detail
+        return kind2, detail2
+    if kind == "pass":
+        return "SURVIVED", detail
+    return kind, detail
+
+
+def bucket(verdict):
+    if verdict == "skipped":
+        return "skipped"
+    if str(verdict).startswith("killed"):
+        return "killed"
+    if verdict == "timeout":
+        return "timeout"
+    if verdict == "error":
+        return "error"
+    if verdict == "BAD-MUTATION":
+        return "badmut"
+    return "survived"
+
+
+def run_unittest(tests, env, timeout):
+    """('pass'|'fail'|'error'|'timeout', detail). Only 'fail' is an assertion failure with errors == 0."""
+    try:
+        proc = subprocess.run([sys.executable, "-m", "unittest", *tests], cwd=TESTS, env=env,
+                              capture_output=True, text=True, timeout=timeout, stdin=subprocess.DEVNULL)
+    except subprocess.TimeoutExpired:
+        return "timeout", f"timed out after {timeout}s"
+    return classify_result(proc.returncode, proc.stdout, proc.stderr)
+
+
+CLASSIFY_FIX = TESTS / "fixtures" / "classify"
+
+
+def prove_classifier():
+    """Regression fixtures: pure failure, pure error, mixed, timeout, and a --classify second pass that errors.
+
+    A FAILED line on stdout must not hide an error summary on stderr. Returns None, or a reason string.
+    """
+    env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1")
+    env.pop("HARNESS_BEHAVIOUR_ONLY", None)
+    prefix = str(CLASSIFY_FIX)
+    env["PYTHONPATH"] = prefix + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
+    expect = (
+        ("pure-failure", "pure_fail", "fail", 30),
+        ("pure-error", "pure_error", "error", 30),
+        ("mixed", "mixed", "error", 30),
+        ("timeout", "timeout_sleep", "timeout", 2),
+        ("stdout-mask", "stdout_mask", "error", 30),
+    )
+    seen = []
+    for label, mod, want, timeout in expect:
+        kind, detail = run_unittest([mod], env, timeout)
+        seen.append(f"{label}={kind}")
+        if kind != want:
+            return f"{label}: want {want}, got {kind} ({detail})"
+        verdict, _detail = fold_classify(kind, detail, None)
+        if label == "pure-failure" and bucket(verdict) != "killed":
+            return f"{label}: verdict {verdict} is not a kill"
+        if label in ("pure-error", "mixed", "stdout-mask") and bucket(verdict) == "killed":
+            return f"{label}: verdict {verdict} was counted as a kill"
+        if label == "timeout" and bucket(verdict) != "timeout":
+            return f"{label}: verdict {verdict}"
+    env2 = dict(env, HARNESS_BEHAVIOUR_ONLY="1")
+    kind1, detail1 = run_unittest(["classify_second"], env, 30)
+    kind2, detail2 = run_unittest(["classify_second"], env2, 30)
+    verdict, vdetail = fold_classify(kind1, detail1, (kind2, detail2))
+    seen.append(f"classify-second={verdict}")
+    if kind1 != "fail" or kind2 != "error" or bucket(verdict) != "error":
+        return (f"classify-second: first={kind1} ({detail1}) second={kind2} ({detail2}) "
+                f"verdict={verdict} ({vdetail})")
+    print("classify fixtures ok  " + " ".join(seen), flush=True)
+    return None
+
+
+def baseline(tests):
+    """Green run of the unmodified harness. Errors and timeouts are not a pass."""
+    env = dict(os.environ, KANO_HARNESS_DIR=str(HARNESS), PYTHONDONTWRITEBYTECODE="1")
+    env.pop("HARNESS_BEHAVIOUR_ONLY", None)
+    return run_unittest(tests, env, 1800)
+
+
+def parse_args(argv):
+    """-j N and --classify in any order, the rest are mutant ids; None after reporting a bad option or unknown id.
+
+    Every id must name a mutation exactly: an id that matches none, including one with trailing whitespace or a
+    stray carriage return, is refused before anything runs.
+    """
+    jobs, classify, ids = 4, False, []
+    rest = list(argv)
+    while rest:
+        a = rest.pop(0)
+        if a == "-j":
+            if not rest or not re.fullmatch(r"[0-9]+", rest[0]):
+                print("option -j needs a job count", file=sys.stderr)
+                return None
+            jobs = int(rest.pop(0))
+        elif a == "--classify":
+            classify = True
+        elif a.startswith("-"):
+            print(f"unknown option: {a!r}", file=sys.stderr)
+            return None
+        else:
+            ids.append(a)
+    known = {m[0] for m in MUTATIONS}
+    unknown = [a for a in ids if a not in known]
+    if unknown:
+        for a in unknown:
+            print(f"unknown mutant id: {a!r}", file=sys.stderr)
+        return None
+    return jobs, classify, ids
+
+
 def main(argv):
-    jobs, classify = 4, False
-    if argv[:1] == ["-j"]:
-        jobs, argv = int(argv[1]), argv[2:]
-    if argv[:1] == ["--classify"]:
-        classify, argv = True, argv[1:]
-    todo = [m for m in MUTATIONS if not argv or m[0] in argv]
+    parsed = parse_args(argv)
+    if parsed is None:
+        print("0 mutations killed, an unknown mutant id or option was given (nothing was run)")
+        return 2
+    jobs, classify, ids = parsed
+    bad = prove_classifier()
+    if bad:
+        print(f"CLASSIFIER fail  {bad}", flush=True)
+        print("0 mutations killed, classifier fixtures failed (not counted as killed)")
+        return 1
+    todo = [m for m in MUTATIONS if not ids or m[0] in ids]
+    base_tests = sorted({t for m in todo for t in m[4]})
+    if base_tests:
+        kind, detail = baseline(base_tests)
+        if kind != "pass":
+            print(f"BASELINE {kind:10} unmodified harness  {detail}", flush=True)
+            print("0 mutations killed, baseline failed (not counted as killed)")
+            return 1
+        print(f"baseline green  {len(base_tests)} tests on the unmodified harness", flush=True)
     work = Path(tempfile.mkdtemp(prefix="kano-harness-mutants-"))
-    bad = skipped = 0
+    killed = skipped = errors = timeouts = survived = badmut = 0
+    skipped_named = []
     try:
         with ThreadPoolExecutor(jobs) as ex:
             for mid, finding, verdict, detail, secs in ex.map(lambda m: run_one(m, work, classify), todo):
                 print(f"{verdict:15} {mid:38} {finding:27} {secs:5.0f}s  {detail}", flush=True)
-                bad += not verdict.startswith(("killed", "skipped"))
-                skipped += verdict == "skipped"
+                which = bucket(verdict)
+                if which == "skipped":
+                    skipped += 1
+                    if ids:
+                        skipped_named.append(mid)
+                elif which == "killed":
+                    killed += 1
+                elif which == "timeout":
+                    timeouts += 1
+                elif which == "error":
+                    errors += 1
+                elif which == "badmut":
+                    badmut += 1
+                else:
+                    survived += 1
     finally:
         shutil.rmtree(work, True)
-    print(f"{len(todo) - bad - skipped}/{len(todo) - skipped} mutations killed" + (f", {skipped} skipped" if skipped else ""))
-    return 1 if bad else 0
+    checked = len(todo) - skipped
+    print(f"{killed}/{checked} mutations killed, {survived} survived, {errors} errors, {timeouts} timeouts"
+          + (f", {skipped} skipped" if skipped else "")
+          + (f", {badmut} bad" if badmut else ""))
+    if skipped_named:
+        print("named mutations were skipped: " + " ".join(skipped_named))
+        return 1
+    return 0 if killed == checked and survived == errors == timeouts == badmut == 0 else 1
 
 
 if __name__ == "__main__":

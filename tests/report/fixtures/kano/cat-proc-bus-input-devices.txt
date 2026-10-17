@@ -1,0 +1,7 @@
+I: Bus=0018 Vendor=04f3 Product=323c Version=0000
+N: Name="ELAN2701:00 04F3:323C Touchpad"
+H: Handlers=event5 mouse0
+
+I: Bus=0018 Vendor=04f3 Product=2d5b Version=0000
+N: Name="ELAN900C:00 04F3:2D5B"
+H: Handlers=event6

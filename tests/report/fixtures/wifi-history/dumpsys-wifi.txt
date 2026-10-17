@@ -1,0 +1,7 @@
+Wi-Fi is disabled
+mWifiInfo SSID: <unknown ssid>, BSSID: 02:00:00:00:00:00, MAC: 02:00:00:00:00:00, Supplicant state: DISCONNECTED
+curState=DisconnectedState
+mNetworkHistory
+  NetworkHistory entry
+  Supplicant state: COMPLETED
+  SSID: "HistoryCafe9f3a"

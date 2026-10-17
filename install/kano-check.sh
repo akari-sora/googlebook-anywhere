@@ -28,7 +28,7 @@ echo
 hwid=$(cs hwid); product=$(rd /sys/class/dmi/id/product_name); board=$(sed -n 's/^CHROMEOS_RELEASE_BOARD=//p' "$R/etc/lsb-release" 2>/dev/null)
 model="hwid='${hwid:-?}' product='${product:-?}' board='${board:-?}'"
 if printf '%s %s %s' "$hwid" "$product" "$board" | grep -qiw kano; then ok "model is KANO ($model)"
-else no "this is not a KANO ($model): only the Acer Chromebook Spin 714 CP714-1WN is supported"; fi
+else no "this is not a KANO ($model): only a KANO board is supported"; fi
 
 # 2. CPU: retail Alder Lake-P is family 6 model 154 stepping 3 or 4 (the steppings Intel publishes microcode for).
 #    Steppings 0-2 are pre-production samples whose microcode is not in public firmware (this project's own KANO is

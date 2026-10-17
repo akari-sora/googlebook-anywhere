@@ -1,0 +1,24 @@
+# extract-ikconfig.SOURCE
+
+`extract-ikconfig` in this directory is a verbatim copy of the Linux kernel's
+`scripts/extract-ikconfig`, vendored here so the differential test in
+`tests/builder/profile-test.py` needs no network access.
+
+- Upstream source: https://android.googlesource.com/kernel/common/+/3938c8d97142d5cf31543aa96f864a2cf832dda0/scripts/extract-ikconfig?format=TEXT
+- Kernel commit:   3938c8d97142d5cf31543aa96f864a2cf832dda0
+- License:         The script header says only "Licensed under the terms of the GNU General Public License."
+                   It names no version and has no SPDX tag. The kernel's COPYING applies to files
+                   without an SPDX tag (GPL-2.0-only for kernel/common). This copy is a test fixture
+                   run as its own process; it is not linked into the image.
+                   The full texts, byte-identical to kernel/common 3938c8d97142, are next to this note.
+                   Do not edit them. They are not a reconstruction.
+                   - kernel-LICENSES-preferred-GPL-2.0 is LICENSES/preferred/GPL-2.0
+                     sha256 8780e78a1a737e127f25a65f6d95269bffd36158dc261114de7859b490bfc5aa (18600 bytes)
+                   - kernel-COPYING is COPYING
+                     sha256 fb5a425bd3b3cd6071a3a9aff9909a859e7c1158d54d32e07658398cd67eb6a0 (496 bytes)
+- sha256:          070020a9c5a0b9e6f7e24f5728073e8e62155be49133a9f3f37e8fc19230a9b1
+- Size:            1779 bytes
+
+The vendored file is kept byte-identical to upstream so that the pinned
+sha256 in `profile-test.py` (`_IKCFG_SHA`) still matches. Do not edit
+`extract-ikconfig`; put any local notes here instead.

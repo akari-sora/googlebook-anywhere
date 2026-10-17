@@ -1,0 +1,2 @@
+[ro.serialno]: [KANO987654321]
+[ro.build.display.id]: [gbos-KANO987654321-userdebug]

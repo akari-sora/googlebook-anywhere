@@ -1,0 +1,201 @@
+# amd-hx370: AMD Ryzen AI 9 HX 370 (Strix Point, Radeon 890M / GFX1150). EXPERIMENTAL.
+# No hardware boot has been done. Two boot entries are decided at build time (no runtime graphics switching):
+#   1. DEFAULT "Googlebook AMD HX370 safe" (lapis-quiet.conf): amdgpu is NOT loaded (module_blacklist includes amdgpu via
+#      blacklist.quiet_add and no modprobe amdgpu runs); display uses the UEFI GOP framebuffer (gbos_efifb.ko) and
+#      SwiftShader (ro.hardware.vulkan=pastel, ro.hwui.use_vulkan=false, debug.renderengine.vulkan=false) — the
+#      known-good path proven to reach SetupWizard in QEMU.
+#   2. "Googlebook AMD HX370 native amdgpu (experimental)" (lapis-debug.conf): amdgpu is loaded once on early-boot from
+#      /vendor/lib/dev-modules, gbos_efifb is never started, ro.hardware.vulkan=radeon + ro.hwui.use_vulkan=true +
+#      debug.renderengine.vulkan=true, and vendor.hwc.drm.device is set from sysfs to the DRM card whose driver is
+#      amdgpu. NOTE: stock minigbm lacks an amdgpu backend, so the native entry is incomplete and may show a black
+#      screen until minigbm is rebuilt for amdgpu; if the native entry shows a black screen, reboot and select the
+#      default "Googlebook AMD HX370 safe" entry.
+# Stock lapis has no amdgpu (CONFIG_TRIM_UNUSED_KSYMS). build.sh refuses this profile unless GBOS_DEV_KERNEL_DIR points
+# at the Track 2 self-built GKI (.config, bzImage, modules/amdgpu.ko, modules/modules.dep) and passes devprofile.py
+# check-kconfig.
+# REQUIRED before changing Secure Boot on a Windows PC with BitLocker: run 'manage-bde -status' and back up the
+# 48-digit BitLocker recovery key for every encrypted volume ('manage-bde -protectors -get <Volume>', e.g. C:) to
+# another device (changing Secure Boot can alter TPM PCR measurements such as PCR 7 or PCRs 0/2/4/11 depending on
+# platform configuration and trigger a BitLocker recovery prompt; Suspend-BitLocker is only an optional convenience with
+# a protection gap, not a substitute for the recovery key, and ProtectionStatus should be verified / resumed after
+# returning to Windows).
+# DMI is empty until a machine is probed. Do not put 1002:1681 in pci_stub_ids: that ID is
+# Yellow Carp (Rembrandt), not Radeon 890M. Strix Point matches CHIP_IP_DISCOVERY.
+schema = 1
+kmods = []
+
+[model]
+id = "amd-hx370"
+name = "AMD Ryzen AI 9 HX 370 (Strix Point, Radeon 890M)"
+status = "experimental"              # verified | experimental | probe-only
+image_name = "googlebook-amd-hx370.img"
+dmi = {}
+
+[entries]
+quiet = "Googlebook AMD HX370 safe"
+debug = "Googlebook AMD HX370 native amdgpu (experimental)"
+
+[cmdline]
+# Intel-only stock options. None of these are safety-tail options.
+stock_drop = ["snd_intel_sdw_acpi.sdw_link_mask=0x5", "xe.enable_psr=1", "snd_sof_pci.ipc_type=1"]
+# amdgpu.dcdebugmask=0x10 (DC_DISABLE_PSR) forces PSR off in the experimental native entry (note: Panel Replay 0x4000
+# and IPS 0x8000 are separate dcdebugmask bits not disabled by 0x10).
+# quiet_drop removes the amdgpu.* options from the default safe entry. initcall_blacklist=
+# and efi= come from profiles/_safety.toml and must not be repeated here.
+# erst_disable is amd-hx370 only. CONFIG_ACPI_APEI builds erst.o, and erst_init registers an ERST
+# pstore that writes firmware persistent storage on oops/panic (drivers/acpi/apei/erst.c:1266,1300).
+# The parameter (erst.c:998) makes erst_init return at :1199 and keeps the ERST debug device from
+# registering (erst-dbg.c:210). It is not added to profiles/_safety.toml: that tail is the pinned
+# KANO command line. A dev kernel with CONFIG_ACPI_APEI=y is refused on a profile whose tail lacks it.
+add = ["loglevel=8", "ignore_loglevel", "console=ttyS0,115200n8", "amdgpu.modeset=1", "amdgpu.dc=1", "amdgpu.dcdebugmask=0x10"]
+tail = ["erst_disable"]
+debug_drop = []
+quiet_drop = ["amdgpu.modeset=1", "amdgpu.dc=1", "amdgpu.dcdebugmask=0x10"]
+pci_stub_ids = []
+first_stage_drop = []
+
+[blacklist]
+# generic-x86's list (the 57 required modules plus cros_ec_proto and cros_kbd_led_backlight),
+# plus AMD fTPM / PSP / SPI modules. The Track 2 kernel also leaves
+# CONFIG_TCG_TPM, CONFIG_CRYPTO_DEV_CCP, CONFIG_SPI_AMD, CONFIG_AMD_SFH_HID and
+# CONFIG_SP5100_TCO unset (checked by devprofile.py check-kconfig), so these are the second layer.
+# tpm_crb: AMD fTPM (MSFT0101 CRB). The TIS modules above do not cover it.
+# ccp: AMD PSP cryptographic coprocessor (/dev/ccp). amdtee: TEE on that PSP.
+# spi_amd, spi_amd_pci: AMD SPI flash (the Intel part is already spi_intel / spi_intel_pci).
+# amd_sfh: sensor hub behind MP2. sp5100_tco: watchdog that can reset the machine.
+# sdhci_pci, sdhci_acpi: internal SD/eMMC controllers (prevent internal card/storage exposure on USB boot).
+modules = ["cros_ec_debugfs", "tpm_tis_i2c_cr50", "cros_ec_lpcs", "cros_ec_usb", "spi_intel_pci", "spi_intel", "i2c_dev",
+           "thunderbolt", "tpm", "tpm_tis", "tpm_tis_core", "tpm_tis_spi", "cros_ec", "cros_ec_dev", "cros_ec_chardev",
+           "gsmi", "chromeos_acpi", "nvram", "mtd", "spi_nor", "spidev", "intel_quicki2c", "intel_quickspi",
+           "at24", "cros_hps_i2c", "i2c_cros_ec_tunnel", "cros_peripheral_charger",
+           "cros_ec_spi", "cros_ec_i2c", "cros_ec_ishtp", "cros_ec_sysfs", "cros_ec_vbc", "cros_ec_typec", "cros_typec_switch",
+           "cros_usbpd_notify", "cros_usbpd_charger", "cros_usbpd_logger", "cros_charge_control", "cros_ec_ucsi", "cros_ec_keyb",
+           "cros_ec_sensorhub", "cros_ec_sensors_core", "cros_ec_sensors", "cros_ec_accel_legacy", "cros_ec_baro",
+           "cros_ec_lid_angle", "cros_ec_light_prox", "cros_ec_lightbar", "cros_ec_pwrmon", "cros_ec_cec", "leds_cros_ec",
+           "hid_google_hammer", "wilco_ec", "wilco_charger", "wilco_ec_debugfs", "wilco_ec_telem", "rtc_wilco_ec",
+           "cros_ec_proto", "cros_kbd_led_backlight",
+           "tpm_crb", "ccp", "amdtee", "spi_amd", "spi_amd_pci", "amd_sfh", "sp5100_tco", "sdhci_pci", "sdhci_acpi"]
+debug_add = []
+quiet_add = ["amdgpu"]
+allow = []
+
+[firmware_sources]
+# Same pin as profiles/kano. Every file below is in that tag's WHENCE. No newer tag is required.
+# Strix Point MP1 is 14.0.0. This kernel's smu_v14_0_0 APU pptable does not request_firmware
+# (smu_14_0_2.bin is MP1 14.0.2/14.0.3 only). SMU microcode stays in the BIOS. isp_4_1_1.bin
+# is excluded: CONFIG_DRM_AMD_ISP is unset, so discovery never adds the ISP block.
+# umsch_mm_4_0_0.bin is excluded: amdgpu.umsch_mm defaults to 0.
+linux_firmware_tag = "20260810"
+sof_bin_url = ""
+sof_bin_sha256 = ""
+
+# Names are amdgpu_ucode_ip_version_decode() of the IP versions in
+# Documentation/gpu/amdgpu/apu-asic-info-table.csv ("Ryzen AI 300 series, Strix Point":
+# DCN 3.5.0, GC 11.5.0, VCN 4.0.5, SDMA 6.1.0, MP0 14.0.0). VPE 6.1.0 is not a column
+# in that CSV; discovery requests amdgpu/<VPE_HWIP>.bin and 6.1.0 is the Strix Point match.
+[[firmware]]
+path = "amdgpu/gc_11_5_0_pfp.bin"
+from = "linux-firmware"
+src = "amdgpu/gc_11_5_0_pfp.bin"
+sha256 = "82ccf0265d841351183b011a79422799431f0c11f6d11165d64d7dfe404bda31"
+
+[[firmware]]
+path = "amdgpu/gc_11_5_0_me.bin"
+from = "linux-firmware"
+src = "amdgpu/gc_11_5_0_me.bin"
+sha256 = "338019a1fcdab39729e3f492ffc9f5970c2c81b12c8a4f431494ca28cfdadedf"
+
+[[firmware]]
+path = "amdgpu/gc_11_5_0_mec.bin"
+from = "linux-firmware"
+src = "amdgpu/gc_11_5_0_mec.bin"
+sha256 = "5e022bae6638967d82e2b1077e3024f52bc83b3cb850aa31fba51469c7517c4c"
+
+[[firmware]]
+path = "amdgpu/gc_11_5_0_rlc.bin"
+from = "linux-firmware"
+src = "amdgpu/gc_11_5_0_rlc.bin"
+sha256 = "0dc8b6ef5530a4a53938c8baa0d49cd458607d95233237859fa98d44feb3e985"
+
+[[firmware]]
+path = "amdgpu/gc_11_5_0_imu.bin"
+from = "linux-firmware"
+src = "amdgpu/gc_11_5_0_imu.bin"
+sha256 = "469add57cafead90ab1953d6039cd8e39bc50dfd78aa5fd78f019ccf66a0af41"
+
+[[firmware]]
+path = "amdgpu/gc_11_5_0_mes_2.bin"
+from = "linux-firmware"
+src = "amdgpu/gc_11_5_0_mes_2.bin"
+sha256 = "aed5487f0b830b036c7d8cf400f71b4be000be0922f63c24fe7bcda5583b41ca"
+
+[[firmware]]
+path = "amdgpu/gc_11_5_0_mes1.bin"
+from = "linux-firmware"
+src = "amdgpu/gc_11_5_0_mes1.bin"
+sha256 = "c0ae823eb2f3801ba4f0115ff79711ed90a21e224a1f6b430b65ff5496f4225f"
+
+[[firmware]]
+path = "amdgpu/psp_14_0_0_toc.bin"
+from = "linux-firmware"
+src = "amdgpu/psp_14_0_0_toc.bin"
+sha256 = "da82e510ba90b3939656ecd2092870e5eef1c1b71ad2a4b776bc9e57bae1f05f"
+
+[[firmware]]
+path = "amdgpu/psp_14_0_0_ta.bin"
+from = "linux-firmware"
+src = "amdgpu/psp_14_0_0_ta.bin"
+sha256 = "9ad18a7848681a6cf85d1d60011afeff828c531ca83379c9eaf8d557d358f618"
+
+[[firmware]]
+path = "amdgpu/dcn_3_5_dmcub.bin"
+from = "linux-firmware"
+src = "amdgpu/dcn_3_5_dmcub.bin"
+sha256 = "d59800dbd65cb94fcfc0de0c47f463323b3abc260b3dbb7d9003b756024aaf13"
+
+[[firmware]]
+path = "amdgpu/sdma_6_1_0.bin"
+from = "linux-firmware"
+src = "amdgpu/sdma_6_1_0.bin"
+sha256 = "85f9f3714de68eee74cdf4852d709bc36a5c73a00e943b707bc2ce10d6b7bab4"
+
+[[firmware]]
+path = "amdgpu/vcn_4_0_5.bin"
+from = "linux-firmware"
+src = "amdgpu/vcn_4_0_5.bin"
+sha256 = "d0d5fdd3299af0dcf7982ad94be65ab9bc12eef61e8bdbf7c0a844e8b3233d27"
+
+[[firmware]]
+path = "amdgpu/vpe_6_1_0.bin"
+from = "linux-firmware"
+src = "amdgpu/vpe_6_1_0.bin"
+sha256 = "10a900e43e8633bc1ebe03d2d88f9b3e2f96a43c1961b190023fa1d26423a41a"
+
+[audio]
+card = ""
+config_dir = ""
+sources = ""
+
+[wifi]
+modprobe = []
+
+[display]
+stack = "native"
+# Client composition until overlay planes are proven. vendor.py sets ro.hardware.egl=angle
+# (GLES stays on the system ANGLE library; no radeonsi). ro.hardware.vulkan, ro.hwui.use_vulkan
+# and debug.renderengine.vulkan are removed from build.prop and set on early-boot by
+# /vendor/etc/amd-hx370-graphics.sh according to the chosen systemd-boot entry (safe vs native).
+hwc_backend = "client"
+build_prop_set = [["vendor.hwc.drm.enable_color_pipeline", "true", "false"],
+                  ["vendor.hwc.drm.force_color_mode", "13", "0"],
+                  ["vendor.hwc.drm.persistent_hdr", "true", "false"],
+                  ["vendor.hwc.use_log_gamma_lut", "true", "false"],
+                  ["ro.surface_flinger.has_wide_color_display", "true", "false"],
+                  ["ro.surface_flinger.has_HDR_display", "true", "false"]]
+
+[input]
+kbd_backlight_leds = ""
+power_button = "stock"
+
+[hooks]
+vendor = "vendor.py"

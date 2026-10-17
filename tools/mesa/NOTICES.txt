@@ -1,0 +1,92 @@
+Third-Party Source & License Notices for profiles/amd-hx370 Userspace Vulkan Artifacts
+======================================================================================
+
+The profiles/amd-hx370 image packages three userspace binaries built reproducibly by
+tools/mesa/build-radv.sh and verified by SHA-256 in builder/vendor.sh:
+
+  1. /vendor/lib64/hw/vulkan.radeon.so
+     - Built from Mesa 26.1.3 (RADV Vulkan driver) + static libdrm / libdrm_amdgpu 2.4.123
+     - Pinned SHA-256 (--strip-debug, 19,194,688 B):
+       35e7084748bd7ed25a81acf2646019fd1e0e87474a313e18fed5b70b45221d81
+     - Alternate SHA-256 (--strip-unneeded, 18,182,336 B):
+       198f2e1f610c8f52442658f231dfc9fbeb679642ae2068f5bcec8b7ea9f5ad5c
+  2. /vendor/bin/radv-probe
+     - Built from first-party source tools/mesa/radv-probe.c
+     - Pinned SHA-256:
+       fe9831f3a68a414f830778d2f11ce5dc4f22b733d334d2a26d28a6960d758a75
+  3. /vendor/lib64/libvkprop.so
+     - Built from first-party source tools/mesa/vkprop.c + tools/mesa/vkprop.map
+     - Pinned SHA-256:
+       94093697ab1e2d48be2784f672be2e1d0ddf78fb7fd9b4c4fd1a8477b18245a6
+
+Pinned Upstream Source Archives & Toolchain
+-------------------------------------------
+- Mesa 26.1.3
+  URL:    https://archive.mesa3d.org/mesa-26.1.3.tar.xz
+  SHA256: 7725004e724b34c6d4fbaf5c48fc6c6223aa9f2741d6d7782c699b049356fc45
+- libdrm 2.4.123 (Mesa subproject wrap, statically linked via -Dlibdrm:default_library=static)
+  URL:    https://dri.freedesktop.org/libdrm/libdrm-2.4.123.tar.xz
+  SHA256: a2b98567a149a74b0f50e91e825f9c0315d86e7be9b74394dae8b298caadb79e
+- Android NDK r27c (linux-x86_64)
+  URL:    https://dl.google.com/android/repository/android-ndk-r27c-linux.zip
+  SHA256: 59c2f6dc96743b5daf5d1626684640b20a6bd2b1d85b13156b90333741bad5cc
+- Khronos glslang 16.6.0 (build-time SPIR-V shader compiler for Mesa RADV)
+  URL:    https://github.com/KhronosGroup/glslang/releases/download/16.6.0/glslang-16.6.0-linux-x86_64-release.tar.gz
+  SHA256: 2c34071f56ecf39d16233294d3739cf43f981fd39080f2fd9dccb782101191ce
+
+--------------------------------------------------------------------------------------
+1. Mesa 3D Graphics Library — RADV Vulkan Driver (src/amd/vulkan, src/amd, src/vulkan)
+--------------------------------------------------------------------------------------
+License: MIT (https://docs.mesa3d.org/license.html)
+
+Copyright (C) 1999-2007  Brian Paul   All Rights Reserved.
+Copyright (C) 2016 Red Hat.
+Copyright (C) 2016 Bas Nieuwenhuizen
+Copyright (C) 2016-2026 Valve Corporation
+Copyright (C) 2016-2026 Advanced Micro Devices, Inc.
+
+Permission is hereby granted, free of charge, to any person obtaining a
+copy of this software and associated documentation files (the "Software"),
+to deal in the Software without restriction, including without limitation
+the rights to use, copy, modify, merge, publish, distribute, sublicense,
+and/or sell copies of the Software, and to permit persons to whom the
+Software is furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included
+in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
+OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
+THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+DEALINGS IN THE SOFTWARE.
+
+--------------------------------------------------------------------------------------
+2. libdrm / libdrm_amdgpu 2.4.123 (statically linked into vulkan.radeon.so)
+--------------------------------------------------------------------------------------
+License: MIT
+
+Copyright 1999, 2000 Precision Insight, Inc., Cedar Park, Texas.
+Copyright 2000 VA Linux Systems, Inc., Sunnyvale, California.
+Copyright 2014-2024 Advanced Micro Devices, Inc.
+
+Permission is hereby granted, free of charge, to any person obtaining a
+copy of this software and associated documentation files (the "Software"),
+to deal in the Software without restriction, including without limitation
+the rights to use, copy, modify, merge, publish, distribute, sublicense,
+and/or sell copies of the Software, and to permit persons to whom the
+Software is furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice (including the next
+paragraph) shall be included in all copies or substantial portions of the
+Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
+VA LINUX SYSTEMS AND/OR ITS SUPPLIERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
+OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
+ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
+OTHER DEALINGS IN THE SOFTWARE.

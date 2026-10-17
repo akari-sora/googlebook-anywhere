@@ -11,7 +11,7 @@
 
 ## 你需要
 
-- Acer Chromebook Spin 714，型號 CP714-1WN（代號 KANO），量產版。
+- Acer Chromebook Spin 714，型號 CP714-1WN 或 CP714-2WN（共用代號 KANO 主機板；13 代 CP714-2WN 亦稱 Zydron），量產版。
 - 一條 **SuzyQ**（CCD 除錯）線：KANO 的寫入保護在 Cr50 安全晶片上，官方支援表上 KANO 的方法就是 SuzyQ。官方的 CR50 說明
   另外提到拔電池等方法，但支援表的 KANO 列只寫 SuzyQ，這份文件不涵蓋其他方法。
 - 機器**不能**被學校或公司註冊／管理：官方文件說這種裝置的 CCD 被鎖住，`gsctool` 與 SuzyQ 的方法都不能用。
@@ -39,7 +39,7 @@ curl -LO https://gitlab.com/aa22396584/googlebook-anywhere/-/raw/main/install/ka
 - 目前的韌體、開發者模式、寫入保護、電量與充電器。
 
 結果是 `RESULT: STOP` 就不要繼續；有 WARN 的話，先弄清楚原因再繼續。`RESULT: UNKNOWN` 表示 CPU 的 stepping／型號或韌體
-認不出來，這個檢查不能當作依據，請自己對照 MrChromebox 的官方文件。`RESULT: GO`（只有 stepping 3 或 4 才會出現）只表示
+認不出來（例如 13 代 CP714-2WN 的 Raptor Lake CPU `family 6 model 186`），這個檢查不能當作依據，請自己對照 MrChromebox 的官方文件。`RESULT: GO`（只有 12 代 Alder Lake-P stepping 3 或 4 才會出現）只表示
 這個檢查**沒有找到已知的阻礙**，不代表保證刷得成功：刷寫仍以 MrChromebox 的官方腳本與文件為準。
 
 最重要的一項是**工程樣機**（CPU stepping 小於 3，或 HWID 含 TEST）。這是這個專案在開發機上觀察到的結果，不是官方說法：

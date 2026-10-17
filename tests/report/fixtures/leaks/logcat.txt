@@ -1,0 +1,7 @@
+10-15 00:00:00.000  1000  1000 E ActivityManager: account leak.person@example.test
+10-15 00:00:01.000  1000  1000 E ActivityManager: Account {name=LeakAccount9f3a, type=com.google}
+10-15 00:00:02.000  1000  1000 E ActivityManager: identity="LEAKEAP9F3A"
+10-15 00:00:03.000  1000  1000 E ActivityManager: path /sdcard/Download/leakuser9f3a/tax.pdf
+10-15 00:00:04.000  1000  1000 E ActivityManager: path /home/Leak Person/crash.txt
+10-15 00:00:05.000  1000  1000 E ActivityManager: (leakuser9f3a@leakhost9f3a)
+10-15 00:00:06.000  1000  1000 E ActivityManager: keep (WindowToken@1a2b3c4)

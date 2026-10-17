@@ -1,0 +1,14 @@
+Wi-Fi is disabled
+mWifiInfo SSID: <unknown ssid>, BSSID: 02:99:88:77:66:55, MAC: 02:99:88:77:66:55, Supplicant state: DISCONNECTED, IP: /203.0.113.99
+IPv6: 2001:db8:9:8:7:6:5:4
+curState=DisconnectedState
+mWifiSsid=LeakHomeWifi9f3a
+wifiSsid=LeakHomeWifi9f3a
+ConfigKey:"LeakHomeWifi9f3a"WPA_PSK
+SSID: My Home LeakHomeWifi9f3a, BSSID: 02:99:88:77:66:55
+<string name="SSID">&quot;LeakHomeWifi9f3a&quot;</string>
+<string name="PreSharedKey">&quot;LEAKPSK9F3A2C&quot;</string>
+psk=LEAKPSK9F3A2C
+mNetworkHistory
+  Supplicant state: COMPLETED
+  02:99:88:77:66:55    2412      -40   0.000  LeakScanWifi9f3a                  [WPA2-PSK-CCMP][ESS]

@@ -1,0 +1,4 @@
+Wi-Fi is enabled
+SSID: "Cafe, RawWifiOwner777", BSSID: 02:99:88:77:66:55
+mLastSsid=RawWifiLast777
+02:99:88:77:66:55    2412      -40   0.000  Cafe [RawWifiScan777]
