@@ -1,20 +1,36 @@
 # Googlebook Anywhere
 
+**中文** | [English](README.en.md)
+
+把 Google 官方的 **Googlebook OS**（lapis，Android 17 桌面版）裝到原本不支援它的 x86-64 電腦上。第一個目標機型是
+**Acer Chromebook Spin 714（KANO 主機板）**。
+
+- 下載與版本說明：[GitLab Releases](https://gitlab.com/aa22396584/googlebook-anywhere/-/releases)（最新 v0.2.1，見 [docs/RELEASE-NOTES.md](docs/RELEASE-NOTES.md)）
+- 原始碼與 issue：[gitlab.com/aa22396584/googlebook-anywhere](https://gitlab.com/aa22396584/googlebook-anywhere)（正本）。GitHub 上的 [akari-sora/googlebook-anywhere](https://github.com/akari-sora/googlebook-anywhere) 是唯讀鏡像，issue 與下載請到 GitLab。
+
+> 這不是 Google 的官方專案。repo 裡沒有任何 Google 的檔案：腳本從 Google 下載官方 recovery 映像，用固定的 SHA-256 核對後，
+> 在你自己的電腦上建出可開機的映像。不刷韌體、不寫 SPI／EC／Cr50。
+
+## 一眼看懂
+
+| 項目 | 現況 |
+|---|---|
+| 實機驗證 | 只有一台 KANO：內顯 `8086:46a6` 的 Alder Lake-P K0 工程樣機 |
+| 其他 KANO 型號 | 12 代 CP714-1WN、13 代 CP714-2WN／Zydron（i3／i5／i7）已補齊內顯 ID 與 13 代音效韌體，應可用，**尚未實機測試** |
+| CPU 下限 | Intel 第 12 代或 AMD Zen 5 及更新；更舊的 CPU 預期開不了機（[docs/COMPATIBILITY.md](docs/COMPATIBILITY.md)「CPU 最低需求」） |
+| 其他 x86-64 電腦 | 實驗性 `generic-x86`、`amd-hx370`，只在 QEMU 驗證過 |
+| 安裝方式 | 自己建映像（約 10～30 分鐘，另需 7.7 GB 下載、80 GB 磁碟）→ 寫入 USB 隨身碟開機；要裝到內建碟用「安裝碟」 |
+| 安全 | 已知的韌體更新程式移除，EC／TPM／SPI 的核心路徑封鎖，見 [docs/SAFETY.md](docs/SAFETY.md) |
+
+<details>
+<summary>原始說明（機型與內顯 ID 的完整描述）</summary>
+
 把 Google 官方的 **Googlebook OS**（lapis，Android 17 桌面版）裝到原本不支援它的 x86-64 電腦上。目標機型是共用
 **KANO** 主機板的 **Acer Chromebook Spin 714 家族（12 代 CP714-1WN 與 13 代 CP714-2WN／Zydron，i3／i5／i7）**；
 **目前唯一在實機上測試過的只有其中一個 SKU（內顯 `8086:46a6` 的 Alder Lake-P K0 工程樣機）**，其餘 KANO 子型號已補齊內顯 PCI ID 與 13 代 SOF 音效韌體（應可用，尚未實機測試，見 [docs/STATUS-KANO.md](docs/STATUS-KANO.md)）。
 **v0.2.0 只放行內顯 `46a6`；其他內顯 ID 的 SKU 會黑畫面（未在這台開過的零售與 coreboot 列出的 SKU 為推論）。**
 
-> English summary: scripts that turn Google's official Googlebook "lapis" recovery image (downloaded from Google by the
-> script itself) into a bootable USB image for x86-64 UEFI machines — specifically the Acer Chromebook Spin 714 KANO
-> family (`CP714-1WN` 12th-gen and `CP714-2WN` / `Zydron` 13th-gen i3/i5/i7; only the `8086:46a6` Alder Lake-P
-> engineering sample SKU is real-hardware tested so far, while other KANO SKUs are expected to work, untested).
-> v0.2.0 only allows `46a6`; SKUs with other iGPU ids get a black screen (inferred for retail and coreboot-listed SKUs that were not booted on this machine) —
-> with the known firmware updaters removed and the EC/TPM/SPI kernel paths blocked. No Google binaries, firmware files
-> or third-party configuration files are stored in this repository (only short functional excerpts that the build
-> scripts edit); every input is fetched from its original source and checked against a pinned SHA-256. A machine that
-> is already running Googlebook can send a read-only report with `install/gbos-report.sh` (over adb, and/or a
-> `gbos-probe` directory); paste `summary.md` into `.gitlab/issue_templates/new-machine.md` or `bug.md`.
+</details>
 
 ## 畫面
 
@@ -25,7 +41,22 @@
 前兩張是 KANO 實機的螢幕截圖（全新映像開到設定精靈，2026-10-12）。第三張是通用版映像在 QEMU 裡的畫面：
 從韌體一路開到設定精靈，畫面由韌體的 framebuffer 加 CPU 繪圖輸出（2026-10-13，新使用者流程 `install.sh` 建出的映像）。
 
-## 現況
+## 現況（KANO 實機）
+
+| 功能 | 狀態 |
+|---|---|
+| 桌面、Wi-Fi、藍牙、觸控板、鍵盤、喇叭、麥克風、電源鍵 | ✅ 可用 |
+| 上蓋休眠／喚醒、電池電量、「充電中」顯示 | ✅ 可用（v0.2 起） |
+| 觸控螢幕、觸控筆 | 🟡 偵測得到，還沒做實際點擊測試 |
+| 耳機孔、USB-C 資料與外接螢幕 | ⚪ 未驗證 |
+| 螢幕關著時用鍵盤叫醒 | ⚠️ 已知問題，請用電源鍵或開合上蓋 |
+| 自動旋轉、光感測、鍵盤背光調整 | ❌ 不可用（經過 EC，刻意封鎖或硬體本身不支援） |
+| 內建相機 | 🔧 開發中，預設關 |
+
+每一項的驗證方式見 [docs/STATUS-KANO.md](docs/STATUS-KANO.md)。
+
+<details>
+<summary>完整說明（待機、喚醒過濾、機型對照）</summary>
 
 在 KANO 上可以日常使用：桌面、Wi-Fi、藍牙、觸控板、鍵盤、喇叭、麥克風、電源鍵、上蓋休眠／喚醒都在實機上驗證過；
 觸控螢幕與觸控筆偵測得到，但還沒做實際點擊測試。每一項的驗證方式見 [docs/STATUS-KANO.md](docs/STATUS-KANO.md)。
@@ -42,7 +73,11 @@ GPU 加速，尚未在任何實體 PC 上測試，見下面「其他 x86-64 電�
 開起來的機器請用「回報你的機器」產生 `summary.md`，貼到 [`.gitlab/issue_templates/new-machine.md`](.gitlab/issue_templates/new-machine.md)
 或 [`.gitlab/issue_templates/bug.md`](.gitlab/issue_templates/bug.md)。
 
-## 步驟
+</details>
+
+## 安裝步驟
+
+使用前請讀 [docs/SAFETY.md](docs/SAFETY.md)，特別是「資料安全取捨」：`/data` 沒有加密。遇到問題先看 [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md)。
 
 ### 1. 換成 UEFI 韌體（一次）
 
@@ -62,6 +97,9 @@ Google 的映像不能轉散布，所以每個人都要從官方 zip 自己建�
 
 `docker-install.sh` 的路徑（repo、`--work`、`--zip` 等）不能含 `:`；Linux 主機有 KVM 時，容器會帶上 `/dev/kvm` 的群組，照樣做 QEMU 自我測試。
 
+<details>
+<summary><code>install.sh</code> 做了哪些事（點開）</summary>
+
 `install.sh` 不需要 root，依序：
 
 1. 從 Google 下載官方 recovery zip，核對 SHA-256。只接受已驗證的 lapis build `16452207`（`CL3B.260622.271.R1`）。
@@ -75,6 +113,8 @@ Google 的映像不能轉散布，所以每個人都要從官方 zip 自己建�
    標記。**這樣的映像沒有經過 QEMU 開機驗證**，只做了建置時的檢查。
 
 在一台 12 執行緒、NVMe 的 Linux 主機上約 10 分鐘（base 2.5 分鐘、映像與兩個 QEMU 測試 7.5 分鐘）。
+
+</details>
 
 ### 3. 寫入隨身碟並開機
 
@@ -95,6 +135,11 @@ Google 的映像不能轉散布，所以每個人都要從官方 zip 自己建�
 
 ### 4. 裝到 KANO 的內建碟（安裝碟）
 
+`install/make-installer-stick.sh` 把你建好的 Googlebook 映像做成**一個**安裝碟檔（旁邊寫 `.sha256`），開機後選「Install Googlebook to the internal disk」就能裝到內建 NVMe。
+
+<details>
+<summary>安裝碟檔裡有什麼、要多大的隨身碟（點開）</summary>
+
 `install/make-installer-stick.sh` 把你建好的 Googlebook 映像做成**一個**安裝碟檔，旁邊寫 `.sha256`。它只寫這個檔，不開區塊裝置，也不需要 root。檔案裡已經有：
 
 - Googlebook，複製到它最後一個分割區為止（映像尾端多出來的磁區不複製）。
@@ -102,6 +147,8 @@ Google 的映像不能轉散布，所以每個人都要從官方 zip 自己建�
 - 7936 MiB（8321499136 bytes）的 `kano-maint`（ext4，裡面的檔案擁有者記成 uid 0）：`gbos-install` 與它的服務、`gbos-update.py`、安裝程式自己會核對的 pristine 資料、`module-blacklist.txt`、`builtin-initcalls.txt`。
 
 成功時印 `minimum_stick_sectors`。預設做出的檔案就是這個磁區數（512 bytes 一區），可以稀疏存放。Googlebook 複製到 LBA 37244880 的代表映像是 54546417 磁區、27927765504 bytes。報 28.0 GB 的隨身碟是 28000000000 bytes（28×10^9），裝得下這份檔。`write-usb.sh` 拒絕比映像檔還小的碟。別的映像用它自己印出的 `minimum_stick_sectors`。稀疏存放不會少掉這個容量。
+
+</details>
 
 這一步要在 Linux x86_64 上做。`assemble` 用 `unshare -U -r -m -p --fork` 與 chroot 做 initramfs，一般使用者命名空間必須允許。macOS 與 `docker-install.sh` 可以建上面的 Googlebook 映像，做不了維護系統這一步。`fetch` 拒絕還沒有的快取目錄。`assemble` 的 `--out` 還不能存在。`make-pristine.py` 的輸出目錄還不能存在。`pack` 不是這段的輸入。順序與磁區下限的細節見 [install/stick/README.md](install/stick/README.md)。
 
@@ -172,7 +219,23 @@ install/gbos-report.sh --probe gbos-probe --out gbos-report
 （機型、CPU／GPU、韌體、哪些能用、哪些不能。機型名稱和 BIOS 版本要自己打，報告裡沒有），壞掉的地方用 [`.gitlab/issue_templates/bug.md`](.gitlab/issue_templates/bug.md)。
 把 `summary.md` 貼進去或當附件。
 
-## 結構
+## 文件
+
+| 文件 | 內容 |
+|---|---|
+| [docs/RELEASE-NOTES.md](docs/RELEASE-NOTES.md) | 每一版的變更與已知問題 |
+| [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md)（[English](docs/COMPATIBILITY.en.md)） | 哪些機器可以裝、CPU 最低需求 |
+| [docs/STATUS-KANO.md](docs/STATUS-KANO.md) | KANO 各子型號與每項功能的驗證狀態 |
+| [docs/FIRMWARE.md](docs/FIRMWARE.md) | 換成 UEFI 韌體的步驟與風險 |
+| [docs/INSTALL-INTERNAL.md](docs/INSTALL-INTERNAL.md) | 裝到內建碟（安裝碟）與備份 |
+| [docs/UPGRADE.md](docs/UPGRADE.md) | 保留資料的更新 |
+| [docs/SAFETY.md](docs/SAFETY.md) | 安全模型、資料安全取捨、EC 功能變體 |
+| [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md)（[English](docs/TROUBLESHOOTING.en.md)） | 疑難排解 |
+| [docs/NEW-DEVICE.md](docs/NEW-DEVICE.md) | 新機型的適配流程 |
+| [docs/HOW-IT-WORKS.md](docs/HOW-IT-WORKS.md) | 技術說明 |
+| [docs/JOURNAL.md](docs/JOURNAL.md) | 開發紀錄 |
+
+## Repo 結構
 
 | 路徑 | 內容 |
 |---|---|
@@ -190,18 +253,10 @@ install/gbos-report.sh --probe gbos-probe --out gbos-report
 與 `tests/` 的 `builder`、`install`、`probe`、`report`、`stick`、`update`，另外附 `tests/builder` 會用到的 `tools/release/png-ok.py` 與
 `tools/release/published-images.sha256`；其餘的 `tools/` 與 `tests/harness/` 只在 git repo 裡。
 
-## 維護者
+## 開發者
 
-打 tag 的那個 commit 要讓 `docs/RELEASE-NOTES.md` 同時滿足下面幾件事。狀態只看固定行，整個檔案每行與每個 Markdown 段落（空行分隔的段落、清單項目、表格列或標題，包含 `>` 引用區塊內）都會掃描，不靠猜版本段落或程式碼區塊的邊界：
-
-- 第 1 行必須正好是 `# Googlebook Anywhere <tag>`（例如 `# Googlebook Anywhere v0.2.1`）。拿掉標題上的 ` (未發布)`。
-- 第 2 行是空行。
-- 第 3 行必須正好是 `<!-- release-status: released -->`（開發期間是 `unreleased`）。寫在別行的 released 不算。
-- 整個檔案只接受純 Markdown（除了第 3 行的狀態註解外，行內 code span 以外的任何原始 HTML 標籤、註解或 `<https://...>` 自動連結一律拒絕；任何數字字元參照 `&#`——不論是否帶分號——與具名字元參照 `&name;` 一律拒絕；含空白、引號、括號、title 或跨行的連結目標 `](...)` 一律拒絕；跳脫方括號 `\[`、`\]` 與跳脫括號 `\(`、`\)` 一律拒絕；連結目標裡的反引號、參考式連結 `[文字][標籤]` 與連結定義 `[標籤]: 網址` 一律拒絕，請用 `[文字](網址)`；第 3 行以外的 HTML 註解 `<!--` 一律拒絕），且從頭到尾不能出現任何未發布字樣（包含三個反引號或 `~~~` 圍起來的程式碼區塊、縮排區塊，以及舊版本段落，沒有任何豁免）：除了逐行檢查列出的字樣外，也會以每個 Markdown 段落（空行或僅含 `>` 的行、setext 底線／分隔線、清單項目、表格列或標題，包含引用區塊內）為單位，在移除連結目標（`](...)`）與單行參考連結標籤（`][...]`）後，並把圖片的 `![`、GitLab 行內差異的 `{+ +}`／`[+ +]`／`{- -}` 與行內數學式的 `` $` ``／`` `$ `` 當成標記移除後，以兩種英文檢視（一種刪除標記符號並將空白與換行折成單一空白，另一種將標記符號與 `-_/` 換成空白再將空白與換行折成單一空白）及一種中文檢視（僅刪除標記符號、空白與換行）比對，因此跨行換行、清單或引用續行、連字號／底線／斜線、連結或強調標記拆開的列出字樣一樣會被擋下。限制：同一段落內相鄰的表格儲存格或句子接起來若剛好湊出禁語仍可能被擋下（請換個寫法）；刻意混淆（例如長得像的字母、不可見字元）不在這個檢查的範圍內——打 tag 的 commit 會經過審查。這一段要拿掉標題的 `(未發布)` 和導言的「這一版還沒有發布。」。會被擋下的字樣還有：未發布、還沒有發布、還沒發布、待發布、即將發布、沒正式發布、沒有正式發布、未正式發布、未發佈、還沒有發佈、還沒發佈、未发布、unreleased、unpublished、not yet released（英文不分大小寫）。
-
-私有 GitLab 專案的 CI/CD 變數 `GBOS_REQUIRE_PRIVATE_SCAN` 寫在專案設定，不寫進 repo。沒有設、去頭尾空白後是空字串、`0` 或 `false`（不分大小寫）時，真正的公開匯出仍會 SKIP。其他任何非空值（包含 `1` 和 `true`）都會強制掃描，缺少 `tools/release/private-patterns.txt` 就失敗。不要把這個變數勾成 Protect variable，否則未受保護的分支和 merge request pipeline 拿不到它，會在沒有掃描的情況下跑。公開 CI 不要設這個變數。
-
-## 開發者選項
+<details>
+<summary>開發者選項（點開）</summary>
 
 `builder/build.sh` 也可以直接用環境變數呼叫，變數說明在檔案開頭。和預設值不同的開發用設定：
 
@@ -213,7 +268,10 @@ install/gbos-report.sh --probe gbos-probe --out gbos-report
 
 `install.sh` 會記下這些設定與 `base/`、`builder/`、機型設定的內容摘要（包括還沒 commit 的檔案）；設定或原始碼一變，就會停下來而不是沿用舊的 base 或映像。舊版 `install.sh` 建的工作目錄要先刪掉一次 `base/` 與 `build/`。
 
-## 測試
+</details>
+
+<details>
+<summary>測試（點開）</summary>
 
 每次 push 由 GitLab CI 跑 shellcheck／py_compile 與下面到 `tests/harness/run.sh` 為止的項目（`tests/report/report-test.sh` 也在 `tests/builder/run.sh` 裡，builder job 會再跑一次）。從 `tests/builder/e2e.sh` 起需要大磁碟、KVM 或實機的輸入，在開發機上跑。
 CI 的容器沒有 loop 裝置，所以 `tests/install/run.sh` 裡用 loop 假碟的案例在 CI 會 SKIP，只跑寫入程式的拒絕測試
@@ -241,6 +299,22 @@ tests/stick/qemu-install.py --asis <工作目錄> <Googlebook 映像> <安裝碟
                               # 開機副本與產出檔逐位元組相同，寫入進 snapshot，不改選單。
                               # 普通畫面的虛擬鍵盤跑 Install／Update。結果與序列埠案例分開印。
 ```
+
+</details>
+
+<details>
+<summary>維護者：發版規則（點開）</summary>
+
+打 tag 的那個 commit 要讓 `docs/RELEASE-NOTES.md` 同時滿足下面幾件事。狀態只看固定行，整個檔案每行與每個 Markdown 段落（空行分隔的段落、清單項目、表格列或標題，包含 `>` 引用區塊內）都會掃描，不靠猜版本段落或程式碼區塊的邊界：
+
+- 第 1 行必須正好是 `# Googlebook Anywhere <tag>`（例如 `# Googlebook Anywhere v0.2.1`）。拿掉標題上的 ` (未發布)`。
+- 第 2 行是空行。
+- 第 3 行必須正好是 `<!-- release-status: released -->`（開發期間是 `unreleased`）。寫在別行的 released 不算。
+- 整個檔案只接受純 Markdown（除了第 3 行的狀態註解外，行內 code span 以外的任何原始 HTML 標籤、註解或 `<https://...>` 自動連結一律拒絕；任何數字字元參照 `&#`——不論是否帶分號——與具名字元參照 `&name;` 一律拒絕；含空白、引號、括號、title 或跨行的連結目標 `](...)` 一律拒絕；跳脫方括號 `\[`、`\]` 與跳脫括號 `\(`、`\)` 一律拒絕；連結目標裡的反引號、參考式連結 `[文字][標籤]` 與連結定義 `[標籤]: 網址` 一律拒絕，請用 `[文字](網址)`；第 3 行以外的 HTML 註解 `<!--` 一律拒絕），且從頭到尾不能出現任何未發布字樣（包含三個反引號或 `~~~` 圍起來的程式碼區塊、縮排區塊，以及舊版本段落，沒有任何豁免）：除了逐行檢查列出的字樣外，也會以每個 Markdown 段落（空行或僅含 `>` 的行、setext 底線／分隔線、清單項目、表格列或標題，包含引用區塊內）為單位，在移除連結目標（`](...)`）與單行參考連結標籤（`][...]`）後，並把圖片的 `![`、GitLab 行內差異的 `{+ +}`／`[+ +]`／`{- -}` 與行內數學式的 `` $` ``／`` `$ `` 當成標記移除後，以兩種英文檢視（一種刪除標記符號並將空白與換行折成單一空白，另一種將標記符號與 `-_/` 換成空白再將空白與換行折成單一空白）及一種中文檢視（僅刪除標記符號、空白與換行）比對，因此跨行換行、清單或引用續行、連字號／底線／斜線、連結或強調標記拆開的列出字樣一樣會被擋下。限制：同一段落內相鄰的表格儲存格或句子接起來若剛好湊出禁語仍可能被擋下（請換個寫法）；刻意混淆（例如長得像的字母、不可見字元）不在這個檢查的範圍內——打 tag 的 commit 會經過審查。這一段要拿掉標題的 `(未發布)` 和導言的「這一版還沒有發布。」。會被擋下的字樣還有：未發布、還沒有發布、還沒發布、待發布、即將發布、沒正式發布、沒有正式發布、未正式發布、未發佈、還沒有發佈、還沒發佈、未发布、unreleased、unpublished、not yet released（英文不分大小寫）。
+
+私有 GitLab 專案的 CI/CD 變數 `GBOS_REQUIRE_PRIVATE_SCAN` 寫在專案設定，不寫進 repo。沒有設、去頭尾空白後是空字串、`0` 或 `false`（不分大小寫）時，真正的公開匯出仍會 SKIP。其他任何非空值（包含 `1` 和 `true`）都會強制掃描，缺少 `tools/release/private-patterns.txt` 就失敗。不要把這個變數勾成 Protect variable，否則未受保護的分支和 merge request pipeline 拿不到它，會在沒有掃描的情況下跑。公開 CI 不要設這個變數。
+
+</details>
 
 ## 授權
 
