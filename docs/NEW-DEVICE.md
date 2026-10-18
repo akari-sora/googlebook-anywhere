@@ -19,15 +19,15 @@ builder 裡和機型有關的值都在機型設定目錄，換 `GBOS_PROFILE`（
 （`builder/fetch-generic-inputs.sh` 下載並核對 SHA-256），沒有 GPU 加速、沒有機型韌體與音效設定。只在 QEMU 開到歡迎畫面過
 （`research/amd/PLAN.md` 第 8 節）。
 
-另有針對 **AMD Ryzen AI 9 HX 370 / Radeon 890M** 的 `profiles/amd-hx370/`（需搭配自建的 Track 2 GKI 核心 `GBOS_DEV_KERNEL_DIR` 與 `tools/mesa/build-radv.sh` 建出的 RADV，目前只在 QEMU 驗證過）：建置時產生兩個固定開機選單項目，**不做執行期顯示切換**：
+另有針對 **AMD Ryzen AI 9 HX 370 / Radeon 890M** 的 `profiles/amd-hx370/`（需搭配自建的 Track 2 GKI 核心 `GBOS_DEV_KERNEL_DIR`、`tools/mesa/build-radv.sh` 建出的 RADV，以及 `[gralloc]` 指向的 `tools/minigbm` 產物 `GBOS_MINIGBM`，目前只在 QEMU 驗證過 safe 選項）：建置時產生兩個固定開機選單項目，**不做執行期顯示切換**：
 - **預設 `"Googlebook AMD HX370 safe"`**（`lapis-quiet.conf`）：`amdgpu` 列入 `module_blacklist` 且不載入、不帶 `amdgpu.*` 參數，走與 `generic-x86` 相同的已知可用路徑（GOP framebuffer + `gbos_efifb` + SwiftShader `pastel`），已在 QEMU 開到設定精靈驗證。
-- **實驗 `"Googlebook AMD HX370 native amdgpu (experimental)"`**（`lapis-debug.conf`）：在 `early-boot` 載入一次 `amdgpu`、絕不啟動 `gbos_efifb`，設定 `ro.hardware.vulkan=radeon` 並依 sysfs `/sys/class/drm/card*/device/uevent` 的 `DRIVER=amdgpu` 自動選擇 HWC 的 DRM 裝置。**誠實揭露**：此選項尚未在實機測試，且目前 lapis 映像的 `minigbm` gralloc 尚未包含 `amdgpu` 後端；若選此項出現黑畫面，請重開機選預設的 `"Googlebook AMD HX370 safe"`。
+- **實驗 `"Googlebook AMD HX370 native amdgpu (experimental)"`**（`lapis-debug.conf`）：在 `early-boot` 載入一次 `amdgpu`、絕不啟動 `gbos_efifb`，設定 `ro.hardware.vulkan=radeon` 並依 sysfs `/sys/class/drm/card*/device/uevent` 的 `DRIVER=amdgpu` 自動選擇 HWC 的 DRM 裝置。映像依 `[gralloc]` 把 `/vendor/lib64/libminigbm_gralloc.so` 換成 `tools/minigbm` 的建置（`backend_amdgpu`，並保留 `backend_vkms` 給 safe 選項；`GBOS_MINIGBM` 的 SHA-256 必須與設定一致，否則 build 停止）。kano 與 generic-x86 沒有這張表，那顆檔維持原樣。**誠實揭露**：此選項尚未在實機測試。QEMU 沒有 amdgpu，self-test 只開 safe 選項（allocator 走 vkms）。若實機選此項出現黑畫面，請重開機選預設的 `"Googlebook AMD HX370 safe"`。
 
 **Windows / BitLocker 必做前置步驟（進 BIOS 改 Secure Boot 之前）**：在任何裝有 Windows 的 PC 上，進 BIOS 動 Secure Boot 之前，先在管理員 PowerShell 執行 `manage-bde -status` 檢查所有磁碟區；只要有任何磁碟區啟用了 BitLocker，**必須先把每個加密磁碟區的 48 位數 BitLocker 復原金鑰（Recovery Key）備份並存到另一台裝置**（<https://aka.ms/myrecoverykey> 或對 `manage-bde -status` 列出的每個加密磁碟區執行 `manage-bde -protectors -get <磁碟區>`，例如 `C:`、`D:`）。切換 Secure Boot 可能會改變開機量測與 BitLocker 所綁定的 TPM PCR（例如 PCR 7，或依平台設定綁定的 PCR 0、2、4、11），下次開回 Windows 時**可能會要求輸入 48 位數復原金鑰**。`Suspend-BitLocker -MountPoint "C:" -RebootCount 1` 只是備份好復原金鑰之後的選用便利指令（暫停期間會把明文金鑰留在磁碟上，有保護空窗，且重開機次數用完後仍會檢查 TPM PCR；回到 Windows 後請用 `manage-bde -status`／`Resume-BitLocker` 確認保護已恢復），**絕對不能代替備份 48 位數復原金鑰**。
 
 | 檔案 | 內容 |
 |---|---|
-| `profile.toml` | 機型名稱與映像檔名、選單標題、開機參數（要拿掉的原廠參數、加上的參數、quiet 專用移除參數 `quiet_drop`、pci-stub ID、first stage 不載入的模組）、`module_blacklist`（含 quiet 專用追加 `quiet_add`）、韌體清單（來源與 SHA-256）、音效卡、Wi-Fi 要載入的模組、顯示設定、鍵盤背光 LED 路徑、電源鍵來源 |
+| `profile.toml` | 機型名稱與映像檔名、選單標題、開機參數（要拿掉的原廠參數、加上的參數、quiet 專用移除參數 `quiet_drop`、pci-stub ID、first stage 不載入的模組）、`module_blacklist`（含 quiet 專用追加 `quiet_add`）、韌體清單（來源與 SHA-256）、音效卡、Wi-Fi 要載入的模組、`[modules]`（early-boot modprobe；要先在 `profiles/_safety.toml` 的 `[modules]` 允許）、可選的 `[gralloc]`（`libminigbm_gralloc.so` 的 SHA-256；只有列出的機型才換這顆檔）、顯示設定、鍵盤背光 LED 路徑、電源鍵來源 |
 | `vendor.py` | 需要寫文字的 vendor 修改（`profile.toml` 的 `hooks.vendor`）：DRAS 音效設定檔、鍵盤背光的 idc／ueventd／SELinux、電源鍵、hwcomposer 設定。新機型從 KANO 的這份複製再改 |
 | `audio-src.list` | 音效設定的來源檔（ChromeOS board-overlays，建置時才下載，固定 SHA-256） |
 
@@ -41,6 +41,7 @@ builder 裡和機型有關的值都在機型設定目錄，換 `GBOS_PROFILE`（
   開頭（這些由 builder 統一加上，放在後面會蓋掉前面的）；也不可以拿掉安全參數（`efi=noruntime` 等）。
 - 每個開機選項最後都有 `initcall_blacklist=nvme_init,mei_me_driver_init efi=noruntime …`（USB 映像看不到內建 NVMe）。
 - 當使用自建核心（`GBOS_DEV_KERNEL_DIR`）時，`devprofile.py check-kconfig <profile> <kdir>` 會檢查 `.config`、`bzImage` 內嵌的 `IKCFG` 與 `System.map`，拒絕任何把受封鎖驅動編成 built-in（`=y`）或讓 `nvme_init`／`module_blacklist` 失效的核心設定（見 `docs/SAFETY.md` 第 8 點）。
+- `[modules]`（可選）讓這個機型在 `early-boot` 同步 `exec` `modprobe`（命令沒有 `-b`）。先在 `profiles/_safety.toml` 的 `[modules]` 加一列 `"<profile-id> <模組名> <vendor|dev>"`，再在機型 `profile.toml` 的 `[modules]` 用同一個名字。`load` 是一般載入。`unblock` 只能點 stock `vendor_dlkm` `lib/modules/modules.blocklist` 上的模組；那份名單只有一處，`builder/lib/devprofile.py` 的 `STOCK_MODULES_BLOCKLIST`（目前是 `snd_hda_intel`，檔案內容是一行 `blocklist snd_hda_intel`，builder 不重寫 `vendor_dlkm`）。`load` 不能點這些名字。`vendor` 是 `/vendor/lib/modules`，`dev` 是 `/vendor/lib/dev-modules`；`dev` 的 `.ko` 不在 `GBOS_DEV_KERNEL_DIR/modules` 頂層時 build 中止。allowlist 的順序就是載入順序：較早的每一列，不論 `vendor` 或 `dev`，都要先被選到（`btusb` 在 `bluetooth` 後面）。同一張表內照 allowlist 順序；所有 `load` 行都在 `unblock` 行之前輸出（codec 先於 `snd_hda_intel`）。拒絕的名字：`blacklist.required`、profile 自己的黑名單、`_NEVER_SHIP_KO`，以及 kconfig 閘門已經對上的儲存／韌體更新類模組名（`nvme`、sdhci、`mtd`、SPI flash（控制器、SPI-NOR、spidev）、`thunderbolt`、TPM、`ccp` 等；不另設萬用字元）。核心命令列的 `module_blacklist=` 仍然會擋載入。kano 與 generic-x86 沒有這些列。見 `docs/SAFETY.md` 第 9 點。
 
 `python3 builder/lib/devprofile.py check profiles/<型號>` 只做檢查。`tests/builder/profile-test.py` 對過 KANO 開機參數相對 v0.2.0 的差異：`xe.force_probe`、拿掉的三個 `console=`，以及兩個 RPL SOF 檔。`tests/builder/repro.sh` 對過的逐檔相同是 final26 那個較早的 builder，不是現在這張家族映像（命令列、兩個韌體檔，以及 vbmeta／initrd 的 hash 鏈都不同）。
 
@@ -113,9 +114,18 @@ install/gbos-report.sh --probe gbos-probe --out gbos-report         # 只有 liv
 
 新機型開 GitLab issue，選 [`.gitlab/issue_templates/new-machine.md`](.gitlab/issue_templates/new-machine.md)（自己打機型、BIOS 版本、CPU／GPU、哪些能用、哪些不能，附上 `summary.md`）。某一項壞掉則用 [`.gitlab/issue_templates/bug.md`](.gitlab/issue_templates/bug.md)。報告不會替你填那些描述。
 
+## amd-hx370 native 選項：實機關卡
+
+QEMU 沒有 amdgpu，self-test 只開 safe。native 選項在實機上通過下面每一項之前，不算驗收。上面『驗證順序』第 3 步的韌體與畫面檢查仍要做。
+
+1. 選 experimental native 開機。`dmesg` 裡 `amdgpu` 與 `Direct firmware load` 沒有 `-ENOENT`。畫面能起來；黑畫面就重開，改選 safe。
+2. 配置、map、export、import、釋放都走完，safe 與 native 載入的是同一顆 `/vendor/lib64/libminigbm_gralloc.so`。
+3. **YV12 / GFX10+（硬體關卡）**。`amdgpu_linear.c` 為了 Android 的 chroma stride，把 luma 對齊到兩倍的 256-byte alignment。640×480 TEXTURE 的三個平面 pitch 是 1024 / 512 / 512，不是上游在「stride 盡量小」時會得到的 768。Radeon 890M 是 GFX11.5，落在上游 `family >= AMDGPU_FAMILY_NV` 的範圍。實機要配置 YV12 640×480、usage TEXTURE，用 `VkImageDrmFormatModifierExplicitCreateInfoEXT`（modifier LINEAR，pitch 1024/512/512）匯入 RADV 並取樣。RADV 拒絕這個 pitch 的話，改走上游分支：在 `BO_USE_GPU_HW` 且 `stride/256` 為奇數時不加倍，改用 `DRM_FORMAT_YVU420` 並記錄。這項不是 QEMU 檢查。
+4. `SurfaceFlinger: trackPendingFrame: Invalid present fence` 不反覆出現。QEMU 上原廠庫也會出現同一對 log，所以那一行本身不是這顆重建庫的回歸；實機仍要確認它沒有一直刷。
+
 ## 還沒做的
 
 - `base/` 仍是 KANO 那份基礎映像的逐位元組重建（`kano-real.img`），它 ESP 裡的開機選項（含 `xe.force_probe=46a6`）
   builder 已經不再使用：開機參數一律由 vendor_boot 的原廠參數、機型設定與安全規則產生。
 - vendor 裡的服務與腳本名稱仍是 `kano-*`（功能通用；改名會讓 KANO 映像與已驗證的版本不同）。
-- 一般 PC 的通用顯示 fallback 已是 `profiles/generic-x86`（只在 QEMU 驗證過）；AMD HX 370 的 `profiles/amd-hx370` 預設走相同的 safe GOP + SwiftShader 路徑（已在 QEMU 開到設定精靈驗證），其 experimental native `amdgpu` 選項與還缺的 `minigbm` `amdgpu` gralloc 後端見 `research/amd/PLAN.md`。
+- 一般 PC 的通用顯示 fallback 已是 `profiles/generic-x86`（只在 QEMU 驗證過）；AMD HX 370 的 `profiles/amd-hx370` 預設走相同的 safe GOP + SwiftShader 路徑（已在 QEMU 開到設定精靈驗證）。safe 與 native 兩個選項載入同一顆 `/vendor/lib64/libminigbm_gralloc.so`（`[gralloc]`、`tools/minigbm`：`backend_amdgpu` 與 `backend_vkms` 都在這顆檔裡，差別是開機選項選哪個 backend）。QEMU 沒有 amdgpu，所以 native 選項不在 self-test 裡。實機仍未驗證，見 `research/amd/PLAN.md`。

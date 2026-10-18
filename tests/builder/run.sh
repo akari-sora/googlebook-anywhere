@@ -14,7 +14,7 @@ expect() {  # expect <name> <exit code> <output regex> -- command...
     if [ "$rc" = "$code" ] && printf '%s' "$out" | grep -Eq -- "$re"; then ok "$name"; else bad "$name (rc=$rc): $(printf '%s' "$out" | tail -n 3)"; fi
 }
 
-for f in "$ROOT"/builder/*.sh "$ROOT"/builder/kmod/*.sh "$ROOT"/builder/camera/*.sh "$ROOT"/base/*.sh "$ROOT"/install/*.sh "$ROOT"/install/stick/*.sh "$ROOT"/tests/*/*.sh "$ROOT"/tools/release/*.sh "$ROOT"/tools/mesa/*.sh; do
+for f in "$ROOT"/builder/*.sh "$ROOT"/builder/kmod/*.sh "$ROOT"/builder/camera/*.sh "$ROOT"/base/*.sh "$ROOT"/install/*.sh "$ROOT"/install/stick/*.sh "$ROOT"/tests/*/*.sh "$ROOT"/tools/release/*.sh "$ROOT"/tools/mesa/*.sh "$ROOT"/tools/minigbm/*.sh; do
     [ -e "$f" ] || continue   # an unmatched glob (the release archive has no tools/release/*.sh)
     bash -n "$f" && ok "bash -n ${f#$ROOT/}" || bad "bash -n ${f#$ROOT/}"
 done
@@ -43,6 +43,7 @@ mkdir -p "$T/badprof/badprof"; sed '/^image_name = /d' "$ROOT/profiles/kano/prof
 expect "build.sh refuses an invalid device profile" 2 "missing key image_name" -- "${B[@]}" GBOS_OUT="$T/o4" GBOS_PROFILE="$T/badprof/badprof" bash "$ROOT/builder/build.sh"
 [ ! -e "$T/o4" ] && ok "build.sh wrote nothing for the invalid profile" || bad "build.sh created GBOS_OUT for an invalid profile"
 expect "device profile loader (tests/builder/profile-test.py)" 0 "profile tests: [0-9]+ passed, 0 failed" -- python3 "$ROOT/tests/builder/profile-test.py"
+expect "shipped module firmware (tests/builder/firmware-test.py)" 0 "firmware tests: [0-9]+ passed, 0 failed, 0 skipped" -- python3 "$ROOT/tests/builder/firmware-test.py"
 # tools/release/png-ok.py: the only binary files the public export and the release archive accept (docs/images/*.png)
 expect "png-ok accepts the screenshots and refuses hidden payloads (tests/builder/png-ok-test.py)" 0 "png-ok tests: [0-9]+ passed, 0 failed" -- python3 "$ROOT/tests/builder/png-ok-test.py"
 # the release archive builds from this checkout (git only: the release archive itself has no .git)
@@ -57,11 +58,67 @@ if [ -f "$ROOT/tools/release/make-release.sh" ] && [ "$(git -C "$ROOT" rev-parse
         ok "the release archive carries docs/images"; else bad "the release archive lacks docs/images"; fi
     if grep -q "/tools/mesa/build-radv.sh$" "$T/rel.list" && grep -q "/tools/mesa/check-radv-elf.py$" "$T/rel.list" && grep -q "/tools/mesa/NOTICES.txt$" "$T/rel.list"; then
         ok "the release archive carries tools/mesa (including NOTICES.txt)"; else bad "the release archive lacks tools/mesa"; fi
+    if grep -q "/tools/minigbm/NOTICES.txt$" "$T/rel.list"; then
+        ok "the release archive carries tools/minigbm/NOTICES.txt"; else bad "the release archive lacks tools/minigbm/NOTICES.txt"; fi
+    if grep -q "/tools/minigbm/build-libminigbm-gralloc.sh$" "$T/rel.list" || grep -q "/tools/minigbm/amdgpu_linear.c$" "$T/rel.list" || grep -q "/tools/minigbm/upstream-delta.patch$" "$T/rel.list"; then
+        bad "the release archive ships git-only minigbm build sources"; else ok "the release archive omits git-only minigbm build sources"; fi
     mkdir -p "$T/rel-tree"
     tar -xzf "$T/rel/googlebook-anywhere-v9.9.9.tar.gz" -C "$T/rel-tree"
-    expect "extracted release archive passes tests/builder/run.sh (including amd-hx370 checks)" 0 "builder tests: [0-9]+ passed, 0 failed" -- bash "$T/rel-tree/googlebook-anywhere-v9.9.9/tests/builder/run.sh"
+    rel_root="$T/rel-tree/googlebook-anywhere-v9.9.9"
+    if [ -f "$rel_root/tools/minigbm/NOTICES.txt" ] \
+        && [ ! -e "$rel_root/tools/minigbm/build-libminigbm-gralloc.sh" ] \
+        && [ ! -e "$rel_root/tools/minigbm/amdgpu_linear.c" ] \
+        && [ ! -e "$rel_root/tools/minigbm/upstream-delta.patch" ]; then
+        ok "extracted release archive has NOTICES.txt and not the minigbm build sources"
+    else
+        bad "extracted release archive has NOTICES.txt and not the minigbm build sources"
+    fi
+    expect "extracted release archive passes tests/builder/profile-test.py" 0 "profile tests: [0-9]+ passed, 0 failed" -- python3 "$rel_root/tests/builder/profile-test.py"
+    expect "extracted release archive passes tests/builder/run.sh" 0 "builder tests: [0-9]+ passed, 0 failed" -- bash "$rel_root/tests/builder/run.sh"
 else
     echo "SKIP make-release.sh archive tests (no .git or make-release.sh in extracted release tree)"
+fi
+# The path list is read from make-release.sh itself. git archive needs a commit, and this
+# snapshot may not have one, so the tree under test is the working-tree files named by that
+# list (what the archive ships once those paths are committed). An extracted release has no
+# make-release.sh and skips here.
+if [ -f "$ROOT/tools/release/make-release.sh" ]; then
+    python3 - "$ROOT" "$T/rel-work" << 'PY'
+import shlex, shutil, sys
+from pathlib import Path
+root, dest = Path(sys.argv[1]), Path(sys.argv[2])
+text = (root / "tools/release/make-release.sh").read_text()
+start = text.find('git -C "$ROOT" archive')
+pipe = text.find("| gzip", start)
+if start < 0 or pipe < 0 or " -- " not in text[start:pipe]:
+    sys.exit("make-release.sh archive path list not found")
+body = text[start:pipe].split(" -- ", 1)[1].replace("\\\n", " ")
+paths = shlex.split(body)
+if dest.exists():
+    shutil.rmtree(dest)
+for rel in paths:
+    src = root / rel
+    target = dest / rel
+    if not src.exists():
+        sys.exit("release path missing: " + rel)
+    if src.is_dir():
+        shutil.copytree(src, target, symlinks=False)
+    else:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(src, target)
+print("materialized", len(paths), "paths")
+PY
+    if [ -f "$T/rel-work/tools/minigbm/NOTICES.txt" ] \
+        && [ ! -e "$T/rel-work/tools/minigbm/build-libminigbm-gralloc.sh" ] \
+        && [ ! -e "$T/rel-work/tools/minigbm/amdgpu_linear.c" ] \
+        && [ ! -e "$T/rel-work/tools/minigbm/upstream-delta.patch" ]; then
+        ok "release path list ships minigbm NOTICES.txt and not the build sources"
+    else
+        bad "release path list ships minigbm NOTICES.txt and not the build sources"
+    fi
+    expect "working-tree release paths pass tests/builder/run.sh (including amd-hx370 checks)" 0 "builder tests: [0-9]+ passed, 0 failed" -- bash "$T/rel-work/tests/builder/run.sh"
+else
+    echo "SKIP release-tree run.sh (extracted release has no make-release.sh)"
 fi
 # synthetic repo for make-public.sh and make-release.sh guard checks (pin list from exported commit; docs/images/* and *.png)
 if command -v git > /dev/null && [ -f "$ROOT/tools/release/make-public.sh" ] && [ -f "$ROOT/tools/release/make-release.sh" ]; then
@@ -73,11 +130,13 @@ if command -v git > /dev/null && [ -f "$ROOT/tools/release/make-public.sh" ] && 
     done
     rm "$T/r/docs/images/f" "$T/r/tools/release/f"
     printf 'x\n' > "$T/r/README.md"; printf 'x\n' > "$T/r/LICENSE"
+    mkdir -p "$T/r/tools/minigbm"
+    printf 'minigbm notices\n' > "$T/r/tools/minigbm/NOTICES.txt"
     cp "$ROOT/docs/images/kano-welcome.png" "$T/r/docs/images/kano-welcome.png"
     cp "$ROOT/tools/release/png-ok.py" "$ROOT/tools/release/make-public.sh" "$ROOT/tools/release/make-release.sh" "$T/r/tools/release/"
     grep 'kano-welcome\.png$' "$ROOT/tools/release/published-images.sha256" > "$T/r/tools/release/published-images.sha256"
     printf 'NEVER_MATCH_THIS_PRIVATE_SENTINEL\n' > "$T/r/tools/release/private-patterns.txt"
-    git -C "$T/r" add README.md LICENSE base builder install profiles docs tests tools/mesa tools/release/png-ok.py tools/release/published-images.sha256
+    git -C "$T/r" add README.md LICENSE base builder install profiles docs tests tools/mesa tools/minigbm/NOTICES.txt tools/release/png-ok.py tools/release/published-images.sha256
     git -C "$T/r" commit -q -m good
     C_GOOD=$(git -C "$T/r" rev-parse HEAD)
     printf '%064d  docs/images/kano-welcome.png\n' 0 > "$T/r/tools/release/published-images.sha256"
@@ -601,6 +660,39 @@ expect "build.sh refuses amd-hx370 without vulkan.pastel.so (needed by safe defa
 mkdir -p "$T/in/generic"; touch "$T/in/generic/vulkan.pastel.so"
 expect "build.sh refuses amd-hx370 without gbos_efifb.ko (needed by safe default entry)" 2 "needs gbos_efifb.ko" -- "${B[@]}" GBOS_OUT="$T/o-amd6" GBOS_SKIP_SELFTEST=1 GBOS_PROFILE="$ROOT/profiles/amd-hx370" GBOS_DEV_KERNEL_DIR="$T/devamd" GBOS_AUDIO_SRC="$T/audio-amd" GBOS_RADV="$T/fake-radv.so" GBOS_RADV_PROBE="$T/fake-radv.so" GBOS_RADV_VKPROP="$T/fake-radv.so" bash "$ROOT/builder/build.sh"
 rm -rf "$T/in/generic"
+mkdir -p "$T/in/generic" "$T/in/amd-hx370"
+touch "$T/in/generic/vulkan.pastel.so" "$T/in/generic/gbos_efifb.ko"
+expect "build.sh refuses amd-hx370 without libminigbm_gralloc.so" 2 "needs libminigbm_gralloc.so" -- "${B[@]}" GBOS_OUT="$T/o-amd7" GBOS_SKIP_SELFTEST=1 GBOS_PROFILE="$ROOT/profiles/amd-hx370" GBOS_DEV_KERNEL_DIR="$T/devamd" GBOS_AUDIO_SRC="$T/audio-amd" GBOS_RADV="$T/fake-radv.so" GBOS_RADV_PROBE="$T/fake-radv.so" GBOS_RADV_VKPROP="$T/fake-radv.so" bash "$ROOT/builder/build.sh"
+printf 'not-the-library\n' > "$T/in/amd-hx370/libminigbm_gralloc.so"
+expect "build.sh refuses amd-hx370 when libminigbm_gralloc.so sha256 differs" 2 "^build.sh: GBOS_MINIGBM sha256 .* differs" -- "${B[@]}" GBOS_OUT="$T/o-amd8" GBOS_SKIP_SELFTEST=1 GBOS_PROFILE="$ROOT/profiles/amd-hx370" GBOS_DEV_KERNEL_DIR="$T/devamd" GBOS_AUDIO_SRC="$T/audio-amd" GBOS_RADV="$T/fake-radv.so" GBOS_RADV_PROBE="$T/fake-radv.so" GBOS_RADV_VKPROP="$T/fake-radv.so" bash "$ROOT/builder/build.sh"
+printf 'also-wrong\n' > "$T/wrong-minigbm.so"
+expect "build.sh refuses GBOS_MINIGBM whose sha256 differs" 2 "^build.sh: GBOS_MINIGBM sha256 .* differs" -- "${B[@]}" GBOS_OUT="$T/o-amd9" GBOS_SKIP_SELFTEST=1 GBOS_PROFILE="$ROOT/profiles/amd-hx370" GBOS_DEV_KERNEL_DIR="$T/devamd" GBOS_AUDIO_SRC="$T/audio-amd" GBOS_RADV="$T/fake-radv.so" GBOS_RADV_PROBE="$T/fake-radv.so" GBOS_RADV_VKPROP="$T/fake-radv.so" GBOS_MINIGBM="$T/wrong-minigbm.so" bash "$ROOT/builder/build.sh"
+printf 'link-target\n' > "$T/real-minigbm.so"
+ln -s "$T/real-minigbm.so" "$T/link-minigbm.so"
+expect "build.sh refuses a symlink GBOS_MINIGBM" 2 "GBOS_MINIGBM is a symlink" -- "${B[@]}" GBOS_OUT="$T/o-amd9b" GBOS_SKIP_SELFTEST=1 GBOS_PROFILE="$ROOT/profiles/amd-hx370" GBOS_DEV_KERNEL_DIR="$T/devamd" GBOS_AUDIO_SRC="$T/audio-amd" GBOS_RADV="$T/fake-radv.so" GBOS_RADV_PROBE="$T/fake-radv.so" GBOS_RADV_VKPROP="$T/fake-radv.so" GBOS_MINIGBM="$T/link-minigbm.so" bash "$ROOT/builder/build.sh"
+real_python=$(command -v python3)
+mkdir -p "$T/fakepy"
+cat > "$T/fakepy/python3" << EOF
+#!/bin/bash
+if [ "\$1" = -c ] && printf '%s' "\$2" | grep -q 'p.get("gralloc")'; then
+    echo "profile load failed: boom" >&2
+    exit 1
+fi
+exec "$real_python" "\$@"
+EOF
+chmod +x "$T/fakepy/python3"
+expect "build.sh refuses when the [gralloc] probe cannot load the profile" 2 "^build.sh: could not read \\[gralloc\\]" -- env PATH="$T/fakepy:$PATH" "${B[@]}" GBOS_OUT="$T/o-amd10" GBOS_SKIP_SELFTEST=1 GBOS_PROFILE="$ROOT/profiles/amd-hx370" GBOS_DEV_KERNEL_DIR="$T/devamd" GBOS_AUDIO_SRC="$T/audio-amd" GBOS_RADV="$T/fake-radv.so" GBOS_RADV_PROBE="$T/fake-radv.so" GBOS_RADV_VKPROP="$T/fake-radv.so" bash "$ROOT/builder/build.sh"
+for pair in "kano|$T/audio-kano" "generic-x86|$T/audio-gx"; do
+    model=${pair%%|*}; adir=${pair#*|}
+    mkdir -p "$adir" "$T/o-$model"
+    out=$( "${B[@]}" GBOS_OUT="$T/o-$model" GBOS_SKIP_SELFTEST=1 GBOS_PROFILE="$ROOT/profiles/$model" GBOS_AUDIO_SRC="$adir" bash "$ROOT/builder/build.sh" 2>&1 ) && rc=0 || rc=$?
+    if [ "$rc" != 0 ] && ! printf '%s\n' "$out" | grep -q 'libminigbm' && ! printf '%s\n' "$out" | grep -q 'could not read \[gralloc\]'; then
+        ok "$model build.sh does not ask for libminigbm_gralloc.so"
+    else
+        bad "$model build.sh does not ask for libminigbm_gralloc.so (rc=$rc): $(printf '%s\n' "$out" | tail -n 3)"
+    fi
+done
+rm -rf "$T/in/generic" "$T/in/amd-hx370"
 grep -q '^MESA_SHA256=[0-9a-f]\{64\}$' "$ROOT/tools/mesa/build-radv.sh" \
     && grep -q '^LIBDRM_SHA256=[0-9a-f]\{64\}$' "$ROOT/tools/mesa/build-radv.sh" \
     && grep -q '^NDK_SHA256=[0-9a-f]\{64\}$' "$ROOT/tools/mesa/build-radv.sh" \

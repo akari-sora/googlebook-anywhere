@@ -192,9 +192,9 @@ sudo install/write-usb.sh "$HOME/gbos-maint/stick.img" /dev/disk/by-id/usb-<你�
 Wi-Fi、音效這類需要機型韌體的功能，generic 映像
 都沒有帶，多半不能用；能用的範圍以 probe 的報告為準。要做成正式支援的機型，見 [docs/NEW-DEVICE.md](docs/NEW-DEVICE.md)。
 
-另有針對 **AMD Ryzen AI 9 HX 370 / Radeon 890M** 的實驗性 `profiles/amd-hx370`（需搭配自建的 Track 2 GKI 核心與 `tools/mesa/build-radv.sh` 建出的 RADV，目前只在 QEMU 驗證過，尚未在實機開機）：建置時直接固定兩個開機選單項目，**不做開機期間動態切換**：
+另有針對 **AMD Ryzen AI 9 HX 370 / Radeon 890M** 的實驗性 `profiles/amd-hx370`（需搭配自建的 Track 2 GKI 核心與 `tools/mesa/build-radv.sh` 建出的 RADV。設定裡有 `[gralloc]` 時還需要 `GBOS_MINIGBM`，也就是 git repo 裡 `tools/minigbm/build-libminigbm-gralloc.sh` 建出的 `libminigbm_gralloc.so`，sha256 必須與 profile 一致。發佈包只帶 `tools/minigbm/NOTICES.txt`，沒有那支建置腳本。目前只在 QEMU 驗證過，尚未在實機開機）：建置時直接固定兩個開機選單項目，**不做開機期間動態切換**：
 - **預設 `"Googlebook AMD HX370 safe"`**（`lapis-quiet.conf`）：**不載入 `amdgpu`**（列入 `module_blacklist` 且不執行 `modprobe amdgpu`），走與 `generic-x86` 相同的已知可用路徑（UEFI GOP framebuffer + `gbos_efifb` + SwiftShader `pastel`），已在 QEMU 開到設定精靈驗證。
-- **實驗 `"Googlebook AMD HX370 native amdgpu (experimental)"`**（`lapis-debug.conf`）：在 `early-boot` 載入一次 `amdgpu`、絕不啟動 `gbos_efifb`，設定 `ro.hardware.vulkan=radeon` 並依 sysfs `DRIVER=amdgpu` 指定 HWC 的 DRM 裝置。**誠實揭露**：此選項尚未在實機測試，且基礎映像的 `minigbm` gralloc 尚無 `amdgpu` 後端；若選此項出現黑畫面，請重開機選預設的 `"Googlebook AMD HX370 safe"`。
+- **實驗 `"Googlebook AMD HX370 native amdgpu (experimental)"`**（`lapis-debug.conf`）：在 `early-boot` 載入一次 `amdgpu`、絕不啟動 `gbos_efifb`，設定 `ro.hardware.vulkan=radeon` 並依 sysfs `DRIVER=amdgpu` 指定 HWC 的 DRM 裝置。safe 與 native 兩個選項載入同一顆 `/vendor/lib64/libminigbm_gralloc.so`（`tools/minigbm` 重建，含 `backend_amdgpu` 與 `backend_vkms`）。**誠實揭露**：此選項尚未在實機測試；若選此項出現黑畫面，請重開機選預設的 `"Googlebook AMD HX370 safe"`。
 
 ## 回報你的機器
 
@@ -245,13 +245,15 @@ install/gbos-report.sh --probe gbos-probe --out gbos-report
 | `profiles/` | 機型設定：`kano/`（`profile.toml` 的參數、韌體與封鎖清單，`vendor.py` 的 vendor 修改，音效來源清單）、`generic-x86/`（沒有 GPU 驅動的機器：GOP framebuffer + SwiftShader，實驗性）、`amd-hx370/`（AMD Ryzen AI 9 HX 370：預設 safe GOP + SwiftShader，另附 experimental native amdgpu 選項）與全專案的安全規則 `_safety.toml`；新機型見 [docs/NEW-DEVICE.md](docs/NEW-DEVICE.md) |
 | `tests/` | 快速防呆測試、完整流程、可重現性、安裝碟 QEMU 測試、harness 測試（見下面「測試」） |
 | `tools/mesa/` | `amd-hx370` 用的 Android x86-64 Mesa RADV（`vulkan.radeon.so`）與 loader probe 建置腳本、ELF 檢查器及第三方授權聲明（`NOTICES.txt`） |
+| `tools/minigbm/` | amd-hx370 的 `/vendor/lib64/libminigbm_gralloc.so` 重建腳本（safe 與 native 共用這一顆檔）。`NOTICES.txt` 進發佈壓縮檔，builder 會把它裝進映像。建置腳本、`amdgpu_linear.c` 與 `upstream-delta.patch` 只在 git repo |
 | `tools/harness/` | 開發用的遠端實機測試工具（EC 電源控制、序列埠、增量推送、NVMe 安裝）；個人設定放在 `kano-env.local.sh` |
 | `tools/release/` | 安裝包與公開 repo 的匯出腳本 |
 | `docs/` | 韌體、狀態、安全模型、技術說明、內建碟安裝、新機型適配、開發紀錄 |
 
 發版的安裝包（`googlebook-anywhere-<版本>.tar.gz`）只有 `README.md`、`LICENSE`、`base/`、`builder/`、`install/`、`profiles/`、`docs/`、`tools/mesa/`
-與 `tests/` 的 `builder`、`install`、`probe`、`report`、`stick`、`update`，另外附 `tests/builder` 會用到的 `tools/release/png-ok.py` 與
-`tools/release/published-images.sha256`；其餘的 `tools/` 與 `tests/harness/` 只在 git repo 裡。
+與 `tests/` 的 `builder`、`install`、`probe`、`report`、`stick`、`update`，另外附 `tools/minigbm/NOTICES.txt`（映像安裝 notice 時要讀）、
+`tests/builder` 會用到的 `tools/release/png-ok.py` 與 `tools/release/published-images.sha256`。
+`tools/minigbm` 的建置腳本、`amdgpu_linear.c` 與 `upstream-delta.patch`，以及其他 `tools/` 與 `tests/harness/`，只在 git repo 裡。
 
 ## 開發者
 
@@ -310,13 +312,16 @@ tests/stick/qemu-install.py --asis <工作目錄> <Googlebook 映像> <安裝碟
 - 第 1 行必須正好是 `# Googlebook Anywhere <tag>`（例如 `# Googlebook Anywhere v0.2.1`）。拿掉標題上的 ` (未發布)`。
 - 第 2 行是空行。
 - 第 3 行必須正好是 `<!-- release-status: released -->`（開發期間是 `unreleased`）。寫在別行的 released 不算。
+- 版本字串 `Googlebook Anywhere v…` 只能出現在頂格的 `# Googlebook Anywhere v…` 版本標題行（不縮排、不放進清單或引用、不用 setext、不用 `##`）；內文提到舊版本時只寫 `v0.2.1` 這種版本號。
 - 整個檔案只接受純 Markdown（除了第 3 行的狀態註解外，行內 code span 以外的任何原始 HTML 標籤、註解或 `<https://...>` 自動連結一律拒絕；任何數字字元參照 `&#`——不論是否帶分號——與具名字元參照 `&name;` 一律拒絕；含空白、引號、括號、title 或跨行的連結目標 `](...)` 一律拒絕；跳脫方括號 `\[`、`\]` 與跳脫括號 `\(`、`\)` 一律拒絕；連結目標裡的反引號、參考式連結 `[文字][標籤]` 與連結定義 `[標籤]: 網址` 一律拒絕，請用 `[文字](網址)`；第 3 行以外的 HTML 註解 `<!--` 一律拒絕），且從頭到尾不能出現任何未發布字樣（包含三個反引號或 `~~~` 圍起來的程式碼區塊、縮排區塊，以及舊版本段落，沒有任何豁免）：除了逐行檢查列出的字樣外，也會以每個 Markdown 段落（空行或僅含 `>` 的行、setext 底線／分隔線、清單項目、表格列或標題，包含引用區塊內）為單位，在移除連結目標（`](...)`）與單行參考連結標籤（`][...]`）後，並把圖片的 `![`、GitLab 行內差異的 `{+ +}`／`[+ +]`／`{- -}` 與行內數學式的 `` $` ``／`` `$ `` 當成標記移除後，以兩種英文檢視（一種刪除標記符號並將空白與換行折成單一空白，另一種將標記符號與 `-_/` 換成空白再將空白與換行折成單一空白）及一種中文檢視（僅刪除標記符號、空白與換行）比對，因此跨行換行、清單或引用續行、連字號／底線／斜線、連結或強調標記拆開的列出字樣一樣會被擋下。限制：同一段落內相鄰的表格儲存格或句子接起來若剛好湊出禁語仍可能被擋下（請換個寫法）；刻意混淆（例如長得像的字母、不可見字元）不在這個檢查的範圍內——打 tag 的 commit 會經過審查。這一段要拿掉標題的 `(未發布)` 和導言的「這一版還沒有發布。」。會被擋下的字樣還有：未發布、還沒有發布、還沒發布、待發布、即將發布、沒正式發布、沒有正式發布、未正式發布、未發佈、還沒有發佈、還沒發佈、未发布、unreleased、unpublished、not yet released（英文不分大小寫）。
 
 私有 GitLab 專案的 CI/CD 變數 `GBOS_REQUIRE_PRIVATE_SCAN` 寫在專案設定，不寫進 repo。沒有設、去頭尾空白後是空字串、`0` 或 `false`（不分大小寫）時，真正的公開匯出仍會 SKIP。其他任何非空值（包含 `1` 和 `true`）都會強制掃描，缺少 `tools/release/private-patterns.txt` 就失敗。不要把這個變數勾成 Protect variable，否則未受保護的分支和 merge request pipeline 拿不到它，會在沒有掃描的情況下跑。公開 CI 不要設這個變數。
+
+打 tag 的 pipeline 會核對發行說明的第一個標題與 tag 一致，只發布該版本的段落（保留三個反引號或 `~~~` 圍起來的程式碼區塊內的標題），並在結尾補上指向同一個 tag 的完整 `docs/RELEASE-NOTES.md` 歷史絕對連結，讓發版附加檔案保持好找。
 
 </details>
 
 ## 授權
 
-本 repo 的腳本與文件以 GPL-3.0-or-later 授權（Copyright 2026 ImL1s，全文見 `LICENSE`）。例外：`tests/builder/fixtures/extract-ikconfig` 是核心 `scripts/extract-ikconfig` 的逐位元組複本，只給測試當獨立行程呼叫，沒有和本 repo 的程式連結。檔頭只寫 “Licensed under the terms of the GNU General Public License.”，沒有 SPDX、也沒有版本；核心對沒有 SPDX 標記的檔案適用核心自己的 COPYING（GPL-2.0-only）。同目錄的 `kernel-LICENSES-preferred-GPL-2.0` 與 `kernel-COPYING` 是 kernel/common `3938c8d97142` 的 `LICENSES/preferred/GPL-2.0` 與 `COPYING` 逐位元組複本。說明在同目錄的 `extract-ikconfig.SOURCE`。Googlebook 映像、裡面的 HAL／APEX、
+本 repo 的腳本與文件以 GPL-3.0-or-later 授權（Copyright 2026 ImL1s，全文見 `LICENSE`）。例外：`tools/minigbm/amdgpu_linear.c` 與 `tools/minigbm/upstream-delta.patch`（BSD-3-Clause；`amdgpu_linear.c` 保留被複製段落的 Chromium OS Authors 著作權並加上 Copyright 2026 ImL1s），以及 `tools/minigbm/stock-dynsyms.txt` 與 `tools/minigbm/stock-undefsyms.txt`（原廠函式庫的符號清單）。libdrm 標頭為 MIT，全文在 `tools/minigbm/NOTICES.txt`。`tools/minigbm/build-libminigbm-gralloc.sh`、`tools/minigbm/README.md` 與 `tools/minigbm/SOURCES.txt` 仍是 GPL-3.0-or-later。另一個例外：`tests/builder/fixtures/extract-ikconfig` 是核心 `scripts/extract-ikconfig` 的逐位元組複本，只給測試當獨立行程呼叫，沒有和本 repo 的程式連結。檔頭只寫 “Licensed under the terms of the GNU General Public License.”，沒有 SPDX、也沒有版本；核心對沒有 SPDX 標記的檔案適用核心自己的 COPYING（GPL-2.0-only）。同目錄的 `kernel-LICENSES-preferred-GPL-2.0` 與 `kernel-COPYING` 是 kernel/common `3938c8d97142` 的 `LICENSES/preferred/GPL-2.0` 與 `COPYING` 逐位元組複本。說明在同目錄的 `extract-ikconfig.SOURCE`。Googlebook 映像、裡面的 HAL／APEX、
 韌體與 ChromeOS 音效設定屬於各自的權利人，本 repo 不包含、也不散布；建置時由腳本從原始來源取得，適用原始授權。

@@ -1,0 +1,126 @@
+Third-Party Source & License Notices for the amd-hx370 libminigbm_gralloc.so
+=============================================================================
+
+The amd-hx370 image installs one rebuilt library at
+/vendor/lib64/libminigbm_gralloc.so. Both the safe entry and the native
+entry load that file. builder/vendor.sh copies this notices file to
+/vendor/etc/NOTICES-amd-hx370-minigbm.txt when [gralloc] is set.
+
+The library is built by tools/minigbm/build-libminigbm-gralloc.sh from:
+
+  - AOSP platform/external/minigbm
+    commit ce79bbee67b3e2ea7abb110e1415e9ceceaa6471
+    tree   95c2eb6837a39a6ef62ae454c5d9767cf2066c53
+  - tools/minigbm/upstream-delta.patch, the upstream changes c662136
+    (drop VIRTGPU_PARAM_GUEST_VRAM / RESOURCE_SYNC), 9d21b5c
+    (drv_is_protected_usage_permitted), and 0c4f081 (nvl_ids, Intel
+    NVL-S/NVL-P PCI ids, not AMD Navi), applied on that commit
+  - tools/minigbm/amdgpu_linear.c (Copyright 2026 ImL1s, plus the
+    Chromium OS Authors copyright on the parts copied from minigbm)
+  - libdrm 2.4.123 headers. The library links the image's libdrm.so;
+    it does not embed libdrm.
+    sha256 a2b98567a149a74b0f50e91e825f9c0315d86e7be9b74394dae8b298caadb79e
+
+--------------------------------------------------------------------------------
+1. minigbm — BSD-3-Clause
+--------------------------------------------------------------------------------
+The pinned tree's LICENSE file, quoted as it appears there:
+
+// Copyright (c) 2017 The Chromium OS Authors. All rights reserved.
+//
+// Redistribution and use in source and binary forms, with or without
+// modification, are permitted provided that the following conditions are
+// met:
+//
+//    * Redistributions of source code must retain the above copyright
+// notice, this list of conditions and the following disclaimer.
+//    * Redistributions in binary form must reproduce the above
+// copyright notice, this list of conditions and the following disclaimer
+// in the documentation and/or other materials provided with the
+// distribution.
+//    * Neither the name of Google Inc. nor the names of its
+// contributors may be used to endorse or promote products derived from
+// this software without specific prior written permission.
+//
+// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+// "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+// LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+// A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+// OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+// SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+// LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+// DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+// THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+// (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+// OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+amdgpu_linear.c keeps the copyright lines of the copied parts
+(Copyright 2016 The Chromium OS Authors and Copyright 2020 The Chromium
+OS Authors) and adds Copyright 2026 ImL1s. SPDX-License-Identifier:
+BSD-3-Clause.
+
+--------------------------------------------------------------------------------
+2. libdrm 2.4.123 headers — MIT
+--------------------------------------------------------------------------------
+Compiled against xf86drm.h, include/drm/drm_fourcc.h, and
+include/drm/amdgpu_drm.h from libdrm 2.4.123. Each header carries an
+MIT permission notice. Copyright lines:
+
+xf86drm.h
+  Copyright 1999, 2000 Precision Insight, Inc., Cedar Park, Texas.
+  Copyright 2000 VA Linux Systems, Inc., Sunnyvale, California.
+
+drm_fourcc.h
+  Copyright 2011 Intel Corporation
+
+amdgpu_drm.h
+  Copyright 2000 Precision Insight, Inc., Cedar Park, Texas.
+  Copyright 2000 VA Linux Systems, Inc., Fremont, California.
+  Copyright 2002 Tungsten Graphics, Inc., Cedar Park, Texas.
+  Copyright 2014 Advanced Micro Devices, Inc.
+
+Permission is hereby granted, free of charge, to any person obtaining a
+copy of this software and associated documentation files (the "Software"),
+to deal in the Software without restriction, including without limitation
+the rights to use, copy, modify, merge, publish, distribute, sublicense,
+and/or sell copies of the Software, and to permit persons to whom the
+Software is furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice (including the next
+paragraph) shall be included in all copies or substantial portions of the
+Software.
+
+xf86drm.h and include/drm/drm_fourcc.h use that inclusion sentence.
+include/drm/amdgpu_drm.h uses this one instead:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+Disclaimer paragraphs, quoted as they appear in libdrm 2.4.123:
+
+xf86drm.h
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
+PRECISION INSIGHT AND/OR ITS SUPPLIERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
+OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
+ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+DEALINGS IN THE SOFTWARE.
+
+include/drm/drm_fourcc.h
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
+VA LINUX SYSTEMS AND/OR ITS SUPPLIERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
+OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
+ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
+OTHER DEALINGS IN THE SOFTWARE.
+
+include/drm/amdgpu_drm.h
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
+THE COPYRIGHT HOLDER(S) OR AUTHOR(S) BE LIABLE FOR ANY CLAIM, DAMAGES OR
+OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
+ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
+OTHER DEALINGS IN THE SOFTWARE.

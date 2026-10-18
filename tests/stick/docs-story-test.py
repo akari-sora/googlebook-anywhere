@@ -4,6 +4,7 @@
 No network, no assemble, no write-usb. A restored claim that the repo
 commands cannot build the stick fails this check.
 """
+import re
 import sys
 from pathlib import Path
 
@@ -118,6 +119,84 @@ def main():
         fail("maint.pins no longer pins linux 7.2.7.arch1-1")
     if "做不到的：自動旋轉與光感測" not in root:
         fail("unrelated hardware limit was rewritten")
+    neg_amdgpu = re.compile(r"(?:lacks\s+an?|no|沒有)\s*`?amdgpu`?\s*`?backend`?", re.IGNORECASE)
+    en = read(REPO / "README.en.md")
+    for phrase in ("BSD-3-Clause", "GBOS_MINIGBM", "tools/minigbm/NOTICES.txt"):
+        if phrase not in root or phrase not in en:
+            fail(f"README parity lost {phrase}")
+    for rname, rtext in (("README.md", root), ("README.en.md", en)):
+        row = next((ln for ln in rtext.splitlines() if ln.startswith("| `tools/minigbm/` |")), None)
+        if row is None or not all(
+            tok in row
+            for tok in (
+                "/vendor/lib64/libminigbm_gralloc.so",
+                "NOTICES.txt",
+                "amdgpu_linear.c",
+                "upstream-delta.patch",
+            )
+        ):
+            fail(f"README parity lost tools/minigbm/ layout row in {rname}")
+        pkg = next((p for p in rtext.split("\n\n") if "googlebook-anywhere-<版本>.tar.gz" in p), None)
+        if pkg is None or not all(
+            tok in pkg for tok in ("tools/minigbm/NOTICES.txt", "amdgpu_linear.c", "upstream-delta.patch")
+        ):
+            fail(f"README parity lost tools/minigbm/NOTICES.txt in {rname} release-package list")
+    if (REPO / "docs/RELEASE-PROCESS.md").exists():
+        fail("docs/RELEASE-PROCESS.md must be folded into README.md and README.en.md")
+    if "只發布該版本的段落" not in root or "指向同一個 tag 的完整 `docs/RELEASE-NOTES.md` 歷史絕對連結" not in root:
+        fail("README.md release rules lost the folded RELEASE-PROCESS sentence")
+    if (
+        "publishes only that version’s section (preserving headings inside fenced code blocks)" not in en
+        or "appends an absolute link to the full `docs/RELEASE-NOTES.md` history at the same tag" not in en
+    ):
+        fail("README.en.md release rules lost the folded RELEASE-PROCESS sentence")
+    if "只能出現在頂格" not in root:
+        fail("README.md lost the version-heading rule that the version string `Googlebook Anywhere v…` may appear only in a top-level `# Googlebook Anywhere v…` heading line")
+    if "may appear only in a top-level" not in en:
+        fail("README.en.md lost the version-heading rule that the version string `Googlebook Anywhere v…` may appear only in a top-level `# Googlebook Anywhere v…` heading line")
+    if "都只記錄不攔截（report-only），所以 `PASS` 不代表這些韌體釘選已被這個檢查核對" not in read(RELEASE):
+        fail("docs/RELEASE-NOTES.md lost the phrase saying firmware-declaring drivers are report-only, so a PASS does not attest the firmware pins")
+    for path in (
+        REPO / "docs/COMPATIBILITY.md",
+        REPO / "docs/COMPATIBILITY.en.md",
+        REPO / "docs/TROUBLESHOOTING.md",
+        REPO / "docs/TROUBLESHOOTING.en.md",
+    ):
+        lines = read(path).splitlines()
+        if not any("GBOS_DEV_KERNEL_DIR" in ln and "GBOS_MINIGBM" in ln for ln in lines):
+            fail(
+                f"{path.relative_to(REPO)} build-requirement bullet does not name both "
+                "GBOS_DEV_KERNEL_DIR and GBOS_MINIGBM"
+            )
+    for path in (
+        REPO / "README.md",
+        REPO / "README.en.md",
+        REPO / "docs/COMPATIBILITY.md",
+        REPO / "docs/COMPATIBILITY.en.md",
+        REPO / "docs/TROUBLESHOOTING.md",
+        REPO / "docs/TROUBLESHOOTING.en.md",
+        REPO / "profiles/amd-hx370/profile.toml",
+    ):
+        text = read(path)
+        lines = text.splitlines()
+        if neg_amdgpu.search(text):
+            fail(f"{path.relative_to(REPO)} still says minigbm has no amdgpu backend")
+        if path.parent == REPO / "docs":
+            has_gralloc = any("backend_amdgpu" in ln and "sha256" in ln and "[gralloc]" in ln for ln in lines)
+        elif path.name == "profile.toml":
+            has_gralloc = (
+                any("backend_amdgpu" in ln and "backend_vkms" in ln for ln in lines)
+                and any("[gralloc]" in ln and "libminigbm_gralloc.so" in ln for ln in lines)
+                and any("GBOS_MINIGBM" in ln and "sha256" in ln for ln in lines)
+                and bool(re.search(r"^\[gralloc\]\nsha256 = \"[0-9a-f]{64}\"$", text, re.MULTILINE))
+            )
+        else:
+            has_gralloc = (
+                any("backend_amdgpu" in ln and "backend_vkms" in ln and "libminigbm_gralloc.so" in ln for ln in lines)
+                and any("[gralloc]" in ln and "GBOS_MINIGBM" in ln and "sha256" in ln for ln in lines)
+            )
+        if not has_gralloc:
+            fail(f"{path.relative_to(REPO)} does not describe the pinned backend_amdgpu gralloc")
     print("docs-story: clean")
 
 

@@ -7,9 +7,14 @@
 #   2. "Googlebook AMD HX370 native amdgpu (experimental)" (lapis-debug.conf): amdgpu is loaded once on early-boot from
 #      /vendor/lib/dev-modules, gbos_efifb is never started, ro.hardware.vulkan=radeon + ro.hwui.use_vulkan=true +
 #      debug.renderengine.vulkan=true, and vendor.hwc.drm.device is set from sysfs to the DRM card whose driver is
-#      amdgpu. NOTE: stock minigbm lacks an amdgpu backend, so the native entry is incomplete and may show a black
-#      screen until minigbm is rebuilt for amdgpu; if the native entry shows a black screen, reboot and select the
+#      amdgpu. [gralloc] replaces the one /vendor/lib64/libminigbm_gralloc.so both entries load
+#      (backend_amdgpu for native, backend_vkms kept for the safe entry). QEMU has no amdgpu, so the native
+#      entry is not tested there. Hardware is still untested; a black native screen means reboot into the
 #      default "Googlebook AMD HX370 safe" entry.
+#      Native-entry hardware gate (docs/NEW-DEVICE.md): before calling the native entry accepted, import a
+#      YV12 640x480 TEXTURE into RADV with VkImageDrmFormatModifierExplicitCreateInfoEXT, LINEAR, plane
+#      pitches 1024/512/512, and sample it. Upstream GFX10+ does not double that stride. Radeon 890M is
+#      GFX11.5. If RADV rejects the pitch, switch to the upstream branch. This is not a QEMU check.
 # Stock lapis has no amdgpu (CONFIG_TRIM_UNUSED_KSYMS). build.sh refuses this profile unless GBOS_DEV_KERNEL_DIR points
 # at the Track 2 self-built GKI (.config, bzImage, modules/amdgpu.ko, modules/modules.dep) and passes devprofile.py
 # check-kconfig.
@@ -171,6 +176,42 @@ from = "linux-firmware"
 src = "amdgpu/vpe_6_1_0.bin"
 sha256 = "10a900e43e8633bc1ebe03d2d88f9b3e2f96a43c1961b190023fa1d26423a41a"
 
+# AX210 Wi-Fi (PCI 8086:2725 rev 1A, subsystem 8086:0024). The lapis iwlwifi module
+# requests iwlwifi-ty-a0-gf-a0-89.ucode and iwlwifi-ty-a0-gf-a0.pnvm (API 89, the same
+# pin kano uses for so-a0-gf-a0). linux-firmware 20260810 WHENCE lists those as File
+# intel/iwlwifi/iwlwifi-ty-a0-gf-a0-89.ucode (line 979, Version 86.f7dcb3ee.0, the
+# newest ty-a0-gf-a0 API in the tag) and File intel/iwlwifi/iwlwifi-ty-a0-gf-a0.pnvm
+# (line 1079). path is the name under /vendor/firmware; src is the tag path. Same
+# split as profiles/kano/profile.toml.
+[[firmware]]
+path = "iwlwifi-ty-a0-gf-a0-89.ucode"
+from = "linux-firmware"
+src = "intel/iwlwifi/iwlwifi-ty-a0-gf-a0-89.ucode"
+sha256 = "9c63b42020d69598af746b7e265427f459ab773f1e31969d861e3e7b5fa30de4"
+
+[[firmware]]
+path = "iwlwifi-ty-a0-gf-a0.pnvm"
+from = "linux-firmware"
+src = "intel/iwlwifi/iwlwifi-ty-a0-gf-a0.pnvm"
+sha256 = "1059f93a225e5c644d7c9c49302277b102f532b34672ef046c458befc1675fbb"
+
+# AX210 Bluetooth (USB 8087:0032). btintel builds intel/ibt-%04x-%04x.sfi and
+# intel/ibt-%04x-%04x-%s.sfi. This hardware is the unsuffixed Solar pair: WHENCE
+# 20260810 lines 4143-4144 (ibt-0041-0041.sfi / .ddc), in the same Version block as
+# kano's ibt-0040-0041 (lines 4145-4157, BT_Solar). The tag has no
+# ibt-0041-0041-usb/pci/iml file. The .ddc bytes match ibt-0040-0041.ddc.
+[[firmware]]
+path = "intel/ibt-0041-0041.sfi"
+from = "linux-firmware"
+src = "intel/ibt-0041-0041.sfi"
+sha256 = "2d891022ded1d2d8b208cc5b7632f3098c761ae099024de971e4158dd5681a9c"
+
+[[firmware]]
+path = "intel/ibt-0041-0041.ddc"
+from = "linux-firmware"
+src = "intel/ibt-0041-0041.ddc"
+sha256 = "fe272982577efdc289cfe3e8bedafca607c0b7d6c9df1aab1880e22ef930d077"
+
 [audio]
 card = ""
 config_dir = ""
@@ -178,6 +219,24 @@ sources = ""
 
 [wifi]
 modprobe = []
+
+# Speakers: lapis vendor_dlkm lib/modules/modules.blocklist is the one line "blocklist snd_hda_intel"
+# (STOCK_MODULES_BLOCKLIST). kano (SOF) and generic-x86 boot that same partition, so it is not
+# rewritten. unblock modprobes snd_hda_intel from /vendor/lib/modules without -b (ueventd's
+# modprobe -b is what honors the file). This kernel has CONFIG_MODPROBE_PATH="", so
+# request_module cannot pull a codec in. snd_hda_codec_alc269 is the shipped lapis module
+# (install/probe/lapis-modules.tsv:5895; there is no snd_hda_codec_alc245 row). It is loaded
+# before snd_hda_intel. ALC245 is the codec id the controller reports; the lapis set ships
+# that family as snd_hda_codec_alc269. The alias column is "-" because gen-module-list KEEP
+# does not record hdaudio: patterns.
+# Bluetooth: bluetooth.ko is staged only under /vendor/lib/dev-modules; btusb.ko in vendor_dlkm
+# depends on it and is modprobed after it, whether the bluetooth row is vendor or dev.
+# Wi-Fi: AX210 is an mvm device. iwlmvm is in the shipped set (lapis-modules.tsv:2864).
+# modprobe of an already-loaded iwlmvm succeeds. Names and order are the amd-hx370 rows of
+# profiles/_safety.toml [modules]. Output is load, then unblock.
+[modules]
+unblock = ["snd_hda_intel"]
+load = ["bluetooth", "btusb", "snd_hda_codec_alc269", "iwlmvm"]
 
 [display]
 stack = "native"
@@ -199,3 +258,13 @@ power_button = "stock"
 
 [hooks]
 vendor = "vendor.py"
+
+# One vendor allocator, loaded by both the safe entry and the native entry.
+# tools/minigbm/build-libminigbm-gralloc.sh (Linux, NDK r30, git repo only) produces the file
+# and exits unless the linked bytes match this sha256. The source pins that produced it
+# are recorded next to LIB_SHA in that script. GBOS_MINIGBM must match this sha256 or the
+# image build stops. The builder installs those verified
+# bytes at lib64/libminigbm_gralloc.so, mode 0644, keeping the stock file_contexts. Profiles
+# without this table (kano, generic-x86) do not replace the stock library.
+[gralloc]
+sha256 = "297457940c9090754e71d4027e157167825edab4139eb7d8828d1660b98e0d42"

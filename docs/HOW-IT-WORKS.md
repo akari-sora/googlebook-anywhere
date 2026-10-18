@@ -21,6 +21,23 @@
      （只有 Android 掛上 /data 才會寫到那裡）。
    全部通過才把 `<name>.partial` 改名成正式檔名。
 
+`vendor.sh` 在完成映像前執行 `builder/kmod/check-firmware.py`：離線讀取最後 vendor 樹（含額外／自建模組）、
+原廠 vendor_dlkm／system_dlkm 與 ESP initrd 的每個 `.ko` 的 `.modinfo`，逐一核對 `firmware=`（也就是
+`modinfo -F firmware`／`MODULE_FIRMWARE`）與映像實際安裝的 `/vendor/firmware`，不查主機或下載快取。
+必要模組是 profile 的 `kmods`、`wifi.modprobe`、`[modules].load/unblock`，以及 builder 新增／替換的 vendor 模組
+（與原始 vendor 樹比對，含 `builder/kmod` 與 hook 新增的模組；`GBOS_DEV_KERNEL_DIR` 的 `lib/dev-modules` 則依 profile 選取）、啟用 `pci_stub_ids` 時要加入 initrd 的 `pci-stub`。
+這些模組缺少必要檔案會停止建置，訊息列出 profile、模組與韌體名稱；萬用字元至少要找到一個非空檔案。
+其餘原廠模組只報告，缺韌體或模組 metadata 錯誤都不會擋住建置；不因檔案存在、黑名單或間接依賴就提升為必要。
+數字版本不會自動視為相容：若驅動確實會嘗試一段版本，profile 可加 `[[firmware_check.alternatives]]`，指定
+`module`（精確名稱，連字號改底線）、`firmware`（宣告名稱或 glob）、`files`（可接受路徑／有限版本 glob 的陣列）
+與 `reason`。`[[firmware_check.optional]]` 用同樣的 `module`、`firmware`、`reason` 明列可缺少的檔案；空白理由不接受。
+例如 `firmware = "iwlwifi-so-a0-gf-a0-99.ucode"` 可在有驅動版本範圍依據時，配
+`files = ["iwlwifi-so-a0-gf-a0-8[3-9].ucode", "iwlwifi-so-a0-gf-a0-9[0-9].ucode"]`。
+optional／alternatives 規則只套用必要模組；若規則點名了屬於 report-only 的模組，不會把該模組升為必要，但會在建置 log 印出一行警告並記入報告的 `warnings`。結果（每個模組的 `scope`、`required_by`、來源樹相對路徑、逐檔狀態，含 optional 理由及替代檔）
+寫入 `<GBOS_OUT>/firmware-report.json`；optional、未使用規則警告與一行 `firmware report-only:` 原廠模組缺檔摘要也印在建置 log，`firmware check:` 結果行並同時印出必要模組數與必要韌體宣告數（例如 `required: 4 modules, 0 firmware declarations`）。
+目前的 `kano`、`generic-x86` 與 `amd-hx370` 三個 profile 中，必要模組都沒有宣告任何韌體；真正宣告韌體的驅動（`iwlwifi`、`btintel`、`xe`、`amdgpu`、SOF 等，含間接依賴或開機腳本載入的模組）目前都屬於 report-only，因此 `PASS` 不代表那些釘選已被這個檢查核對。
+這只檢查必要模組靜態宣告的韌體，不保證硬體可用，也不涵蓋驅動未宣告、執行時才組合出的檔名；既有 profile 的 `[[firmware]]` 韌體 SHA-256 釘選仍由 `fetch-inputs.sh` 與 `vendor.sh` 核對。
+
 ## 開機與顯示
 
 - **自帶 systemd-boot 的 USB 映像**：base 階段把官方 recovery 映像轉成 GPT 映像，ESP 放 `kernel.efi`、`initrd.img` 與 loader

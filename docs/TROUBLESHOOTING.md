@@ -138,8 +138,19 @@
   - 變更 Secure Boot 設定**之前**，**務必先備份 BitLocker 復原金鑰**，
     否則變更後可能無法解密磁碟。
   - 它提供兩個開機項目：預設「safe」（不載入 `amdgpu`）與
-    「native amdgpu (experimental)」（載入原生 `amdgpu`）。stock minigbm 沒有 amdgpu backend，native 項目可能黑畫面；請改選 safe。
-  - 建置需要自建核心（`GBOS_DEV_KERNEL_DIR`）與 RADV，否則 `build.sh` 拒絕（見 `profiles/amd-hx370/profile.toml`）。
+    「native amdgpu (experimental)」（載入原生 `amdgpu`）。
+    兩個項目都會在 early-boot 載入同樣的五個模組：`bluetooth`、`btusb`、
+    `snd_hda_codec_alc269`、`iwlmvm`、`snd_hda_intel`。safe 與 native 的差別是
+    `amdgpu`，不會略過 HDA、藍牙或 `iwlmvm`。
+  - 這個 profile 帶重建的 gralloc，含 `backend_amdgpu`（sha256 釘在 `[gralloc]`），safe 與 native 共用這一顆檔。native 項目仍從未在實機上跑過，可能黑畫面；請改選 safe。
+  - 建置需要自建核心（`GBOS_DEV_KERNEL_DIR`）、RADV，以及 `[gralloc]` 指定、sha256 相符的 `GBOS_MINIGBM`（`tools/minigbm/build-libminigbm-gralloc.sh`，只在 git repo），否則 `build.sh` 拒絕（見 `profiles/amd-hx370/profile.toml`）。
+  - 建置需要 `GBOS_DEV_KERNEL_DIR/modules/bluetooth.ko`。這個檔案不在時，
+    build 會中止。這是建置前提，不是開機後補韌體就能修好的。
+  - 模組有載入、ALSA card 出現、Android 音訊 HAL／路由能播放，是不同層。
+    這個 profile 的 `[audio]`（`card`、`config_dir`、`sources`）仍是空的。
+  - 失敗時用唯讀指令分開看：`dmesg | grep -iE 'firmware|hda|bluetooth|btusb|iwl'`、
+    `lsmod`、`/proc/asound/cards`、`dumpsys media.audio_flinger`，以及 SELinux
+    AVC denials。模組載入的邊界見 `SAFETY.md` 第 9 點。
   - 見 `SAFETY.md`。
 
 ## 硬體功能限制

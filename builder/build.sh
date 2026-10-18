@@ -20,6 +20,9 @@
 # OV2740, upstream libcamera HAL); opt-in until proven on the hardware, required when the profile says camera.libcamera = true.
 # profiles/amd-hx370 (native amdgpu) refuses to build unless GBOS_DEV_KERNEL_DIR is the Track 2 self-built GKI
 # and that directory contains modules/amdgpu.ko. Stock lapis has no amdgpu.
+# A profile with [gralloc] (amd-hx370) also needs GBOS_MINIGBM (default <GBOS_INPUTS>/amd-hx370/libminigbm_gralloc.so
+# from tools/minigbm/build-libminigbm-gralloc.sh). Its sha256 must match gralloc.sha256. Profiles without the table
+# (kano, generic-x86) do not read that file.
 # GBOS_EC: opt-in ChromeOS EC features, a comma list of sensors (accelerometers -> auto-rotate), typec (USB-C
 # USB3/DisplayPort), buttons (side volume keys). Empty (default): the EC stays unreachable. See docs/SAFETY.md.
 # GBOS_TEST_AUTOOFF (developer-only; install/install.sh refuses it): empty = off. Otherwise seconds 60..7200.
@@ -113,6 +116,31 @@ if [ "$MODEL" = amd-hx370 ]; then
     for f in "$GBOS_RADV" "$GBOS_RADV_PROBE" "$GBOS_RADV_VKPROP" "$GBOS_GENERIC_PASTEL" "$GBOS_GENERIC_KO"; do
         [ -f "$f" ] || die "profiles/amd-hx370 needs $(basename "$f") at $f (tools/mesa/build-radv.sh, builder/fetch-generic-inputs.sh, builder/kmod/build-gbos_efifb.sh)"
     done
+    # [gralloc] is optional even on this model. Exit 3 means the table is absent.
+    # Any other failure is a broken profile load, not "no table".
+    gralloc_rc=0
+    gralloc_msg=$(python3 -c 'import sys
+sys.path.insert(0, sys.argv[1])
+try:
+    import devprofile
+    p = devprofile.load(sys.argv[2])
+except Exception as exc:
+    sys.stderr.write("profile load failed: %s\n" % exc)
+    sys.exit(1)
+sys.exit(0 if p.get("gralloc") else 3)
+' "$HERE/lib" "$GBOS_PROFILE" 2>&1) || gralloc_rc=$?
+    if [ "$gralloc_rc" -eq 0 ]; then
+        export GBOS_MINIGBM="${GBOS_MINIGBM:-${GBOS_INPUTS:-}/amd-hx370/libminigbm_gralloc.so}"
+        # Same rule as builder/lib/gralloc.py: a symlink is refused before the hash, including a link
+        # onto the build output. [ -f ] follows links, so the symlink test has to come first.
+        [ ! -L "$GBOS_MINIGBM" ] || die "GBOS_MINIGBM is a symlink: $GBOS_MINIGBM"
+        [ -f "$GBOS_MINIGBM" ] || die "profile gralloc needs libminigbm_gralloc.so at $GBOS_MINIGBM (see the git repo tools/minigbm/build-libminigbm-gralloc.sh)"
+        want=$(python3 "$HERE/lib/devprofile.py" get "$GBOS_PROFILE" gralloc.sha256)
+        got=$(python3 -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest())' "$GBOS_MINIGBM")
+        [ "$got" = "$want" ] || die "GBOS_MINIGBM sha256 ${got} differs from profile gralloc.sha256 ${want}"
+    elif [ "$gralloc_rc" -ne 3 ]; then
+        die "could not read [gralloc] from $GBOS_PROFILE${gralloc_msg:+: $gralloc_msg}"
+    fi
 fi
 for c in python3 mcopy mtype mdir zstd sha256sum cp readlink cmp; do command -v "$c" >/dev/null || die "missing command: $c"; done
 if [ "${GBOS_SKIP_SELFTEST:-}" = 1 ]; then
@@ -152,6 +180,7 @@ if ! bash "$HERE/vendor.sh" > "$GBOS_OUT/vendor.log" 2>&1; then
     tail -n 30 "$GBOS_OUT/vendor.log"; echo "stage 1 failed"; exit 1
 fi
 grep -q "^vendor tree ok$" "$GBOS_OUT/vendor.log" || { tail -n 30 "$GBOS_OUT/vendor.log"; echo "stage 1 ended without 'vendor tree ok'"; exit 1; }
+grep -E '^(firmware check:|firmware report-only:|OPTIONAL firmware:|UNUSED firmware rule:)' "$GBOS_OUT/vendor.log"
 
 echo "== stage 2: image + QEMU self-tests (about 8 minutes; log: $GBOS_OUT/image.log)"
 if ! python3 "$HERE/image.py" > "$GBOS_OUT/image.log" 2>&1; then

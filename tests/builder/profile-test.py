@@ -9,7 +9,7 @@ differential runs a vendored, sha256-pinned copy of the kernel script (fixtures/
 skips unless GNU grep/tr are available and zcat and gunzip can decompress a gzip
 member from stdin while keeping the trailing-garbage exit status 2.
 usage: tests/builder/profile-test.py"""
-import ast, contextlib, copy, hashlib, importlib.util, io, os, re, shutil, subprocess, sys, tempfile, tomllib
+import ast, contextlib, copy, hashlib, importlib.util, io, os, re, shlex, shutil, subprocess, sys, tempfile, tomllib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -432,12 +432,13 @@ SRC = (ROOT / "profiles/kano/profile.toml").read_text()
 tmp = Path(tempfile.mkdtemp(prefix="gbos-profile-test-"))
 
 
-def attempt(label, edit, expect, name="kano", extra_files=("audio-src.list", "vendor.py")):
+def attempt(label, edit, expect, name="kano", extra_files=("audio-src.list", "vendor.py"), src=None, src_root=None):
     d = tmp / label.replace(" ", "_") / name
     d.mkdir(parents=True)
+    origin = src_root or (ROOT / "profiles/kano")
     for f in extra_files:
-        shutil.copy(ROOT / "profiles/kano" / f, d / f)
-    text = edit(SRC)
+        shutil.copy(origin / f, d / f)
+    text = edit(SRC if src is None else src)
     (d / "profile.toml").write_text(text)
     try:
         devprofile.load(d)
@@ -484,6 +485,12 @@ attempt("hook-driven settings without a hook", sub('vendor = "vendor.py"', 'vend
 attempt("a hooks.vendor file that is not there", sub('vendor = "vendor.py"', 'vendor = "nothere.py"'), "is not a Python file")
 attempt("an audio source list that is not there", sub('sources = "audio-src.list"', 'sources = "nothere.list"'), "is not a file")
 attempt("TOML that does not parse", sub("[model]", "[model"), "")
+attempt("unblock snd_hda_intel on kano",
+        sub("[wifi]\n", "[modules]\nunblock = [\"snd_hda_intel\"]\nload = []\n[wifi]\n"),
+        "not allowlisted for kano")
+attempt("load bluetooth on kano",
+        sub("[wifi]\n", "[modules]\nunblock = []\nload = [\"bluetooth\"]\n[wifi]\n"),
+        "not allowlisted for kano")
 
 # the required blacklist is the whole v0.1 hard blacklist, and holds builder/image.py's EC_NEVER
 req = devprofile.load_safety()["blacklist"]["required"]
@@ -505,6 +512,10 @@ check("amd-hx370 is experimental, native display, kmods = [] in profile.toml (sa
       and amd["model"]["image_name"] == "googlebook-amd-hx370.img"
       and amd["display"]["stack"] == "native" and amd["display"]["hwc_backend"] == "client"
       and amd["kmods"] == [])
+check("amd-hx370 gralloc.sha256 pins the minigbm4 libminigbm_gralloc.so",
+      amd.get("gralloc") == {"sha256": "297457940c9090754e71d4027e157167825edab4139eb7d8828d1660b98e0d42"})
+check("kano and generic-x86 have no [gralloc] table",
+      "gralloc" not in kano and "gralloc" not in gx)
 amods, aics, aplain = devprofile.guards(amd)
 amd_extra = {"tpm_crb", "ccp", "amdtee", "spi_amd", "spi_amd_pci", "amd_sfh", "sp5100_tco"}
 check("amd-hx370 blacklist is generic-x86 plus AMD fTPM, PSP and SPI modules",
@@ -513,15 +524,46 @@ check("amd-hx370 blacklist is generic-x86 plus AMD fTPM, PSP and SPI modules",
 check("amd-hx370 keeps nvme_init, mei_me_driver_init and efi=noruntime",
       aics == ["nvme_init", "mei_me_driver_init"] and aplain == ["efi=noruntime"] and set(req) <= amods)
 fw = {f["path"]: f["sha256"] for f in amd["firmware"]}
+amdgpu_fw = [f for f in amd["firmware"] if f["path"].startswith("amdgpu/")]
 check("amd-hx370 pins 13 Strix Point blobs from linux-firmware 20260810",
-      amd["firmware_sources"]["linux_firmware_tag"] == "20260810" and len(fw) == 13
-      and all(f["from"] == "linux-firmware" and f["src"] == f["path"] for f in amd["firmware"])
+      amd["firmware_sources"]["linux_firmware_tag"] == "20260810" and len(amdgpu_fw) == 13
+      and all(f["from"] == "linux-firmware" and f["src"] == f["path"] for f in amdgpu_fw)
       and fw["amdgpu/gc_11_5_0_pfp.bin"] == "82ccf0265d841351183b011a79422799431f0c11f6d11165d64d7dfe404bda31"
       and fw["amdgpu/dcn_3_5_dmcub.bin"] == "d59800dbd65cb94fcfc0de0c47f463323b3abc260b3dbb7d9003b756024aaf13"
       and fw["amdgpu/psp_14_0_0_toc.bin"] == "da82e510ba90b3939656ecd2092870e5eef1c1b71ad2a4b776bc9e57bae1f05f"
       and fw["amdgpu/vpe_6_1_0.bin"] == "10a900e43e8633bc1ebe03d2d88f9b3e2f96a43c1961b190023fa1d26423a41a"
       and "amdgpu/smu_14_0_2.bin" not in fw and "amdgpu/isp_4_1_1.bin" not in fw
       and "amdgpu/umsch_mm_4_0_0.bin" not in fw)
+# AX210: PCI 8086:2725 -> iwlwifi-ty-a0-gf-a0-89.ucode + .pnvm; USB 8087:0032 -> ibt-0041-0041.sfi/.ddc.
+# path is what the driver requests under /vendor/firmware; src is the 20260810 WHENCE File path.
+AX210_FW = {
+    "iwlwifi-ty-a0-gf-a0-89.ucode": ("linux-firmware", "intel/iwlwifi/iwlwifi-ty-a0-gf-a0-89.ucode",
+                                     "9c63b42020d69598af746b7e265427f459ab773f1e31969d861e3e7b5fa30de4"),
+    "iwlwifi-ty-a0-gf-a0.pnvm": ("linux-firmware", "intel/iwlwifi/iwlwifi-ty-a0-gf-a0.pnvm",
+                                 "1059f93a225e5c644d7c9c49302277b102f532b34672ef046c458befc1675fbb"),
+    "intel/ibt-0041-0041.sfi": ("linux-firmware", "intel/ibt-0041-0041.sfi",
+                                "2d891022ded1d2d8b208cc5b7632f3098c761ae099024de971e4158dd5681a9c"),
+    "intel/ibt-0041-0041.ddc": ("linux-firmware", "intel/ibt-0041-0041.ddc",
+                                "fe272982577efdc289cfe3e8bedafca607c0b7d6c9df1aab1880e22ef930d077"),
+}
+
+
+def ax210_firmware_pinned(entries):
+    got = {f["path"]: (f["from"], f["src"], f["sha256"]) for f in entries if not f["path"].startswith("amdgpu/")}
+    return (got == AX210_FW
+            and all(re.fullmatch(r"[0-9a-f]{64}", sha) and src and path
+                    for path, (_src_from, src, sha) in got.items()))
+
+
+check("amd-hx370 AX210 Wi-Fi and Bluetooth firmware (path, src, 64-hex sha256)",
+      ax210_firmware_pinned(amd["firmware"]) and len(amd["firmware"]) == 17)
+for drop_path in AX210_FW:
+    dropped = [f for f in amd["firmware"] if f["path"] != drop_path]
+    check(f"dropping {drop_path} fails the AX210 firmware pin",
+          len(dropped) == 16 and not ax210_firmware_pinned(dropped))
+sha_mut = copy.deepcopy(amd["firmware"])
+next(f for f in sha_mut if f["path"] == "iwlwifi-ty-a0-gf-a0-89.ucode")["sha256"] = "0" * 64
+check("changing the AX210 ucode sha256 fails the pin", not ax210_firmware_pinned(sha_mut))
 ent = devprofile.make_entries(amd, VCMD)
 bl_debug = next(o for o in ent["debug"] if o.startswith("module_blacklist=")).split("=", 1)[1].split(",")
 bl_quiet = next(o for o in ent["quiet"] if o.startswith("module_blacklist=")).split("=", 1)[1].split(",")
@@ -545,6 +587,313 @@ check("amd-hx370 experimental native entry (debug) allows amdgpu and keeps amdgp
 check("amd-hx370 menu titles distinguish safe default from experimental native amdgpu",
       (amd["entries"]["quiet"], amd["entries"]["debug"]) ==
       ("Googlebook AMD HX370 safe", "Googlebook AMD HX370 native amdgpu (experimental)"))
+check("amd-hx370 modules unblock snd_hda_intel and load bluetooth, btusb, codec, iwlmvm",
+      amd["modules"] == {"unblock": ["snd_hda_intel"],
+                         "load": ["bluetooth", "btusb", "snd_hda_codec_alc269", "iwlmvm"]}
+      and amd["_module_dirs"] == {"snd_hda_intel": "vendor", "bluetooth": "dev", "btusb": "vendor",
+                                  "snd_hda_codec_alc269": "vendor", "iwlmvm": "vendor"})
+AMD_BOOT = (
+    "on early-boot\n"
+    "    exec u:r:vendor_modprobe:s0 -- /vendor/bin/modprobe --dirname=/vendor/lib/dev-modules bluetooth\n"
+    "    exec u:r:vendor_modprobe:s0 -- /vendor/bin/modprobe --dirname=/vendor/lib/modules btusb\n"
+    "    exec u:r:vendor_modprobe:s0 -- /vendor/bin/modprobe --dirname=/vendor/lib/modules snd_hda_codec_alc269\n"
+    "    exec u:r:vendor_modprobe:s0 -- /vendor/bin/modprobe --dirname=/vendor/lib/modules iwlmvm\n"
+    "    exec u:r:vendor_modprobe:s0 -- /vendor/bin/modprobe --dirname=/vendor/lib/modules snd_hda_intel\n"
+    "\n")
+check("amd-hx370 early-boot modprobe is bluetooth, btusb, alc269, iwlmvm, then snd_hda_intel, without -b",
+      devprofile.append_module_boot("", amd) == AMD_BOOT
+      and " -b" not in AMD_BOOT and "--use-blocklist" not in AMD_BOOT
+      and "exec_background" not in AMD_BOOT
+      and AMD_BOOT.index("snd_hda_codec_alc269") < AMD_BOOT.index("snd_hda_intel"))
+lapis_tsv = (ROOT / "install/probe/lapis-modules.tsv").read_text()
+check("shipped lapis set includes snd_hda_codec_alc269 and iwlmvm, and has no snd_hda_codec_alc245",
+      "\nsnd_hda_codec_alc269\t" in lapis_tsv and "\niwlmvm\t" in lapis_tsv
+      and "\nsnd_hda_codec_alc245\t" not in lapis_tsv)
+storage_names = devprofile._storage_firmware_module_names()
+storage_expected = frozenset({
+    "ahci", "ahci_platform", "ccp", "ccp_crypto", "libahci", "libata", "mei_me", "mtd", "nvme",
+    "sdhci_acpi", "sdhci_pci", "spi_amd", "spi_amd_pci", "spi_intel", "spi_intel_pci",
+    "spi_intel_platform", "spi_nor", "spidev", "thunderbolt", "tpm", "tpm_crb", "tpm_tis",
+    "tpm_tis_core", "tpm_tis_i2c_cr50", "tpm_tis_spi",
+})
+check("storage/firmware module names equal the kconfig gate list",
+      storage_names == storage_expected
+      and {"usb_storage", "uas", "mmc_block"}.isdisjoint(storage_names | devprofile._NEVER_SHIP_KO))
+_mod_pids = sorted({pid for rows in devprofile.load_safety()["_modules"].values() for pid in rows})
+check("every _safety modules profile id has profiles/<id>/profile.toml",
+      bool(_mod_pids) and all((ROOT / "profiles" / pid / "profile.toml").is_file() for pid in _mod_pids))
+check("stock modules.blocklist is snd_hda_intel in one place",
+      devprofile.STOCK_MODULES_BLOCKLIST == frozenset({"snd_hda_intel"}))
+kano_head = hooks.wifi_rc(type("C", (), {"prof": kano}))
+generic_head = ""
+check("kano and generic-x86 add no module boot lines, so the early-boot text stays byte-identical",
+      devprofile.module_boot_lines(kano) == "" and devprofile.append_module_boot(kano_head, kano) is kano_head
+      and devprofile.module_boot_lines(gx) == "" and devprofile.append_module_boot(generic_head, gx) is generic_head
+      and devprofile.missing_dev_modules(kano, "") == [] and devprofile.missing_dev_modules(gx, "") == [])
+ko_root = tmp / "devko"
+(ko_root / "modules").mkdir(parents=True)
+check("amd-hx370 dev-modules check wants bluetooth.ko",
+      devprofile.missing_dev_modules(amd, str(ko_root)) == ["bluetooth"])
+(ko_root / "modules" / "bluetooth.ko").write_bytes(b"ko")
+check("amd-hx370 dev-modules check accepts a top-level bluetooth.ko",
+      devprofile.missing_dev_modules(amd, str(ko_root)) == [])
+def vendor_module_boot_source(text):
+    """Live vendor.sh statements from the missing-ko check through the kano-hw.rc write.
+
+    Full-line comments are not a start marker. The returned text is exec'd; a commented-out
+    call or a disabled abort stays in the slice and changes the result.
+    """
+    lines = text.splitlines(keepends=True)
+    start = None
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped.startswith("#"):
+            continue
+        if stripped.startswith("missing_ko = devprofile.missing_dev_modules("):
+            start = i
+            break
+    if start is None:
+        return None
+    end = None
+    for j in range(start, len(lines)):
+        if lines[j].startswith('(tree / "etc/init/kano-hw.rc").write_text(hw_head +'):
+            for k in range(j, min(j + 40, len(lines))):
+                if lines[k].startswith('""" + dev_kmod_boot)'):
+                    end = k
+                    break
+            break
+    if end is None:
+        return None
+    return "".join(lines[start:end + 1])
+
+
+def exec_vendor_module_boot(src, prof, hw_head, tree, kdir):
+    ns = {"devprofile": devprofile, "os": os, "Path": Path, "prof": prof, "hw_head": hw_head, "tree": tree}
+    old = os.environ.get("GBOS_DEV_KERNEL_DIR")
+    os.environ["GBOS_DEV_KERNEL_DIR"] = kdir
+    try:
+        exec(src, ns)
+    finally:
+        if old is None:
+            os.environ.pop("GBOS_DEV_KERNEL_DIR", None)
+        else:
+            os.environ["GBOS_DEV_KERNEL_DIR"] = old
+    return ns["hw_head"]
+
+
+vsh = (ROOT / "builder/vendor.sh").read_text()
+boot_src = vendor_module_boot_source(vsh)
+boot_tree = tmp / "module-boot-tree"
+(boot_tree / "etc/init").mkdir(parents=True, exist_ok=True)
+abort_msg = ""
+aborted = False
+if boot_src is not None:
+    try:
+        exec_vendor_module_boot(boot_src, amd, "", boot_tree, str(tmp / "no-bluetooth-ko"))
+    except SystemExit as e:
+        aborted = True
+        abort_msg = str(e)
+check("vendor.sh module-boot aborts when the dev-modules bluetooth.ko is missing",
+      boot_src is not None and aborted and "bluetooth" in abort_msg
+      and not (boot_tree / "etc/init/kano-hw.rc").exists())
+ko_dir = tmp / "module-boot-ko"
+(ko_dir / "modules").mkdir(parents=True)
+(ko_dir / "modules" / "bluetooth.ko").write_bytes(b"ko")
+amd_rc = boot_tree / "etc/init/kano-hw.rc"
+amd_head = ""
+if boot_src is not None and aborted:
+    amd_head = exec_vendor_module_boot(boot_src, amd, "", boot_tree, str(ko_dir))
+amd_rc_text = amd_rc.read_text() if amd_rc.is_file() else ""
+check("vendor.sh module-boot writes the amd-hx370 rc lines in order",
+      amd_head == AMD_BOOT and amd_rc_text.startswith(AMD_BOOT)
+      and " -b " not in amd_rc_text.split("# KANO:", 1)[0])
+kano_rc_tree = tmp / "module-boot-kano"
+(kano_rc_tree / "etc/init").mkdir(parents=True)
+kano_after = exec_vendor_module_boot(boot_src, kano, kano_head, kano_rc_tree, "") if boot_src else None
+kano_rc_text = (kano_rc_tree / "etc/init/kano-hw.rc").read_text() if boot_src else ""
+check("vendor.sh module-boot leaves the kano early-boot head byte-identical",
+      boot_src is not None and kano_after is kano_head and kano_rc_text.startswith(kano_head)
+      and "snd_hda_codec_alc269" not in kano_rc_text and "bluetooth" not in kano_rc_text
+      and "btusb" not in kano_rc_text and "snd_hda_intel" not in kano_rc_text)
+gx_rc_tree = tmp / "module-boot-gx"
+(gx_rc_tree / "etc/init").mkdir(parents=True)
+gx_before = ""
+gx_after = exec_vendor_module_boot(boot_src, gx, gx_before, gx_rc_tree, "") if boot_src else None
+gx_rc_text = (gx_rc_tree / "etc/init/kano-hw.rc").read_text() if boot_src else ""
+check("vendor.sh module-boot leaves the generic-x86 early-boot head byte-identical",
+      boot_src is not None and gx_after is gx_before and gx_rc_text.startswith("# KANO: join")
+      and "bluetooth" not in gx_rc_text and "snd_hda_intel" not in gx_rc_text
+      and "snd_hda_codec_alc269" not in gx_rc_text and "iwlmvm" not in gx_rc_text)
+AMD_SRC = (ROOT / "profiles/amd-hx370/profile.toml").read_text()
+AMD_ROOT = ROOT / "profiles/amd-hx370"
+attempt("btusb before bluetooth on amd-hx370",
+        sub('load = ["bluetooth", "btusb", "snd_hda_codec_alc269", "iwlmvm"]',
+            'load = ["btusb", "bluetooth", "snd_hda_codec_alc269", "iwlmvm"]'),
+        "requires bluetooth", name="amd-hx370", extra_files=("vendor.py",), src=AMD_SRC, src_root=AMD_ROOT)
+attempt("btusb without bluetooth on amd-hx370",
+        sub('load = ["bluetooth", "btusb", "snd_hda_codec_alc269", "iwlmvm"]',
+            'load = ["btusb", "snd_hda_codec_alc269", "iwlmvm"]'),
+        "requires bluetooth", name="amd-hx370", extra_files=("vendor.py",), src=AMD_SRC, src_root=AMD_ROOT)
+attempt("unblock xe on amd-hx370",
+        sub('unblock = ["snd_hda_intel"]', 'unblock = ["xe"]'),
+        "not allowlisted for amd-hx370", name="amd-hx370", extra_files=("vendor.py",), src=AMD_SRC, src_root=AMD_ROOT)
+attempt("duplicate snd_hda_intel unblock",
+        sub('unblock = ["snd_hda_intel"]', 'unblock = ["snd_hda_intel", "snd_hda_intel"]'),
+        "duplicate items", name="amd-hx370", extra_files=("vendor.py",), src=AMD_SRC, src_root=AMD_ROOT)
+GRALLOC_SHA = "297457940c9090754e71d4027e157167825edab4139eb7d8828d1660b98e0d42"
+attempt("a short gralloc sha256",
+        sub(f'sha256 = "{GRALLOC_SHA}"', 'sha256 = "17a08daa"'),
+        "64 lower-case hex", name="amd-hx370", extra_files=("vendor.py",), src=AMD_SRC, src_root=AMD_ROOT)
+attempt("an uppercase gralloc sha256",
+        sub(f'sha256 = "{GRALLOC_SHA}"', f'sha256 = "{GRALLOC_SHA.upper()}"'),
+        "64 lower-case hex", name="amd-hx370", extra_files=("vendor.py",), src=AMD_SRC, src_root=AMD_ROOT)
+attempt("an unknown gralloc key",
+        sub("[gralloc]\n", "[gralloc]\nextra = \"nope\"\n"),
+        "unknown key(s) extra", name="amd-hx370", extra_files=("vendor.py",), src=AMD_SRC, src_root=AMD_ROOT)
+attempt("gralloc sha256 missing",
+        sub(f'[gralloc]\nsha256 = "{GRALLOC_SHA}"\n', "[gralloc]\n"),
+        "missing key sha256", name="amd-hx370", extra_files=("vendor.py",), src=AMD_SRC, src_root=AMD_ROOT)
+def _gralloc_string(t):
+    # A bare key after [hooks] would land in that table. Put the string at the top level.
+    needle = f'[gralloc]\nsha256 = "{GRALLOC_SHA}"\n'
+    assert t.count(needle) == 1 and t.count("schema = 1\n") >= 1
+    return t.replace(needle, "").replace("schema = 1\n", 'schema = 1\ngralloc = "nope"\n', 1)
+
+
+attempt("gralloc as a string", _gralloc_string,
+        "expected a table", name="amd-hx370", extra_files=("vendor.py",), src=AMD_SRC, src_root=AMD_ROOT)
+attempt("an integer gralloc sha256",
+        sub(f'sha256 = "{GRALLOC_SHA}"', "sha256 = 1"),
+        "expected str", name="amd-hx370", extra_files=("vendor.py",), src=AMD_SRC, src_root=AMD_ROOT)
+safety_txt = (ROOT / "profiles/_safety.toml").read_text()
+SAFETY_LOAD = ('load = ["amd-hx370 bluetooth dev", "amd-hx370 btusb vendor", '
+               '"amd-hx370 snd_hda_codec_alc269 vendor", "amd-hx370 iwlmvm vendor"]')
+AMD_LOAD = 'load = ["bluetooth", "btusb", "snd_hda_codec_alc269", "iwlmvm"]'
+
+
+def refuse_safety(label, old, new, expect):
+    assert safety_txt.count(old) == 1, old
+    path = tmp / (label.replace(" ", "_") + ".toml")
+    path.write_text(safety_txt.replace(old, new, 1))
+    try:
+        devprofile.load_safety(path)
+        check(label, False)
+    except devprofile.ProfileError as e:
+        check(f"{label} ({e})", expect in str(e))
+
+
+def load_amd(label, profile_text, safety_text):
+    d = tmp / label.replace(" ", "_") / "amd-hx370"
+    d.mkdir(parents=True)
+    shutil.copy(AMD_ROOT / "vendor.py", d / "vendor.py")
+    (d / "profile.toml").write_text(profile_text)
+    sp = d.parent / "_safety.toml"
+    sp.write_text(safety_text)
+    return devprofile.load(d, sp)
+
+
+never_ship_expected = frozenset({
+    "acpi_configfs", "acpi_dbg", "capsule_loader", "ec_sys", "efivarfs", "msr",
+})
+check("never-ship set is acpi_configfs, acpi_dbg, capsule_loader, ec_sys, efivarfs, msr",
+      devprofile._NEVER_SHIP_KO == never_ship_expected)
+for _never in sorted(never_ship_expected):
+    refuse_safety(f"allowlist refuses {_never} from the never-ship set",
+                  SAFETY_LOAD, SAFETY_LOAD[:-1] + f', "amd-hx370 {_never} vendor"]',
+                  f"{_never} is in the never-ship set")
+refuse_safety("unblock must use the vendor dir",
+              'unblock = ["amd-hx370 snd_hda_intel vendor"]',
+              'unblock = ["amd-hx370 snd_hda_intel dev"]',
+              "must use the vendor dir")
+refuse_safety("safety allowlist refuses a repeated row",
+              'unblock = ["amd-hx370 snd_hda_intel vendor"]',
+              'unblock = ["amd-hx370 snd_hda_intel vendor", "amd-hx370 snd_hda_intel vendor"]',
+              "listed twice")
+refuse_safety("allowlist profile id must name an existing profile",
+              SAFETY_LOAD, SAFETY_LOAD[:-1] + ', "amd-hx37o k10temp dev"]',
+              "amd-hx37o has no profiles/amd-hx37o/profile.toml")
+refuse_safety("allowlist refuses nvme as a storage or firmware-update module",
+              SAFETY_LOAD, SAFETY_LOAD[:-1] + ', "amd-hx370 nvme dev"]',
+              "nvme is a storage or firmware-update module")
+refuse_safety("allowlist refuses sdhci_pci as a storage or firmware-update module",
+              SAFETY_LOAD, SAFETY_LOAD[:-1] + ', "amd-hx370 sdhci_pci vendor"]',
+              "sdhci_pci is a storage or firmware-update module")
+refuse_safety("allowlist refuses ccp as a storage or firmware-update module",
+              SAFETY_LOAD, SAFETY_LOAD[:-1] + ', "amd-hx370 ccp vendor"]',
+              "ccp is a storage or firmware-update module")
+refuse_safety("allowlist refuses ahci as a storage or firmware-update module",
+              SAFETY_LOAD, SAFETY_LOAD[:-1] + ', "amd-hx370 ahci vendor"]',
+              "ahci is a storage or firmware-update module")
+moved_hda = safety_txt.replace(
+    'unblock = ["amd-hx370 snd_hda_intel vendor"]', 'unblock = []', 1).replace(
+    SAFETY_LOAD, SAFETY_LOAD[:-1] + ', "amd-hx370 snd_hda_intel vendor"]', 1)
+hda_path = tmp / "snd_hda_intel_on_load.toml"
+hda_path.write_text(moved_hda)
+try:
+    devprofile.load_safety(hda_path)
+    check("load must not name a stock modules.blocklist module", False)
+except devprofile.ProfileError as e:
+    check(f"load must not name a stock modules.blocklist module ({e})",
+          "snd_hda_intel is on the stock modules.blocklist; use unblock" in str(e))
+refuse_safety("unblock must only name a stock modules.blocklist module",
+              'unblock = ["amd-hx370 snd_hda_intel vendor"]',
+              'unblock = ["amd-hx370 snd_hda_intel vendor", "amd-hx370 k10temp vendor"]',
+              "k10temp is not on the stock modules.blocklist")
+tpm_safety = safety_txt.replace(
+    'unblock = ["amd-hx370 snd_hda_intel vendor"]',
+    'unblock = ["amd-hx370 snd_hda_intel vendor", "amd-hx370 tpm vendor"]')
+(tmp / "tpm_allow.toml").write_text(tpm_safety)
+try:
+    devprofile.load_safety(tmp / "tpm_allow.toml")
+    check("safety allowlist refuses a required blacklist module", False)
+except devprofile.ProfileError as e:
+    check(f"safety allowlist refuses a required blacklist module ({e})",
+          "tpm is a required blacklist module" in str(e))
+try:
+    ag = load_amd(
+        "allowlisted amdgpu",
+        AMD_SRC.replace(AMD_LOAD, AMD_LOAD[:-1] + ', "amdgpu"]'),
+        safety_txt.replace(SAFETY_LOAD, SAFETY_LOAD[:-1] + ', "amd-hx370 amdgpu dev"]', 1))
+    check("allowlisted amdgpu is still refused because it is on the module blacklist", ag is None)
+except devprofile.ProfileError as e:
+    check(f"allowlisted amdgpu is still refused because it is on the module blacklist ({e})",
+          "amdgpu is on the module blacklist" in str(e))
+try:
+    tco = load_amd(
+        "allowlisted sp5100_tco",
+        AMD_SRC.replace(AMD_LOAD, AMD_LOAD[:-1] + ', "sp5100_tco"]'),
+        safety_txt.replace(SAFETY_LOAD, SAFETY_LOAD[:-1] + ', "amd-hx370 sp5100_tco vendor"]', 1))
+    check("allowlisted sp5100_tco is still refused because it is on the module blacklist", tco is None)
+except devprofile.ProfileError as e:
+    check(f"allowlisted sp5100_tco is still refused because it is on the module blacklist ({e})",
+          "sp5100_tco is on the module blacklist" in str(e))
+try:
+    dbg = load_amd(
+        "allowlisted debug_add name",
+        AMD_SRC.replace('debug_add = []', 'debug_add = ["k10temp"]', 1).replace(
+            AMD_LOAD, AMD_LOAD[:-1] + ', "k10temp"]'),
+        safety_txt.replace(SAFETY_LOAD, SAFETY_LOAD[:-1] + ', "amd-hx370 k10temp dev"]', 1))
+    check("a profile debug_add name is refused", dbg is None)
+except devprofile.ProfileError as e:
+    check(f"a profile debug_add name is refused ({e})",
+          "k10temp is on the module blacklist" in str(e))
+vendor_bt = safety_txt.replace(
+    '"amd-hx370 bluetooth dev"', '"amd-hx370 bluetooth vendor"', 1)
+try:
+    ordered = load_amd("bluetooth vendor row in order", AMD_SRC, vendor_bt)
+    check("a vendor bluetooth row still accepts btusb after it",
+          ordered["_module_dirs"]["bluetooth"] == "vendor"
+          and ordered["modules"]["load"][:2] == ["bluetooth", "btusb"])
+except devprofile.ProfileError as e:
+    check(f"a vendor bluetooth row still accepts btusb after it ({e})", False)
+try:
+    load_amd("btusb without vendor bluetooth",
+             AMD_SRC.replace(AMD_LOAD, 'load = ["btusb"]'),
+             vendor_bt)
+    check("btusb without bluetooth is refused when the bluetooth row is vendor", False)
+except devprofile.ProfileError as e:
+    check(f"btusb without bluetooth is refused when the bluetooth row is vendor ({e})",
+          "requires bluetooth" in str(e))
 
 # ---- own-kernel .config / System.map / IKCFG safety gate (devprofile.check_kconfig)
 import bz2, copy, gzip, hashlib, lzma, os, struct
@@ -2190,6 +2539,1714 @@ if (
         and "profile sub-run: 3 passed, 0 failed" in _p_pub.stdout
         and "profile tests:" not in _p_pub.stdout,
     )
+import gralloc
+
+
+def _place_like_vendor(tree, vmap, calls):
+    def place(rel, src, like, mode):
+        calls.append((rel, like, mode))
+        if (tree / rel).exists() or like not in vmap:
+            raise SystemExit("amd-hx370: unexpected vendor layout at " + rel)
+        shutil.copyfile(src, tree / rel)
+        (tree / rel).chmod(mode)
+        meta = dict(vmap[like])
+        meta["mode"] = mode
+        vmap[rel] = meta
+    return place
+
+
+def _stock_tree(label, body=b"stock-gralloc"):
+    tree = tmp / "gralloc" / label
+    if tree.exists():
+        shutil.rmtree(tree)
+    (tree / "lib64").mkdir(parents=True)
+    (tree / "lib64" / "libminigbm_gralloc.so").write_bytes(body)
+    vmap = {"lib64/libminigbm_gralloc.so": {
+        "mode": 0o644, "uid": 0, "gid": 0, "caps": None,
+        "selinux": "u:object_r:same_process_hal_file:s0",
+    }}
+    return tree, vmap
+
+
+def gralloc_errors(mod):
+    """Live checks for one gralloc module. Empty means every check held."""
+    errors = []
+
+    def need(label, cond):
+        if not cond:
+            errors.append(label)
+
+    rel = "lib64/libminigbm_gralloc.so"
+    sel = "u:object_r:same_process_hal_file:s0"
+    try:
+        blob = b"drop-in-gralloc-bytes"
+        digest = hashlib.sha256(blob).hexdigest()
+        src = tmp / "gralloc" / "good.so"
+        src.parent.mkdir(parents=True, exist_ok=True)
+        src.write_bytes(blob)
+        tree, vmap = _stock_tree("happy", b"stock-gralloc")
+        before = dict(vmap[rel])
+        calls = []
+        prof = {"gralloc": {"sha256": digest}}
+        installed = mod.install_gralloc(prof, tree, vmap, _place_like_vendor(tree, vmap, calls),
+                                        {"GBOS_MINIGBM": str(src)})
+        got = (tree / rel).read_bytes()
+        meta = vmap[rel]
+        need("install returns true", installed is True)
+        need("path is lib64/libminigbm_gralloc.so", calls == [(rel, rel, 0o644)])
+        need("bytes replaced", got == blob)
+        need("mode 0644", meta["mode"] == 0o644)
+        need("file_contexts selinux kept", meta["selinux"] == sel == before["selinux"])
+        need("uid gid caps kept", (meta["uid"], meta["gid"], meta["caps"]) == (0, 0, None))
+
+        tree_m, vmap_m = _stock_tree("missing", b"stock-gralloc")
+        missing_msg = ""
+        try:
+            mod.install_gralloc(prof, tree_m, vmap_m, _place_like_vendor(tree_m, vmap_m, []), {})
+        except SystemExit as e:
+            missing_msg = str(e)
+        need("missing GBOS_MINIGBM refused", "needs libminigbm_gralloc.so" in missing_msg)
+        need("missing input left the stock bytes", (tree_m / rel).read_bytes() == b"stock-gralloc")
+
+        bad = tmp / "gralloc" / "bad.so"
+        bad.write_bytes(b"not-the-pinned-library")
+        tree_w, vmap_w = _stock_tree("wrong", b"stock-gralloc")
+        wrong_msg = ""
+        try:
+            mod.install_gralloc(amd, tree_w, vmap_w, _place_like_vendor(tree_w, vmap_w, []),
+                                {"GBOS_MINIGBM": str(bad)})
+        except SystemExit as e:
+            wrong_msg = str(e)
+        need("wrong sha refused against the profile pin",
+             "differs from profile gralloc.sha256" in wrong_msg and GRALLOC_SHA in wrong_msg)
+        need("wrong sha left the stock bytes", (tree_w / rel).read_bytes() == b"stock-gralloc")
+
+        tree_s, vmap_s = _stock_tree("absent-stock", b"stock-gralloc")
+        (tree_s / rel).unlink()
+        absent_msg = ""
+        try:
+            mod.install_gralloc(prof, tree_s, vmap_s, _place_like_vendor(tree_s, vmap_s, []),
+                                {"GBOS_MINIGBM": str(src)})
+        except SystemExit as e:
+            absent_msg = str(e)
+        need("missing stock file refused", "not in the vendor tree" in absent_msg)
+
+        link_tree, link_vmap = _stock_tree("symlink", b"stock-gralloc")
+        (link_tree / "lib64" / "real.so").write_bytes(b"real")
+        (link_tree / rel).unlink()
+        (link_tree / rel).symlink_to("real.so")
+        link_msg = ""
+        try:
+            mod.install_gralloc(prof, link_tree, link_vmap, _place_like_vendor(link_tree, link_vmap, []),
+                                {"GBOS_MINIGBM": str(src)})
+        except SystemExit as e:
+            link_msg = str(e)
+        need("symlink stock refused", "not in the vendor tree" in link_msg)
+        need("symlink target untouched", (link_tree / "lib64" / "real.so").read_bytes() == b"real")
+
+        for label, other in (("kano", kano), ("generic-x86", gx)):
+            tree_o, vmap_o = _stock_tree(label, b"stock-gralloc-" + label.encode())
+            snap = dict(vmap_o[rel])
+            stock = (tree_o / rel).read_bytes()
+            returned = mod.install_gralloc(other, tree_o, vmap_o, _place_like_vendor(tree_o, vmap_o, []),
+                                           {"GBOS_MINIGBM": str(src)})
+            need(f"{label} install is a no-op", returned is False)
+            need(f"{label} bytes stay byte-identical", (tree_o / rel).read_bytes() == stock)
+            need(f"{label} vmap stays byte-identical", vmap_o[rel] == snap)
+            base = ["build.prop", "etc/kano-logcat.sh"]
+            need(f"{label} vendor diff omits gralloc", mod.changed_paths(other, base) == base)
+
+        need("amd-hx370 vendor diff includes the replaced gralloc",
+             mod.changed_paths(amd, ["build.prop"]) == ["build.prop", rel])
+
+        link_src = tmp / "gralloc" / "input-link.so"
+        if link_src.is_symlink() or link_src.exists():
+            link_src.unlink()
+        link_src.symlink_to(src)
+        tree_link, vmap_link = _stock_tree("source-symlink", b"stock-gralloc")
+        link_msg = ""
+        try:
+            mod.install_gralloc(prof, tree_link, vmap_link, _place_like_vendor(tree_link, vmap_link, []),
+                                {"GBOS_MINIGBM": str(link_src)})
+        except SystemExit as e:
+            link_msg = str(e)
+        need("symlink source refused", "symlink" in link_msg)
+        need("symlink source left the stock bytes", (tree_link / rel).read_bytes() == b"stock-gralloc")
+
+        tree_mode, vmap_mode = _stock_tree("mode755", b"stock-gralloc")
+        vmap_mode[rel]["mode"] = 0o755
+        mode_msg = ""
+        try:
+            mod.install_gralloc(prof, tree_mode, vmap_mode, _place_like_vendor(tree_mode, vmap_mode, []),
+                                {"GBOS_MINIGBM": str(src)})
+        except SystemExit as e:
+            mode_msg = str(e)
+        need("stock mode 0755 refused", "not mode 0644" in mode_msg)
+        need("stock mode 0755 left the stock bytes", (tree_mode / rel).read_bytes() == b"stock-gralloc")
+
+        def place_drift(rel_d, src_d, like, mode):
+            if (tree_d / rel_d).exists() or like not in vmap_d:
+                raise SystemExit("amd-hx370: unexpected vendor layout at " + rel_d)
+            shutil.copyfile(src_d, tree_d / rel_d)
+            (tree_d / rel_d).chmod(mode)
+            meta_d = dict(vmap_d[like])
+            meta_d["mode"] = mode
+            meta_d["selinux"] = "u:object_r:vendor_file:s0"
+            vmap_d[rel_d] = meta_d
+
+        tree_d, vmap_d = _stock_tree("drift", b"stock-gralloc")
+        drift_msg = ""
+        try:
+            mod.install_gralloc(prof, tree_d, vmap_d, place_drift, {"GBOS_MINIGBM": str(src)})
+        except SystemExit as e:
+            drift_msg = str(e)
+        need("place() label drift refused", "file_contexts drifted" in drift_msg)
+
+        def place_other(rel_o, src_o, like, mode):
+            if like not in vmap_o:
+                raise SystemExit("amd-hx370: unexpected vendor layout at " + rel_o)
+            (tree_o / rel_o).write_bytes(b"placed-other-bytes")
+            (tree_o / rel_o).chmod(mode)
+            meta_o = dict(vmap_o[like])
+            meta_o["mode"] = mode
+            vmap_o[rel_o] = meta_o
+
+        tree_o, vmap_o = _stock_tree("place-other", b"stock-gralloc")
+        other_msg = ""
+        try:
+            mod.install_gralloc(prof, tree_o, vmap_o, place_other, {"GBOS_MINIGBM": str(src)})
+        except SystemExit as e:
+            other_msg = str(e)
+        need("place() cannot replace the hashed bytes",
+             other_msg == "" and (tree_o / rel).read_bytes() == blob)
+
+        original_copy = shutil.copyfile
+
+        def rewriting_copy(source_path, dest_path, **kwargs):
+            src.write_bytes(b"changed-after-hash")
+            return original_copy(source_path, dest_path, **kwargs)
+
+        src.write_bytes(blob)
+        tree_r, vmap_r = _stock_tree("rewrite", b"stock-gralloc")
+        rewrite_msg = ""
+        try:
+            shutil.copyfile = rewriting_copy
+            returned = mod.install_gralloc(prof, tree_r, vmap_r, _place_like_vendor(tree_r, vmap_r, []),
+                                           {"GBOS_MINIGBM": str(src)})
+        except SystemExit as e:
+            returned = False
+            rewrite_msg = str(e)
+        finally:
+            shutil.copyfile = original_copy
+            src.write_bytes(blob)
+        need("source rewrite between check and copy keeps the hashed bytes",
+             returned is True and rewrite_msg == "" and (tree_r / rel).read_bytes() == blob)
+
+        bad_target = tmp / "gralloc" / "bad-target.so"
+        bad_target.write_bytes(b"changed-after-hash")
+        race_file = tmp / "gralloc" / "race-file.so"
+        race_file.write_bytes(blob)
+
+        def retarget_copy(source_path, dest_path, **kwargs):
+            race_file.unlink()
+            race_file.symlink_to(bad_target)
+            return original_copy(source_path, dest_path, **kwargs)
+
+        tree_t, vmap_t = _stock_tree("retarget", b"stock-gralloc")
+        retarget_msg = ""
+        try:
+            shutil.copyfile = retarget_copy
+            returned_t = mod.install_gralloc(
+                prof, tree_t, vmap_t, _place_like_vendor(tree_t, vmap_t, []),
+                {"GBOS_MINIGBM": str(race_file)})
+        except SystemExit as e:
+            returned_t = False
+            retarget_msg = str(e)
+        finally:
+            shutil.copyfile = original_copy
+            if race_file.is_symlink() or race_file.exists():
+                race_file.unlink()
+        need("symlink re-point between check and copy keeps the hashed bytes",
+             returned_t is True and retarget_msg == "" and (tree_t / rel).read_bytes() == blob)
+    except (Exception, SystemExit) as e:
+        errors.append(f"exception {type(e).__name__}: {e}")
+    return errors
+
+
+live_gralloc_errors = gralloc_errors(gralloc)
+check("gralloc install path, mode 0644, file_contexts, sha refusal, kano/generic untouched",
+      not live_gralloc_errors)
+if live_gralloc_errors:
+    print("gralloc errors:", live_gralloc_errors)
+
+_vsh = (ROOT / "builder/vendor.sh").read_text()
+_bsh = (ROOT / "builder/build.sh").read_text()
+check("vendor.sh installs with place() and counts the file in the vendor diff",
+      "gralloc.install_gralloc(prof, tree, vmap, place)" in _vsh
+      and "gralloc.changed_paths(prof, expect_changed)" in _vsh)
+def _build_sh_gralloc_preflight(text):
+    amd = text.find('if [ "$MODEL" = amd-hx370 ]; then')
+    link = text.find('[ ! -L "$GBOS_MINIGBM" ] || die "GBOS_MINIGBM is a symlink: $GBOS_MINIGBM"')
+    need = text.find("needs libminigbm_gralloc.so")
+    differs = text.find("differs from profile gralloc.sha256")
+    after = text.find("for c in python3 mcopy")
+    return 0 <= amd < link < need < differs < after
+
+
+check("build.sh refuses a missing, symlink, or wrong-sha GBOS_MINIGBM inside the amd-hx370 preflight",
+      _build_sh_gralloc_preflight(_bsh))
+_bsh_nosym = _bsh.replace(
+    '[ ! -L "$GBOS_MINIGBM" ] || die "GBOS_MINIGBM is a symlink: $GBOS_MINIGBM"\n', "", 1)
+if _build_sh_gralloc_preflight(_bsh_nosym):
+    check("mutation still green: build.sh symlink guard removed", False)
+else:
+    print("RED build.sh symlink guard removed")
+    check("mutation shown red: build.sh symlink guard removed", True)
+
+
+def _load_mutant(name, old, new):
+    src = (ROOT / "builder/lib/gralloc.py").read_text()
+    if src.count(old) != 1:
+        check(f"mutation anchor once: {name}", False)
+        return None
+    path = tmp / "gralloc-mutants" / (name.replace(" ", "_") + ".py")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(src.replace(old, new, 1))
+    spec = importlib.util.spec_from_file_location("gralloc_mut_" + name.replace(" ", "_"), path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+_MUTATIONS = (
+    ("sha compare removed",
+     "if got != want:\n        raise SystemExit(\n"
+     "            f\"libminigbm_gralloc.so sha256 {got} differs from profile gralloc.sha256 {want}\")",
+     "if False and got != want:\n        raise SystemExit(\n"
+     "            f\"libminigbm_gralloc.so sha256 {got} differs from profile gralloc.sha256 {want}\")"),
+    ("profile gate removed",
+     "if not g:\n        return False",
+     "if False and not g:\n        return False"),
+    ("install path changed",
+     'REL = "lib64/libminigbm_gralloc.so"',
+     'REL = "lib64/hw/libminigbm_gralloc.so"'),
+    ("mode changed to 0755",
+     "MODE = 0o644",
+     "MODE = 0o755"),
+    ("unlink skipped",
+     "        (tree / rel).unlink()\n",
+     ""),
+    ("file_contexts label overwritten",
+     "        place(rel, Path(tmp_name), rel, MODE)\n",
+     "        place(rel, Path(tmp_name), rel, MODE)\n"
+     "        vmap[rel][\"selinux\"] = \"u:object_r:vendor_file:s0\"\n"),
+    ("copies the live source",
+     "        place(rel, Path(tmp_name), rel, MODE)\n"
+     "        os.replace(tmp_name, tree / rel)\n"
+     "        tmp_name = None\n",
+     "        place(rel, Path(src), rel, MODE)\n"),
+    ("os.replace removed",
+     "        os.replace(tmp_name, tree / rel)\n"
+     "        tmp_name = None\n",
+     ""),
+    ("symlink source accepted",
+     "    if not src or src_path.is_symlink() or not src_path.is_file():\n"
+     "        if src and src_path.is_symlink():\n"
+     "            raise SystemExit(\"GBOS_MINIGBM is a symlink: \" + src)\n"
+     "        raise SystemExit(\n",
+     "    if not src or not src_path.is_file():\n"
+     "        raise SystemExit(\n"),
+    ("stock mode check removed",
+     "    if vmap[rel][\"mode\"] != 0o644:\n"
+     "        raise SystemExit(\"stock libminigbm_gralloc.so is not mode 0644\")\n",
+     ""),
+    ("file_contexts drift check removed",
+     "    if meta[\"mode\"] != MODE or any(meta[k] != kept[k] for k in kept):\n"
+     "        raise SystemExit(\"libminigbm_gralloc.so file_contexts drifted\")\n",
+     ""),
+    ("changed_paths ignores the profile gate",
+     "if not prof.get(\"gralloc\"):\n        return expect_changed",
+     "if False and not prof.get(\"gralloc\"):\n        return expect_changed"),
+    ("changed_paths drops the gralloc path",
+     "return sorted(set(list(expect_changed) + [REL]))",
+     "return list(expect_changed)"),
+)
+for _name, _old, _new in _MUTATIONS:
+    _mod = _load_mutant(_name, _old, _new)
+    if _mod is None:
+        continue
+    _errs = gralloc_errors(_mod)
+    if _errs:
+        print(f"RED {_name}")
+        check(f"mutation shown red: {_name}", True)
+    else:
+        check(f"mutation still green: {_name}", False)
+
+import ast
+import textwrap
+
+def _readback_live(text):
+    live = False
+    for node in ast.walk(ast.parse(text)):
+        if not isinstance(node, ast.If):
+            continue
+        test = node.test
+        if isinstance(test, ast.Constant) and test.value is False:
+            continue
+        if isinstance(test, ast.BoolOp) and any(
+                isinstance(v, ast.Constant) and v.value is False for v in test.values):
+            continue
+        for stmt in node.body:
+            if isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Call):
+                func = stmt.value.func
+                if isinstance(func, ast.Name) and func.id == "readback_gralloc":
+                    live = True
+    return live
+
+
+_vsh_text = (ROOT / "builder/vendor.sh").read_text(encoding="utf-8")
+_install_at = _vsh_text.find("    import gralloc\n    if gralloc.install_gralloc(prof, tree, vmap, place):")
+_install_end = _vsh_text.find('print("amd-hx370: vulkan.radeon.so"', _install_at)
+_install_slice = textwrap.dedent(_vsh_text[_install_at:_install_end])
+_pinned = b"drop-in-gralloc-bytes"
+_pinned_sha = hashlib.sha256(_pinned).hexdigest()
+_pinned_path = tmp / "gralloc" / "slice-src.so"
+_pinned_path.parent.mkdir(parents=True, exist_ok=True)
+_pinned_path.write_bytes(_pinned)
+_tree_i, _vmap_i = _stock_tree("vendor-slice", b"stock-gralloc")
+(_tree_i / "etc/init").mkdir(parents=True)
+(_tree_i / "etc/init/fwupd.rc").write_bytes(b"fwupd\n")
+_vmap_i["etc/init/fwupd.rc"] = {
+    "mode": 0o644, "uid": 0, "gid": 0, "caps": None,
+    "selinux": "u:object_r:vendor_configs_file:s0",
+}
+_calls_i = []
+_ns = {
+    "gralloc": gralloc,
+    "prof": {"gralloc": {"sha256": _pinned_sha}},
+    "tree": _tree_i,
+    "vmap": _vmap_i,
+    "place": _place_like_vendor(_tree_i, _vmap_i, _calls_i),
+    "root": tmp / "notices-root",
+    "hashlib": hashlib,
+    "print": lambda *a, **k: None,
+}
+(_ns["root"] / "tools/minigbm").mkdir(parents=True)
+(_ns["root"] / "tools/minigbm/NOTICES.txt").write_text("minigbm notices\n", encoding="utf-8")
+_saved_minigbm = os.environ.get("GBOS_MINIGBM")
+os.environ["GBOS_MINIGBM"] = str(_pinned_path)
+_slice_msg = ""
+try:
+    exec(_install_slice, _ns)
+except SystemExit as e:
+    _slice_msg = str(e)
+finally:
+    if _saved_minigbm is None:
+        os.environ.pop("GBOS_MINIGBM", None)
+    else:
+        os.environ["GBOS_MINIGBM"] = _saved_minigbm
+check("vendor.sh install slice places the pinned bytes and the notices file",
+      _slice_msg == ""
+      and (_tree_i / "lib64/libminigbm_gralloc.so").read_bytes() == _pinned
+      and (_tree_i / "etc/NOTICES-amd-hx370-minigbm.txt").read_text(encoding="utf-8") == "minigbm notices\n"
+      and any(c[0] == "etc/NOTICES-amd-hx370-minigbm.txt" for c in _calls_i))
+_false_slice = _install_slice.replace(
+    "if gralloc.install_gralloc(prof, tree, vmap, place):",
+    "if False and gralloc.install_gralloc(prof, tree, vmap, place):",
+    1)
+_tree_f, _vmap_f = _stock_tree("vendor-slice-false", b"stock-gralloc")
+(_tree_f / "etc").mkdir(parents=True)
+_vmap_f["etc/init/fwupd.rc"] = _vmap_i["etc/init/fwupd.rc"]
+_ns_f = dict(_ns)
+_ns_f["tree"] = _tree_f
+_ns_f["vmap"] = _vmap_f
+_ns_f["place"] = _place_like_vendor(_tree_f, _vmap_f, [])
+os.environ["GBOS_MINIGBM"] = str(_pinned_path)
+try:
+    exec(_false_slice, _ns_f)
+finally:
+    if _saved_minigbm is None:
+        os.environ.pop("GBOS_MINIGBM", None)
+    else:
+        os.environ["GBOS_MINIGBM"] = _saved_minigbm
+check("mutation shown red: vendor install call skipped",
+      (_tree_f / "lib64/libminigbm_gralloc.so").read_bytes() == b"stock-gralloc")
+
+_post_at = _vsh_text.find("if prof.get(\"gralloc\"):\n    expect_new = sorted(set(expect_new + [\"etc/NOTICES-amd-hx370-minigbm.txt\"]))")
+_post_end = _vsh_text.find("if only_old != expect_old", _post_at)
+_post_ns = {
+    "prof": {"gralloc": {"sha256": GRALLOC_SHA}},
+    "expect_new": ["bin/radv-probe"],
+    "expect_changed": [gralloc.REL],
+    "gralloc": gralloc,
+    "new": {"lib64/libminigbm_gralloc.so": ("file", GRALLOC_SHA)},
+    "old": {"lib64/libminigbm_gralloc.so": ("file", "stock")},
+}
+exec(_vsh_text[_post_at:_post_end], _post_ns)
+check("vendor readback slice accepts the pinned gralloc",
+      "etc/NOTICES-amd-hx370-minigbm.txt" in _post_ns["expect_new"]
+      and gralloc.REL in _post_ns["expect_changed"])
+_post_same = {
+    "prof": {"gralloc": {"sha256": GRALLOC_SHA}},
+    "expect_new": [],
+    "expect_changed": [gralloc.REL, "build.prop"],
+    "gralloc": gralloc,
+    "new": {"lib64/libminigbm_gralloc.so": ("file", GRALLOC_SHA)},
+    "old": {"lib64/libminigbm_gralloc.so": ("file", GRALLOC_SHA)},
+}
+exec(_vsh_text[_post_at:_post_end], _post_same)
+check("vendor diff drops gralloc when the pin is already the base image",
+      _post_same["expect_changed"] == ["build.prop"])
+_post_bad = dict(_post_ns)
+_post_bad["new"] = {"lib64/libminigbm_gralloc.so": ("file", "0" * 64)}
+_post_bad_msg = ""
+try:
+    exec(_vsh_text[_post_at:_post_end], _post_bad)
+except SystemExit as e:
+    _post_bad_msg = str(e)
+check("vendor readback slice refuses a different gralloc sha",
+      "rebuilt vendor lib64/libminigbm_gralloc.so" in _post_bad_msg)
+_post_skip = _vsh_text[_post_at:_post_end].replace(
+    'if prof.get("gralloc"):', 'if False and prof.get("gralloc"):', 1)
+_post_skip_msg = ""
+try:
+    exec(_post_skip, {
+        "prof": {"gralloc": {"sha256": GRALLOC_SHA}},
+        "expect_new": [],
+        "gralloc": gralloc,
+        "new": {"lib64/libminigbm_gralloc.so": ("file", "0" * 64)},
+    })
+except SystemExit as e:
+    _post_skip_msg = str(e)
+check("mutation shown red: vendor readback gate skipped", _post_skip_msg == "")
+
+_image = (ROOT / "builder/image.py").read_text(encoding="utf-8")
+check("image.py calls readback_gralloc from a live branch", _readback_live(_image))
+check("mutation shown red: image readback hidden behind False",
+      not _readback_live(_image.replace(
+          'if PROF.get("gralloc"):\n    readback_gralloc(',
+          'if False and PROF.get("gralloc"):\n    readback_gralloc(',
+          1)))
+check("image readback_mismatch rejects a different blob",
+      gralloc.readback_mismatch(b"other", _pinned_sha) is not None)
+check("image readback_mismatch accepts the pinned blob",
+      gralloc.readback_mismatch(_pinned, _pinned_sha) is None)
+
+
+def _load_readback(source):
+    tree = ast.parse(source)
+    fn = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "readback_gralloc")
+    ns = {"Path": Path, "shutil": shutil, "sys": sys, "os": os}
+    exec(compile(ast.fix_missing_locations(ast.Module(body=[fn], type_ignores=[])), "image-readback", "exec"), ns)
+    return ns["readback_gralloc"]
+
+
+def _readback_cases(fn):
+    """Empty means accept, refuse, and cleanup all held."""
+    errors = []
+    work = tmp / "readback-live"
+
+    def boom(img, w):
+        Path(w).mkdir(parents=True)
+        (Path(w) / "marker").write_bytes(b"z")
+        raise RuntimeError("extract failed")
+
+    try:
+        fn("img", {"gralloc": {"sha256": _pinned_sha}}, work, boom)
+        errors.append("extract exception not raised")
+    except RuntimeError:
+        if work.exists():
+            errors.append("work dir left after extract failure")
+    except SystemExit as e:
+        errors.append("extract failure became SystemExit: " + str(e))
+
+    def bad(img, w):
+        Path(w).mkdir(parents=True)
+        (Path(w) / "marker").write_bytes(b"z")
+        return b"other-bytes"
+
+    try:
+        fn("img", {"gralloc": {"sha256": _pinned_sha}}, work, bad)
+        errors.append("bad bytes accepted")
+    except SystemExit as e:
+        if "differs" not in str(e):
+            errors.append("bad bytes: " + str(e))
+        if work.exists():
+            errors.append("work dir left after refusal")
+
+    def good(img, w):
+        Path(w).mkdir(parents=True)
+        (Path(w) / "marker").write_bytes(b"z")
+        return _pinned
+
+    try:
+        got = fn("img", {"gralloc": {"sha256": _pinned_sha}}, work, good)
+    except SystemExit as e:
+        errors.append("pinned bytes refused: " + str(e))
+        got = None
+    if got != _pinned_sha:
+        errors.append("return " + repr(got))
+    if work.exists():
+        errors.append("work dir left after accept")
+    called = []
+
+    def no(img, w):
+        called.append(w)
+        return b"x"
+
+    got = fn("img", {}, work, no)
+    if got is not None or called:
+        errors.append("missing gralloc table still extracted")
+    return errors
+
+
+_rb = _load_readback(_image)
+_rb_errs = _readback_cases(_rb)
+if _rb_errs:
+    print("readback errors:", _rb_errs)
+check("readback_gralloc refuses a different blob, accepts the pin, and removes the work dir", not _rb_errs)
+for _rname, _rold, _rnew in (
+    ("image readback refusal skipped",
+     "    if err:\n        sys.exit(err)\n",
+     "    if False and err:\n        sys.exit(err)\n"),
+    ("image readback mismatch dropped",
+     '        err = gralloc.readback_mismatch(blob, g["sha256"])\n',
+     "        err = None\n"),
+):
+    if _image.count(_rold) != 1:
+        check(f"mutation anchor once: {_rname}", False)
+        continue
+    _rfn = _load_readback(_image.replace(_rold, _rnew, 1))
+    if _readback_cases(_rfn):
+        print(f"RED {_rname}")
+        check(f"mutation shown red: {_rname}", True)
+    else:
+        check(f"mutation still green: {_rname}", False)
+
+
+_notices = (ROOT / "tools/minigbm/NOTICES.txt").read_text(encoding="utf-8")
+check("minigbm NOTICES quotes BSD, libdrm MIT, and the patch commits",
+      "Copyright (c) 2017 The Chromium OS Authors" in _notices
+      and "nor the names of its" in _notices
+      and "BSD-3-Clause" in _notices
+      and "Precision Insight" in _notices
+      and "Copyright 2011 Intel Corporation" in _notices
+      and "Copyright 2014 Advanced Micro Devices, Inc." in _notices
+      and "c662136" in _notices
+      and "9d21b5c" in _notices
+      and "0c4f081" in _notices
+      and "PRECISION INSIGHT AND/OR ITS SUPPLIERS" in _notices
+      and "VA LINUX SYSTEMS AND/OR ITS SUPPLIERS" in _notices
+      and "THE COPYRIGHT HOLDER(S) OR AUTHOR(S)" in _notices
+      and "Each header then disclaims" not in _notices)
+
+
+def _bash_array(text, name):
+    match = re.search(rf"(?m)^{name}=\((.*?)\n\)", text, re.S)
+    if not match:
+        return ""
+    kept = [line for line in match.group(1).splitlines() if not line.lstrip().startswith("#")]
+    return "\n".join(kept)
+
+
+def _hex_assign(text, name):
+    found = re.findall(rf"(?m)^{re.escape(name)}=([0-9a-f]{{64}})$", text)
+    return found[0] if len(found) == 1 else ""
+
+
+def _yv12_helper_body(c_text):
+    match = re.search(r"/\* yv12-helper-begin \*/\n(.*)\n/\* yv12-helper-end \*/", c_text, re.S)
+    return match.group(1) if match else ""
+
+
+_YV12_HOST = "unchecked"
+_yv12_seq = 0
+
+
+# Exact helper statement. A comment that merely mentions stride_align * 2 does not match.
+_YV12_FORMULA_LINE = "\t\tstride = (stride + (stride_align * 2) - 1) & ~((stride_align * 2) - 1);\n"
+# Return codes of the host harness. Each one is the assertion that failed.
+_YV12_ASSERTION = {
+    1: "luma % 16 == 0",
+    2: "ALIGN((luma+1)/2, align) == ALIGN(luma/2, 16)",
+    3: "already multiple 512 stays 512 at align 256",
+    4: "already multiple 1024 stays 1024 at align 256",
+    5: "already multiple 2048 stays 2048 at align 256",
+    6: "align 16 boundary leaves 640 unchanged",
+    7: "768 at align 256 becomes 1024",
+    8: "1280 at align 256 becomes 1536",
+    9: "256 at align 256 becomes 512",
+    10: "640-wide after ALIGN32 and ALIGN256 is luma 1024 chroma 512",
+}
+_yv12_cache = {}
+
+
+def _compile_yv12(body):
+    """Compile the helper copied out of amdgpu_linear.c. None means no host cc."""
+    global _YV12_HOST, _yv12_seq
+    cached = _yv12_cache.get(body)
+    if cached is not None:
+        _YV12_HOST = "ran"
+        return cached
+    cc = shutil.which("cc") or shutil.which("gcc") or shutil.which("clang")
+    if not cc:
+        _YV12_HOST = "no-cc"
+        return None
+    _YV12_HOST = "ran"
+    _yv12_seq += 1
+    work = tmp / f"yv12-{_yv12_seq}"
+    work.mkdir()
+    src = work / "yv12_harness.c"
+    exe = work / "yv12_harness"
+    # Inputs include strides already a multiple of 2*align (512, 1024, 2048 at
+    # align 256) and the align>16 boundary (align 16 leaves 640). The scan
+    # starts from even widths: ALIGN32, then ALIGN(align) when align is 256,
+    # then the helper. 640 is not passed to the helper; ALIGN32+ALIGN256 turns
+    # it into 768 first.
+    src.write_text(
+        "#include <stdint.h>\n" + body + "\n"
+        "static uint32_t align_up(uint32_t x, uint32_t a)\n"
+        "{\n"
+        "  if (a <= 1u)\n"
+        "    return x;\n"
+        "  return (x + a - 1u) & ~(a - 1u);\n"
+        "}\n"
+        "int main(void) {\n"
+        "  uint32_t luma, w, align;\n"
+        "  int i;\n"
+        "  static const uint32_t aligns[2] = {1u, 256u};\n"
+        "  if (amdgpu_linear_yv12_luma(512, 256) != 512) return 3;\n"
+        "  if (amdgpu_linear_yv12_luma(1024, 256) != 1024) return 4;\n"
+        "  if (amdgpu_linear_yv12_luma(2048, 256) != 2048) return 5;\n"
+        "  if (amdgpu_linear_yv12_luma(640, 16) != 640) return 6;\n"
+        "  if (amdgpu_linear_yv12_luma(768, 256) != 1024) return 7;\n"
+        "  if (amdgpu_linear_yv12_luma(1280, 256) != 1536) return 8;\n"
+        "  if (amdgpu_linear_yv12_luma(256, 256) != 512) return 9;\n"
+        "  luma = align_up(align_up(640, 32), 256);\n"
+        "  luma = amdgpu_linear_yv12_luma(luma, 256);\n"
+        "  if (luma != 1024 || luma / 2u != 512) return 10;\n"
+        "  for (w = 2; w <= 8192; w += 2) {\n"
+        "    for (i = 0; i < 2; i++) {\n"
+        "      align = aligns[i];\n"
+        "      luma = align_up(w, 32);\n"
+        "      if (align > 1u)\n"
+        "        luma = align_up(luma, align);\n"
+        "      luma = amdgpu_linear_yv12_luma(luma, align);\n"
+        "      if ((luma % 16u) != 0u) return 1;\n"
+        "      if (align_up((luma + 1u) / 2u, align) != align_up(luma / 2u, 16u)) return 2;\n"
+        "    }\n"
+        "  }\n"
+        "  return 0;\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    proc = subprocess.run([cc, "-O2", "-Wall", "-o", str(exe), str(src)], capture_output=True, text=True)
+    if proc.returncode != 0:
+        result = "compile " + (proc.stderr or proc.stdout)[-300:]
+    else:
+        run = subprocess.run([str(exe)], capture_output=True)
+        if run.returncode != 0:
+            why = _YV12_ASSERTION.get(run.returncode, "unknown assertion")
+            result = "exit %s: %s" % (run.returncode, why)
+        else:
+            result = ""
+    _yv12_cache[body] = result
+    return result
+
+
+def _uniq(items):
+    out = []
+    for item in items:
+        if item not in out:
+            out.append(item)
+    return out
+
+
+def _repin_linear(script, c_text):
+    """Point LINEAR_SHA and LIB_FROM_LINEAR at the mutated C text."""
+    digest = hashlib.sha256(c_text.encode()).hexdigest()
+    script, nlin = re.subn(r"(?m)^LINEAR_SHA=[0-9a-f]{64}$", "LINEAR_SHA=" + digest, script, count=1)
+    script, nfrom = re.subn(r"(?m)^LIB_FROM_LINEAR=[0-9a-f]{64}$", "LIB_FROM_LINEAR=" + digest, script, count=1)
+    if nlin != 1 or nfrom != 1:
+        return ""
+    return script
+
+
+def _emit_mutation(name, detail, ok):
+    if ok:
+        print(f"RED {name}: {detail}")
+        check(f"mutation shown red: {name}", True)
+    else:
+        print(f"mutation {name} was not red for {detail}")
+        check(f"mutation shown red: {name}", False)
+
+
+def _run_bash(body):
+    try:
+        return subprocess.run(["bash", "-c", body], capture_output=True, text=True)
+    except OSError as exc:
+        return subprocess.CompletedProcess(["bash"], 127, "", str(exc))
+
+
+def _heredoc(text, marker, end):
+    start = text.find(marker)
+    if start < 0:
+        return ""
+    start += len(marker)
+    stop = text.find(end, start)
+    if stop < 0:
+        return ""
+    return text[start:stop]
+
+
+def _fake_nm(path, table):
+    lines = ["#!/usr/bin/env python3", "import os, sys", "name = os.path.basename(sys.argv[-1])", "table = {"]
+    for name, syms in table.items():
+        lines.append("    %r: %r," % (name, syms))
+    lines.append("}")
+    lines.append("for sym in table.get(name, []):")
+    lines.append("    print('                 U ' + sym)")
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    path.chmod(0o755)
+
+
+_HARDEN_OK = {
+    "cros_gralloc_helpers.o": ["__stack_chk_fail"],
+    "cros_gralloc_buffer.o": ["__stack_chk_fail"],
+    "cros_gralloc_driver.o": ["__stack_chk_fail"],
+    "virtgpu_virgl.o": ["__open_2"],
+    "amdgpu_linear.o": ["__stack_chk_fail"],
+}
+
+
+def _harden_py(text):
+    return _heredoc(text, "python3 - \"$NM\" \"$OUT/obj\" << 'PY'\n", "\nPY\n")
+
+
+def _run_hardening(py_text, table):
+    global _yv12_seq
+    _yv12_seq += 1
+    work = tmp / f"harden-{_yv12_seq}"
+    work.mkdir()
+    obj = work / "obj"
+    obj.mkdir()
+    for name in table:
+        (obj / name).write_bytes(b"")
+    nm = work / "nm"
+    _fake_nm(nm, table)
+    script = work / "check.py"
+    script.write_text(py_text, encoding="utf-8")
+    proc = subprocess.run([sys.executable, str(script), str(nm), str(obj)], capture_output=True, text=True)
+    return proc.returncode, proc.stdout + proc.stderr
+
+
+def _drop_sym(table, name, sym):
+    out = {key: list(val) for key, val in table.items()}
+    out[name] = [item for item in out[name] if item != sym]
+    return out
+
+
+def _pin_parts(text):
+    start = text.find('if [[ "$sha" != "$LIB_SHA" ]]; then\n')
+    write = text.find('{\n  echo "PASS"\n', start)
+    mv = 'mv "$OUT/BUILD-STATUS.txt.tmp" "$OUT/BUILD-STATUS.txt"\n'
+    end = text.find(mv, write) if write >= 0 else -1
+    if start < 0 or write < 0 or end < 0:
+        return "", ""
+    end += len(mv)
+    return text[start:write], text[write:end]
+
+
+def _run_pin(if_block, write_block, sha, lib_sha, swap=False):
+    global _yv12_seq
+    _yv12_seq += 1
+    out = tmp / f"pin-{_yv12_seq}"
+    out.mkdir()
+    region = (write_block + if_block) if swap else (if_block + write_block)
+    script = (
+        "OUT=%s\nsha=%s\nLIB_SHA=%s\n"
+        "size=1\nCOMMIT=c\nTREE=t\nTAR_SHA=tar\navg60=0\nSTOCK_SO_SHA=stock\n"
+        "vendor_a=0\nsystem_a=0\nsystem_ext_a=0\nOFF=(1)\n"
+        "log() { printf '%%s\\n' \"$*\"; }\n"
+        "rm() { printf 'RM %%s\\n' \"$*\" >> \"$OUT/rm.log\"; }\n"
+        "%s"
+    ) % (shlex.quote(str(out)), shlex.quote(sha), shlex.quote(lib_sha), region)
+    proc = _run_bash(script)
+    status = out / "BUILD-STATUS.txt"
+    published = status.is_file() and status.read_text(encoding="utf-8").startswith("PASS\n")
+    rmlog = (out / "rm.log").read_text(encoding="utf-8") if (out / "rm.log").is_file() else ""
+    return proc.returncode, published, rmlog, proc.stdout + proc.stderr
+
+
+_BUILT_FROM_IF = (
+    'if [[ "$LINEAR_SHA" != "$LIB_FROM_LINEAR" || "$PATCH_SHA" != "$LIB_FROM_PATCH" '
+    '|| "$TAR_SHA" != "$LIB_FROM_TAR" ]]; then\n'
+    '  log "pinned source sha does not match the library built-from record"\n'
+    "  exit 1\n"
+    "fi\n"
+)
+
+
+def _built_from_region(text):
+    start = text.find(_BUILT_FROM_IF)
+    line = 'log "library built-from pins match the source pins"\n'
+    if start < 0:
+        return ""
+    end = text.find(line, start)
+    if end < 0:
+        return ""
+    return text[start:end + len(line)]
+
+
+def _run_built_from(region, match):
+    linear = "aa" if match else "zz"
+    script = (
+        "LINEAR_SHA=aa\nLIB_FROM_LINEAR=%s\nPATCH_SHA=bb\nLIB_FROM_PATCH=bb\n"
+        "TAR_SHA=cc\nLIB_FROM_TAR=cc\n"
+        "log() { printf '%%s\\n' \"$*\"; }\n"
+        "%s"
+    ) % (linear, region)
+    proc = _run_bash(script)
+    return proc.returncode, proc.stdout + proc.stderr
+
+
+def _region_between(text, start_s, end_s):
+    start = text.find(start_s)
+    if start < 0:
+        return ""
+    end = text.find(end_s, start)
+    if end < 0:
+        return ""
+    return text[start:end + len(end_s)]
+
+
+def _run_wrap(region, cc_body, cc_exists=True, cc_dir=False):
+    global _yv12_seq
+    _yv12_seq += 1
+    work = tmp / f"wrap-{_yv12_seq}"
+    work.mkdir()
+    cc = work / "cc"
+    cxx = work / "cxx"
+    if cc_dir:
+        cc.mkdir()
+    elif cc_exists:
+        cc.write_text(cc_body, encoding="utf-8")
+    cxx.write_text("#!/bin/sh\n", encoding="utf-8")
+    script = (
+        "CC=%s\nCXX=%s\nlog() { printf '%%s\\n' \"$*\"; }\n%s"
+    ) % (shlex.quote(str(cc)), shlex.quote(str(cxx)), region)
+    proc = _run_bash(script)
+    return proc.returncode, proc.stdout + proc.stderr
+
+
+def _run_clang_bin(region, shebang):
+    global _yv12_seq
+    _yv12_seq += 1
+    work = tmp / f"clangbin-{_yv12_seq}"
+    work.mkdir()
+    binary = work / "clang"
+    if shebang:
+        binary.write_text("#!/bin/sh\n", encoding="utf-8")
+    else:
+        binary.write_bytes(b"\x7fELF")
+    script = (
+        "CLANG_BIN=%s\nlog() { printf '%%s\\n' \"$*\"; }\n%s"
+    ) % (shlex.quote(str(binary)), region)
+    proc = _run_bash(script)
+    return proc.returncode, proc.stdout + proc.stderr
+
+
+def _sources_writer_region(text):
+    start_s = "home_literal() {\n"
+    end_s = '} > "$OUT/SOURCES.txt"\n'
+    start = text.find(start_s)
+    if start < 0 or text.find(start_s, start + 1) >= 0:
+        return ""
+    end = text.find(end_s, start)
+    if end < 0:
+        return ""
+    return text[start:end + len(end_s)]
+
+
+def _sources_problems(region, img_under_home=True, checkout_pins=False, captured=None):
+    """Run the SOURCES.txt writer. Empty means the output block and literal $HOME held.
+
+    checkout_pins hashes the real minigbm sources and fills the library pin, so the
+    text can be copied over the tracked SOURCES.txt. captured receives that text.
+    """
+    if not region:
+        return ["missing writer"]
+    global _yv12_seq
+    _yv12_seq += 1
+    work = tmp / f"sources-{_yv12_seq}"
+    work.mkdir()
+    home = work / "gbos-home-token"
+    bindir = work / "bin"
+    out = work / "out"
+    bindir.mkdir()
+    out.mkdir()
+    (home / "gbos-phase/amd-t2/kernel-amd/ksrc/.git").mkdir(parents=True)
+    if checkout_pins:
+        work_src = work / "work"
+        (work_src / "cxxsite").mkdir(parents=True)
+        (work_src / "cxxsite" / "__config_site").write_text("site\n", encoding="utf-8")
+        recipe = (ROOT / "tools/minigbm/build-libminigbm-gralloc.sh").read_text(encoding="utf-8")
+        (bindir / "sha256sum").write_text(
+            "#!/bin/sh\n"
+            "exec python3 - \"$@\" << 'PY'\n"
+            "import hashlib, sys\n"
+            "for path in sys.argv[1:]:\n"
+            "    print('%s  %s' % (hashlib.sha256(open(path, 'rb').read()).hexdigest(), path))\n"
+            "PY\n",
+            encoding="utf-8",
+        )
+        pin_lines = (
+            "sha=%s\nsize=112384\n"
+            "LIB_FROM_LINEAR=%s\nLIB_FROM_PATCH=%s\nLIB_FROM_TAR=%s\n"
+            "PATCH=%s\nLINEAR_SRC=%s\nWORK=%s\n"
+        ) % (
+            shlex.quote(_hex_assign(recipe, "LIB_SHA")),
+            shlex.quote(_hex_assign(recipe, "LIB_FROM_LINEAR")),
+            shlex.quote(_hex_assign(recipe, "LIB_FROM_PATCH")),
+            shlex.quote(_hex_assign(recipe, "LIB_FROM_TAR")),
+            shlex.quote(str(ROOT / "tools/minigbm/upstream-delta.patch")),
+            shlex.quote(str(ROOT / "tools/minigbm/amdgpu_linear.c")),
+            shlex.quote(str(work_src)),
+        )
+    else:
+        (bindir / "sha256sum").write_text(
+            "#!/bin/sh\nprintf '%s\\n' 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa  -'\n",
+            encoding="utf-8",
+        )
+        pin_lines = (
+            "sha=1111111111111111111111111111111111111111111111111111111111111111\n"
+            "size=112384\n"
+            "LIB_FROM_LINEAR=2222222222222222222222222222222222222222222222222222222222222222\n"
+            "LIB_FROM_PATCH=3333333333333333333333333333333333333333333333333333333333333333\n"
+            "LIB_FROM_TAR=4444444444444444444444444444444444444444444444444444444444444444\n"
+            "PATCH=/no/such/patch\nLINEAR_SRC=/no/such/linear\nWORK=/no/such/work\n"
+        )
+    (bindir / "git").write_text(
+        "#!/bin/sh\n"
+        "while [ \"$1\" = \"-C\" ]; do shift 2; done\n"
+        "case \"$1\" in\n"
+        "  rev-parse) printf '%s\\n' 0123456789abcdef0123456789abcdef01234567 ;;\n"
+        "  ls-files) printf '%s\\n' '100644 blob abc 0 file' ;;\n"
+        "  *) exit 1 ;;\n"
+        "esac\n",
+        encoding="utf-8",
+    )
+    os.chmod(bindir / "sha256sum", 0o755)
+    os.chmod(bindir / "git", 0o755)
+    img = (
+        '"$HOME/gbos-phase/amd-r11/out-amd-hx370/image/googlebook-amd-hx370.img"'
+        if img_under_home else "/opt/stock/googlebook-amd-hx370.img"
+    )
+    script = (
+        "HOME=%s\nOUT=%s\nexport PATH=%s:\"$PATH\"\n"
+        "AIDL=\"$HOME/gbos-phase/fp/tools/bt/android-37.0/aidl\"\n"
+        "NDK=\"$HOME/gbos-phase/fp/tools/android-ndk-r30\"\n"
+        "IMG=%s\n"
+        "%s"
+        "GIT_URL=https://example.invalid/minigbm\nCOMMIT=ce79bbee\nTREE=95c2eb68\n"
+        "TAR_SHA=54b1d07b\nLIBDRM_URL=https://example.invalid/libdrm\nLIBDRM_SHA=a2b98567\n"
+        "AIDL_SHA=a4ad150a\nNDK_REV=30.0.16248370\nCLANG_SHA=ad535f0b\nSTOCK_SO_SHA=d4853695\n"
+        "AOSP=/no/such/aosp\n"
+        "HWC_URL=https://example.invalid/hwc\nHWC_DIR=/no/such/hwc\nOFF=()\nLEN=()\n"
+        "%s"
+    ) % (shlex.quote(str(home)), shlex.quote(str(out)), shlex.quote(str(bindir)), img, pin_lines, region)
+    proc = _run_bash(script)
+    path = out / "SOURCES.txt"
+    text = path.read_text(encoding="utf-8") if path.is_file() else ""
+    problems = []
+    if proc.returncode != 0:
+        problems.append("writer exit %s %s" % (proc.returncode, (proc.stdout + proc.stderr)[-300:]))
+    if str(home) in text:
+        problems.append("expanded home")
+    if captured is not None:
+        captured.append(text)
+    if checkout_pins:
+        return problems
+    required = [
+        "\noutput\n",
+        "libminigbm_gralloc.so-sha256: 1111111111111111111111111111111111111111111111111111111111111111\n",
+        "size: 112384\n",
+        "built-from-amdgpu_linear.c-sha256: 2222222222222222222222222222222222222222222222222222222222222222\n",
+        "built-from-patch-sha256: 3333333333333333333333333333333333333333333333333333333333333333\n",
+        "built-from-tar-sha256: 4444444444444444444444444444444444444444444444444444444444444444\n",
+        "note: profile [gralloc] pin. ",
+        "No second-host rebuild is recorded.",
+        "path: $HOME/gbos-phase/fp/tools/bt/android-37.0/aidl\n",
+        "path: $HOME/gbos-phase/fp/tools/android-ndk-r30\n",
+        "path: $HOME/gbos-phase/amd-t2/kernel-amd/ksrc\n",
+    ]
+    if img_under_home:
+        required.append("path: $HOME/gbos-phase/amd-r11/out-amd-hx370/image/googlebook-amd-hx370.img\n")
+    else:
+        required.append("path: /opt/stock/googlebook-amd-hx370.img\n")
+    for line in required:
+        if line not in text:
+            problems.append("missing " + line.strip())
+    return problems
+
+
+def _sources_checkout_problems(sources, script, c_bytes, patch_bytes, readme, profile):
+    """The SOURCES.txt checks a maintainer hits by copying the generated file back."""
+    problems = []
+    linear_sha = hashlib.sha256(c_bytes).hexdigest()
+    lib_sha = _hex_assign(script, "LIB_SHA")
+    if not (
+        len(lib_sha) == 64
+        and f'sha256 = "{lib_sha}"' in profile
+        and f"`{lib_sha}`" in readme
+        and f"libminigbm_gralloc.so-sha256: {lib_sha}" in sources
+    ):
+        problems.append("library pin")
+    if not (
+        _hex_assign(script, "LIB_FROM_LINEAR") == linear_sha
+        and _hex_assign(script, "LIB_FROM_PATCH") == hashlib.sha256(patch_bytes).hexdigest()
+        and _hex_assign(script, "LIB_FROM_TAR") == "54b1d07b4645ad73294eab40dbbc4578af43cdee192d4ba5e0b1c2747f5d8834"
+        and f"amdgpu_linear.c-sha256: {linear_sha}" in sources
+        and f"built-from-amdgpu_linear.c-sha256: {linear_sha}" in sources
+        and "built-from-patch-sha256: 0d2e6678b9c71a47a412245a85dfbf99702bda0f56da522fe65b996bb0bee022" in sources
+        and "built-from-tar-sha256: 54b1d07b4645ad73294eab40dbbc4578af43cdee192d4ba5e0b1c2747f5d8834" in sources
+    ):
+        problems.append("built-from")
+    if not (
+        "`LIB_SHA`, `LIB_FROM_LINEAR`, `LIB_FROM_PATCH`, and `LIB_FROM_TAR` update together." in readme
+        and "Editing a source and `LIB_FROM_LINEAR`, `LIB_FROM_PATCH`, or `LIB_FROM_TAR` without that rebuild leaves the profile tests green and makes the build refuse." in readme
+        and "LIB_SHA, LIB_FROM_LINEAR, LIB_FROM_PATCH, and LIB_FROM_TAR update together" in sources
+    ):
+        problems.append("update together")
+    if not (
+        "A second clean machine has not been compared." in readme
+        and "No second-host rebuild is recorded." in sources
+    ):
+        problems.append("second-host")
+    return problems
+
+
+_COMPILE_FLAGS = (
+    "-fstack-protector-strong",
+    "-D_FORTIFY_SOURCE=2",
+    "-ftrivial-auto-var-init=zero",
+    "-funwind-tables",
+    "-DANDROID_API_LEVEL=37",
+)
+
+
+def _compile_rows(text):
+    region = _region_between(text, "CFLAGS=(\n", 'log "per-object hardening imports"\n')
+    # The end marker is included by _region_between; drop that log line.
+    if region.endswith('log "per-object hardening imports"\n'):
+        region = region[: -len('log "per-object hardening imports"\n')]
+    if not region.startswith("CFLAGS=("):
+        return []
+    global _yv12_seq
+    _yv12_seq += 1
+    work = tmp / f"ccargv-{_yv12_seq}"
+    work.mkdir()
+    rec = work / "record.py"
+    record = work / "argv.txt"
+    rec.write_text(
+        "#!/usr/bin/env python3\n"
+        "import os, sys\n"
+        "with open(os.environ['RECORD'], 'a', encoding='utf-8') as fh:\n"
+        "    fh.write('\\t'.join(sys.argv[1:]) + '\\n')\n"
+        "args = sys.argv[1:]\n"
+        "if '-o' in args:\n"
+        "    open(args[args.index('-o') + 1], 'w').close()\n",
+        encoding="utf-8",
+    )
+    rec.chmod(0o755)
+    script = (
+        "OUT=%s\nSRC=%s\nexport RECORD=%s\nCC=%s\nCXX=$CC\n"
+        "log() { printf '%%s\\n' \"$*\"; }\n"
+        "mkdir -p \"$SRC\" \"$OUT/obj\"\n"
+        "%s"
+    ) % (shlex.quote(str(work)), shlex.quote(str(work / "src")), shlex.quote(str(record)), shlex.quote(str(rec)), region)
+    proc = _run_bash(script)
+    if proc.returncode != 0 or not record.is_file():
+        print("compiler argv runner:", proc.returncode, (proc.stdout + proc.stderr)[-400:])
+        return []
+    return [line.split("\t") for line in record.read_text(encoding="utf-8").splitlines() if line]
+
+
+def _split_rows(rows):
+    c_rows, cxx_rows = [], []
+    for row in rows:
+        if "-c" not in row:
+            continue
+        src = row[row.index("-c") + 1]
+        if src.endswith(".cc"):
+            cxx_rows.append(row)
+        elif src.endswith(".c"):
+            c_rows.append(row)
+    return c_rows, cxx_rows
+
+
+def _rows_have(rows, flags):
+    return bool(rows) and all(all(flag in row for flag in flags) for row in rows)
+
+
+def _minigbm_script_errors(text, c_text):
+    errs = []
+    cflags = _bash_array(text, "CFLAGS")
+    cxxflags = _bash_array(text, "CXXFLAGS")
+    if not cflags or not cxxflags:
+        errs.append("flag arrays")
+    for flag in (
+        "-fstack-protector-strong",
+        "-D_FORTIFY_SOURCE=2",
+        "-ftrivial-auto-var-init=zero",
+        "-funwind-tables",
+        "-DANDROID_API_LEVEL=37",
+    ):
+        if flag not in cflags or flag not in cxxflags:
+            errs.append("both arrays " + flag)
+    if "-U_FORTIFY_SOURCE" in cflags or "-U_FORTIFY_SOURCE" in cxxflags:
+        errs.append("fortify undefined")
+    if "-fvisibility-inlines-hidden" not in cxxflags:
+        errs.append("visibility")
+    if "-Wl,-z,relro" not in text or "-Wl,-z,now" not in text:
+        errs.append("relro")
+    awk_line = (
+        'ndk_rev=$(awk -F= \'/Pkg.Revision/ {gsub(/ /,"",$2); print $2}\' '
+        '"$NDK/source.properties")'
+    )
+    if "30.0.16248370" not in text or awk_line not in text or '"$ndk_rev" != "$NDK_REV"' not in text:
+        errs.append("ndk revision")
+    if re.search(r"(?m)^ndk_rev=\$NDK_REV\b", text):
+        errs.append("ndk revision")
+    if "95c2eb6837a39a6ef62ae454c5d9767cf2066c53" not in text:
+        errs.append("tree")
+    if "54b1d07b4645ad73294eab40dbbc4578af43cdee192d4ba5e0b1c2747f5d8834" not in text:
+        errs.append("tar")
+    if "sha256sum -c" in text and ".tar.gz" in text:
+        errs.append("gzip pin")
+    if 'readlink -f "$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/clang"' not in text:
+        errs.append("clang binary")
+    if "ad535f0b6fc303edba958b51636169ff0291c6e36463236c99ff8abcaa34247c" not in text:
+        errs.append("clang binary sha")
+    if 'echo "$CLANG_SHA  $CLANG_BIN"' not in text or 'echo "$CLANG_SHA  $CC"' in text:
+        errs.append("clang wrapper hashed as compiler")
+    if "missing clang wrapper" not in text or "clang wrapper is not a regular file" not in text:
+        errs.append("clang wrapper type")
+    if "clang wrapper is not a script" not in text:
+        errs.append("clang wrapper type")
+    if "resolved clang is a wrapper script, not the compiler binary" not in text:
+        errs.append("clang binary script")
+    for line in text.splitlines():
+        if "sha256sum -c" in line and "|| true" in line:
+            errs.append("checksum ignored")
+            break
+    if '"$CC" "${CFLAGS[@]}" -c "$SRC/$src"' not in text:
+        errs.append("cflags not applied")
+    if '"$CXX" "${CXXFLAGS[@]}" -c "$SRC/cros_gralloc/$src"' not in text:
+        errs.append("cxxflags not applied")
+    if "-fno-stack-protector" in text or "-U_FORTIFY_SOURCE" in text:
+        errs.append("hardening disabled")
+    if "object_hardening_ok" not in text or "missing __stack_chk_fail" not in text:
+        errs.append("object hardening")
+    if "missing __open_2" not in text or "virtgpu_virgl.o" not in text:
+        errs.append("object hardening")
+    if "cros_gralloc_buffer.o" not in text or "no C object imports __stack_chk_fail" not in text:
+        errs.append("object hardening")
+    if 'if [[ "$sha" != "$LIB_SHA" ]]; then' not in text:
+        errs.append("library pin")
+    if "refusing PASS: a pinned source changed or the library pin was not updated" not in text:
+        errs.append("library pin")
+    if '"$LINEAR_SHA" != "$LIB_FROM_LINEAR"' not in text or '"$PATCH_SHA" != "$LIB_FROM_PATCH"' not in text:
+        errs.append("built-from")
+    if '"$TAR_SHA" != "$LIB_FROM_TAR"' not in text:
+        errs.append("built-from")
+    if "pinned source sha does not match the library built-from record" not in text:
+        errs.append("built-from")
+    if _hex_assign(text, "LINEAR_SHA") != _hex_assign(text, "LIB_FROM_LINEAR"):
+        errs.append("linear built-from")
+    if _hex_assign(text, "PATCH_SHA") != _hex_assign(text, "LIB_FROM_PATCH"):
+        errs.append("patch built-from")
+    if _hex_assign(text, "TAR_SHA") != _hex_assign(text, "LIB_FROM_TAR"):
+        errs.append("tar built-from")
+    if hashlib.sha256(c_text.encode()).hexdigest() != _hex_assign(text, "LINEAR_SHA"):
+        errs.append("linear file")
+    if '"__stack_chk_fail" not in new_undef' not in text or "stock-undefsyms.txt" not in text:
+        errs.append("stack chk")
+    if '"__open_2" not in new_undef' not in text:
+        errs.append("fortify open")
+    if 'sys.exit("missing stock __*_chk imports:' in text:
+        errs.append("vacuous chk")
+    strings_at = text.find('print("STRINGS_OK")')
+    pass_at = text.find('echo "PASS"')
+    if strings_at < 0 or pass_at < strings_at:
+        errs.append("pass before strings")
+    if 'rm -f "$OUT/BUILD-STATUS.txt"' not in text:
+        errs.append("stale status")
+    if "status --porcelain" not in text:
+        errs.append("dirty tree")
+    if '\t.name = "amdgpu",\n' not in c_text:
+        errs.append("backend name")
+    if (
+        "\tif (modifier != DRM_FORMAT_MOD_LINEAR && modifier != DRM_FORMAT_MOD_INVALID)\n"
+        "\t\treturn -EINVAL;\n"
+    ) not in c_text:
+        errs.append("linear import")
+    yv12_call = (
+        "\tif (format == DRM_FORMAT_YVU420_ANDROID)\n"
+        "\t\tstride = amdgpu_linear_yv12_luma(stride, stride_align);\n"
+    )
+    if yv12_call not in c_text:
+        errs.append("yv12 call")
+    helper = _yv12_helper_body(c_text)
+    if not helper:
+        errs.append("yv12 formula")
+    else:
+        host = _compile_yv12(helper)
+        if host is None:
+            if _YV12_FORMULA_LINE not in helper:
+                errs.append("yv12 formula")
+        elif host:
+            errs.append("yv12 host " + host)
+    return errs
+
+
+_SOURCE_WHY = "release tree does not ship git-only minigbm build sources"
+_script_path = ROOT / "tools/minigbm/build-libminigbm-gralloc.sh"
+_c_path = ROOT / "tools/minigbm/amdgpu_linear.c"
+_patch_path = ROOT / "tools/minigbm/upstream-delta.patch"
+_git_checkout = (ROOT / ".git").exists()
+_full_sources = _script_path.is_file() and _c_path.is_file() and _patch_path.is_file()
+if _full_sources:
+    _script = _script_path.read_text(encoding="utf-8")
+    _c_text = _c_path.read_text(encoding="utf-8")
+    _script_errs = _minigbm_script_errors(_script, _c_text)
+    if _script_errs:
+        print("minigbm script:", _script_errs)
+    check("minigbm build script enforces the pins, hardening, and status order", not _script_errs)
+    if os.environ.get("CI"):
+        check("CI runs the YV12 host compile", _YV12_HOST == "ran")
+    if _YV12_HOST == "no-cc":
+        _skip("host compile of amdgpu_linear_yv12_luma", "no C compiler on PATH")
+        check("text check: yv12 helper line rounds up with the stride_align * 2 mask",
+              _YV12_FORMULA_LINE in _yv12_helper_body(_c_text))
+    else:
+        check("host compile of amdgpu_linear_yv12_luma: 512, 1024, 2048 stay at align 256; "
+              "align 16 leaves 640; 768 becomes 1024 and 1280 becomes 1536; "
+              "640-wide after ALIGN32 and ALIGN256 is luma 1024 chroma 512; "
+              "even widths 2..8192 at align 1 and 256 keep chroma",
+              not any(err.startswith("yv12 host") or err == "yv12 formula" for err in _script_errs))
+    check("text check: non-linear import guard returns -EINVAL",
+          "\tif (modifier != DRM_FORMAT_MOD_LINEAR && modifier != DRM_FORMAT_MOD_INVALID)\n"
+          "\t\treturn -EINVAL;\n" in _c_text)
+    check("text check: create() calls amdgpu_linear_yv12_luma for YVU420_ANDROID",
+          "\tif (format == DRM_FORMAT_YVU420_ANDROID)\n"
+          "\t\tstride = amdgpu_linear_yv12_luma(stride, stride_align);\n" in _c_text)
+    _linear_sha = hashlib.sha256(_c_path.read_bytes()).hexdigest()
+    _sources = (ROOT / "tools/minigbm/SOURCES.txt").read_text(encoding="utf-8")
+    _readme = (ROOT / "tools/minigbm/README.md").read_text(encoding="utf-8")
+    _profile = (ROOT / "profiles/amd-hx370/profile.toml").read_text(encoding="utf-8")
+    _lib_sha = _hex_assign(_script, "LIB_SHA")
+    check("amdgpu_linear.c matches LINEAR_SHA",
+          f"LINEAR_SHA={_linear_sha}" in _script)
+    _co = _sources_checkout_problems(
+        _sources, _script, _c_path.read_bytes(), _patch_path.read_bytes(), _readme, _profile)
+    check("library pin matches profile, README, and SOURCES", "library pin" not in _co)
+    check("built-from source pins match the files and SOURCES", "built-from" not in _co)
+    check("amdgpu_linear.c points at tools/minigbm/NOTICES.txt",
+          "found in tools/minigbm/NOTICES.txt" in _c_text and "found in the LICENSE file" not in _c_text)
+    _patch_sha = hashlib.sha256(_patch_path.read_bytes()).hexdigest()
+    check("upstream-delta.patch matches the build script pin",
+          _patch_sha == "0d2e6678b9c71a47a412245a85dfbf99702bda0f56da522fe65b996bb0bee022"
+          and f"PATCH_SHA={_patch_sha}" in _script)
+    check("README names LIB_SHA, LIB_FROM_LINEAR, LIB_FROM_PATCH, and LIB_FROM_TAR together",
+          "update together" not in _co)
+    check("README calls the clang wrapper test a presence and type check",
+          "presence and type check" in _readme
+          and "wrapper integrity check" not in _readme
+          and "A change to the wrapper text is stopped by `LIB_SHA`" in _readme)
+    check("README and SOURCES keep the single-host reproduction limit",
+          "second-host" not in _co)
+    _script_mutations = (
+        ("api level removed from both compile lines", "  -DANDROID_API_LEVEL=37\n", "", 2,
+         ["both arrays -DANDROID_API_LEVEL=37"]),
+        ("cxx hardening flags removed",
+         "  -fstack-protector-strong -D_FORTIFY_SOURCE=2 -ftrivial-auto-var-init=zero -funwind-tables\n"
+         "  -fvisibility-inlines-hidden\n",
+         "  -fvisibility-inlines-hidden\n", 1,
+         ["both arrays -fstack-protector-strong", "both arrays -D_FORTIFY_SOURCE=2",
+          "both arrays -ftrivial-auto-var-init=zero", "both arrays -funwind-tables"]),
+        ("fortify open check removed",
+         'if "__open_2" not in new_undef:\n'
+         '    sys.exit("new lib does not import __open_2 (_FORTIFY_SOURCE)")\n',
+         "", 1, ["fortify open"]),
+        ("ndk pin bypassed",
+         'ndk_rev=$(awk -F= \'/Pkg.Revision/ {gsub(/ /,"",$2); print $2}\' "$NDK/source.properties")\n',
+         'ndk_rev=$NDK_REV; : $(awk -F= \'/Pkg.Revision/ {gsub(/ /,"",$2); print $2}\' "$NDK/source.properties")\n',
+         1, ["ndk revision"]),
+        ("ndk pin removed", '"$ndk_rev" != "$NDK_REV"', '"$ndk_rev" != "$ndk_rev"', 1, ["ndk revision"]),
+        ("pass moved before strings", 'print("STRINGS_OK")\n', "", 1, ["pass before strings"]),
+        ("PASS echo moved before STRINGS_OK",
+         'print("STRINGS_OK")\n', 'echo "PASS"\nprint("STRINGS_OK")\n', 1, ["pass before strings"]),
+        ("stack check removed", '"__stack_chk_fail" not in new_undef', "False", 1, ["stack chk"]),
+        ("clang wrapper hashed as the compiler",
+         'echo "$CLANG_SHA  $CLANG_BIN" | sha256sum -c -',
+         'echo "$CLANG_SHA  $CC" | sha256sum -c -', 1, ["clang wrapper hashed as compiler"]),
+        ("clang pin ignored",
+         'echo "$CLANG_SHA  $CLANG_BIN" | sha256sum -c -',
+         'echo "$CLANG_SHA  $CLANG_BIN" | sha256sum -c - || true', 1, ["checksum ignored"]),
+        ("clang wrapper type check removed",
+         '  if ! head -n 1 "$wrap" | grep -q \'^#!\'; then\n'
+         '    log "clang wrapper is not a script: $wrap"\n'
+         '    exit 1\n'
+         '  fi\n',
+         "", 1, ["clang wrapper type"]),
+        ("resolved clang script guard removed",
+         'if head -n 1 "$CLANG_BIN" | grep -q \'^#!\'; then\n'
+         '  log "resolved clang is a wrapper script, not the compiler binary: $CLANG_BIN"\n'
+         '  exit 1\n'
+         'fi\n',
+         "", 1, ["clang binary script"]),
+        ("cxx flags not passed to cros_gralloc",
+         '"$CXX" "${CXXFLAGS[@]}" -c "$SRC/cros_gralloc/$src"',
+         '"$CXX" -c "$SRC/cros_gralloc/$src"', 1, ["cxxflags not applied"]),
+        ("object hardening marker removed", 'print("object_hardening_ok")\n', "", 1, ["object hardening"]),
+        ("library pin check removed",
+         'if [[ "$sha" != "$LIB_SHA" ]]; then\n'
+         '  log "built $sha != pinned library $LIB_SHA"\n'
+         '  log "refusing PASS: a pinned source changed or the library pin was not updated"\n'
+         '  log "removing /tmp scratch"\n'
+         '  rm -rf /tmp/minigbm4\n'
+         '  exit 1\n'
+         'fi\n',
+         "", 1, ["library pin"]),
+    )
+    for _mname, _mold, _mnew, _mcount, _mexpect in _script_mutations:
+        if _script.count(_mold) != _mcount:
+            check(f"minigbm mutation anchor once: {_mname}", False)
+            continue
+        _mut = _script.replace(_mold, _mnew)
+        _errs = _uniq(_minigbm_script_errors(_mut, _c_text))
+        _emit_mutation(_mname, _errs, _errs == _mexpect)
+    _from_linear = _hex_assign(_script, "LIB_FROM_LINEAR")
+    _detach = _script.replace(f"LIB_FROM_LINEAR={_from_linear}", "LIB_FROM_LINEAR=" + ("0" * 64), 1)
+    _detach_errs = _uniq(_minigbm_script_errors(_detach, _c_text)) if _from_linear else []
+    _emit_mutation("built-from linear pin detached", _detach_errs, _detach_errs == ["linear built-from"])
+    _c_mutations = (
+        ("backend renamed", '\t.name = "amdgpu",\n', '\t.name = "disabled",\n', ["backend name"], ""),
+        ("linear import guard removed",
+         "\tif (modifier != DRM_FORMAT_MOD_LINEAR && modifier != DRM_FORMAT_MOD_INVALID)\n"
+         "\t\treturn -EINVAL;\n",
+         "", ["linear import"], ""),
+        ("yv12 stride doubling removed",
+         "\tif (format == DRM_FORMAT_YVU420_ANDROID)\n"
+         "\t\tstride = amdgpu_linear_yv12_luma(stride, stride_align);\n",
+         "", ["yv12 call"], ""),
+        ("yv12 helper doubling removed",
+         "\t\tstride = (stride + (stride_align * 2) - 1) & ~((stride_align * 2) - 1);\n",
+         "\t\tstride = stride;\n", [], "768 at align 256 becomes 1024"),
+        ("yv12 mask uses stride_align instead of stride_align * 2",
+         "\t\tstride = (stride + (stride_align * 2) - 1) & ~((stride_align * 2) - 1);\n",
+         "\t\tstride = (stride + (stride_align * 2) - 1) & ~((stride_align) - 1); /* stride_align * 2 */\n",
+         [], "already multiple 512 stays 512 at align 256"),
+    )
+    for _mname, _mold, _mnew, _mrest, _mhost in _c_mutations:
+        if _c_text.count(_mold) != 1:
+            check(f"minigbm mutation anchor once: {_mname}", False)
+            continue
+        _mut_c = _c_text.replace(_mold, _mnew, 1)
+        _mut_script = _repin_linear(_script, _mut_c)
+        _errs = _uniq(_minigbm_script_errors(_mut_script, _mut_c)) if _mut_script else ["repin failed"]
+        _host = [err for err in _errs if err.startswith("yv12 host ")]
+        _rest = [err for err in _errs if not err.startswith("yv12 host ")]
+        if _YV12_HOST == "no-cc" and _mhost:
+            _ok = _rest == ["yv12 formula"] and not _host
+            _detail = _errs
+        else:
+            _ok = _rest == _mrest and (not _mhost) == (not _host) and (not _mhost or (len(_host) == 1 and _mhost in _host[0]))
+            _detail = _errs
+        if "linear file" in _errs:
+            _ok = False
+        _emit_mutation(_mname, _detail, _ok)
+    _harden = _harden_py(_script)
+    _harden_missing_stack = _drop_sym(_HARDEN_OK, "cros_gralloc_buffer.o", "__stack_chk_fail")
+    _harden_missing_open = _drop_sym(_HARDEN_OK, "virtgpu_virgl.o", "__open_2")
+    _harden_no_c = _drop_sym(_HARDEN_OK, "amdgpu_linear.o", "__stack_chk_fail")
+    _h_ok = _run_hardening(_harden, _HARDEN_OK) if _harden else (1, "missing hardening python")
+    _h_stack = _run_hardening(_harden, _harden_missing_stack) if _harden else (0, "")
+    _h_open = _run_hardening(_harden, _harden_missing_open) if _harden else (0, "")
+    _h_c = _run_hardening(_harden, _harden_no_c) if _harden else (0, "")
+    check("per-object hardening accepts the required imports",
+          _h_ok[0] == 0 and "object_hardening_ok" in _h_ok[1])
+    check("per-object hardening refuses a cros_gralloc object without __stack_chk_fail",
+          _h_stack[0] != 0 and "cros_gralloc_buffer.o missing __stack_chk_fail" in _h_stack[1])
+    check("per-object hardening refuses virtgpu_virgl.o without __open_2",
+          _h_open[0] != 0 and "virtgpu_virgl.o missing __open_2" in _h_open[1])
+    check("per-object hardening refuses when no C object imports __stack_chk_fail",
+          _h_c[0] != 0 and "no C object imports __stack_chk_fail" in _h_c[1])
+    _harden_off = _harden
+    for _old_exit, _new_exit in (
+        ('        sys.exit(path.name + " missing __stack_chk_fail")\n',
+         '        print(path.name + " missing __stack_chk_fail")\n'),
+        ('        sys.exit(path.name + " missing __open_2")\n',
+         '        print(path.name + " missing __open_2")\n'),
+        ('    sys.exit("no C object imports __stack_chk_fail")\n',
+         '    print("no C object imports __stack_chk_fail")\n'),
+    ):
+        if _harden_off.count(_old_exit) != 1:
+            _harden_off = ""
+            break
+        _harden_off = _harden_off.replace(_old_exit, _new_exit, 1)
+    if _harden_off:
+        _h_mut = _run_hardening(_harden_off, _harden_missing_stack)
+        _h_mut_open = _run_hardening(_harden_off, _harden_missing_open)
+        _h_mut_c = _run_hardening(_harden_off, _harden_no_c)
+        _emit_mutation(
+            "object hardening rejection disabled",
+            "missing imports exit 0",
+            _h_mut[0] == 0 and _h_mut_open[0] == 0 and _h_mut_c[0] == 0,
+        )
+    else:
+        check("minigbm mutation anchor once: object hardening rejection disabled", False)
+    _pin_if, _pin_write = _pin_parts(_script)
+    _pin_bad = _run_pin(_pin_if, _pin_write, "deadbeef", _lib_sha) if _pin_if and _lib_sha else (0, True, "", "")
+    _pin_good = _run_pin(_pin_if, _pin_write, _lib_sha, _lib_sha) if _pin_if and _lib_sha else (1, False, "", "")
+    check("library pin mismatch exits and does not publish PASS",
+          _pin_bad[0] != 0 and not _pin_bad[1] and "/tmp/minigbm4" in _pin_bad[2])
+    check("library pin match publishes PASS", _pin_good[0] == 0 and _pin_good[1])
+    _pin_late = _run_pin(_pin_if, _pin_write, "deadbeef", _lib_sha, swap=True) if _pin_if else (1, False, "", "")
+    _emit_mutation(
+        "library pin check moved after PASS",
+        "mismatch published PASS",
+        _pin_late[1] and _pin_late[0] != 0,
+    )
+    _built_region = _built_from_region(_script)
+    _built_bad = _run_built_from(_built_region, False) if _built_region else (0, "library built-from pins match")
+    _built_good = _run_built_from(_built_region, True) if _built_region else (1, "")
+    check("built-from mismatch exits before the match log",
+          _built_bad[0] != 0 and "library built-from pins match the source pins" not in _built_bad[1])
+    check("built-from match reaches the match log",
+          _built_good[0] == 0 and "library built-from pins match the source pins" in _built_good[1])
+    _built_mut_region = _built_region.replace("  exit 1\n", "  :\n", 1)
+    _built_mut_bad = _run_built_from(_built_mut_region, False) if _built_mut_region and _built_mut_region != _built_region else (1, "")
+    _emit_mutation(
+        "built-from mismatch does not exit",
+        "match log reached",
+        "library built-from pins match the source pins" in _built_mut_bad[1],
+    )
+    _wrap = _region_between(
+        _script, 'for wrap in "$CC" "$CXX"; do\n', 'log "clang wrappers exist and are scripts"\n')
+    _wrap_ok = _run_wrap(_wrap, "#!/bin/sh\n") if _wrap else (1, "")
+    _wrap_text = _run_wrap(_wrap, "not a script\n") if _wrap else (0, "")
+    _wrap_miss = _run_wrap(_wrap, "", cc_exists=False) if _wrap else (0, "")
+    _wrap_dir = _run_wrap(_wrap, "", cc_dir=True) if _wrap else (0, "")
+    check("clang wrappers that are scripts are accepted", _wrap_ok[0] == 0)
+    check("clang wrapper rejection runs: a non-script wrapper is refused",
+          _wrap_text[0] != 0 and "clang wrapper is not a script" in _wrap_text[1])
+    check("clang wrapper rejection runs: a missing wrapper is refused",
+          _wrap_miss[0] != 0 and "missing clang wrapper" in _wrap_miss[1])
+    check("clang wrapper rejection runs: a directory wrapper is refused",
+          _wrap_dir[0] != 0 and "clang wrapper is not a regular file" in _wrap_dir[1])
+    _wrap_mut_script = _script.replace(
+        '  if ! head -n 1 "$wrap" | grep -q \'^#!\'; then\n'
+        '    log "clang wrapper is not a script: $wrap"\n'
+        '    exit 1\n'
+        '  fi\n',
+        "",
+        1,
+    )
+    _wrap_mut = _region_between(
+        _wrap_mut_script, 'for wrap in "$CC" "$CXX"; do\n', 'log "clang wrappers exist and are scripts"\n')
+    _wrap_mut_run = _run_wrap(_wrap_mut, "not a script\n") if _wrap_mut else (1, "")
+    _emit_mutation(
+        "non-script clang wrapper accepted after the type check is removed",
+        "exit 0",
+        _wrap_mut_run[0] == 0,
+    )
+    _clang_if = _region_between(
+        _script,
+        'if head -n 1 "$CLANG_BIN" | grep -q \'^#!\'; then\n',
+        "fi\n",
+    )
+    _clang_script = _run_clang_bin(_clang_if, True) if _clang_if else (0, "")
+    _clang_elf = _run_clang_bin(_clang_if, False) if _clang_if else (1, "")
+    check("resolved clang that is a script is refused",
+          _clang_script[0] != 0 and "resolved clang is a wrapper script" in _clang_script[1])
+    check("resolved clang that is not a script is accepted", _clang_elf[0] == 0)
+    _rows = _compile_rows(_script)
+    _c_rows, _cxx_rows = _split_rows(_rows)
+    check("C compile argv receives the hardening flags", _rows_have(_c_rows, _COMPILE_FLAGS))
+    check("C++ compile argv receives the hardening flags and -fvisibility-inlines-hidden",
+          _rows_have(_cxx_rows, _COMPILE_FLAGS + ("-fvisibility-inlines-hidden",)))
+    _cxx_mut = _script.replace(
+        '"$CXX" "${CXXFLAGS[@]}" -c "$SRC/cros_gralloc/$src"',
+        '"$CXX" -c "$SRC/cros_gralloc/$src"',
+        1,
+    )
+    _mut_rows = _compile_rows(_cxx_mut)
+    _mut_c_rows, _mut_cxx_rows = _split_rows(_mut_rows)
+    _emit_mutation(
+        "cxx flags absent from the compiler argv",
+        "C++ argv dropped the hardening flags",
+        _rows_have(_mut_c_rows, _COMPILE_FLAGS) and not _rows_have(_mut_cxx_rows, _COMPILE_FLAGS),
+    )
+    _src_region = _sources_writer_region(_script)
+    _src_probs = _sources_problems(_src_region)
+    if _src_probs:
+        print("SOURCES writer:", _src_probs)
+    check("OUT/SOURCES.txt carries the output block and literal $HOME", not _src_probs)
+    _src_outside = _sources_problems(_src_region, img_under_home=False)
+    if _src_outside:
+        print("SOURCES writer outside home:", _src_outside)
+    check("OUT/SOURCES.txt leaves a path outside $HOME unchanged", not _src_outside)
+    _aidl_line = 'echo "path: $(home_literal "$AIDL")"\n'
+    if _src_region.count(_aidl_line) != 1:
+        check("minigbm mutation anchor once: SOURCES path expands $HOME", False)
+    else:
+        _src_expand = _sources_problems(_src_region.replace(_aidl_line, 'echo "path: $AIDL"\n', 1))
+        _emit_mutation(
+            "SOURCES path expands $HOME",
+            "expanded home path",
+            "expanded home" in _src_expand and any(item.startswith("missing path: $HOME/gbos-phase/fp/tools/bt/") for item in _src_expand),
+        )
+    _output_line = '  echo "output"\n'
+    if _src_region.count(_output_line) != 1:
+        check("minigbm mutation anchor once: SOURCES output block removed", False)
+    else:
+        _src_drop = _sources_problems(_src_region.replace(_output_line, "", 1))
+        _emit_mutation(
+            "SOURCES output block removed",
+            "missing output",
+            "missing output" in _src_drop,
+        )
+    _host_sentence = "No second-host rebuild is recorded."
+    if _src_region.count(_host_sentence) != 1:
+        check("minigbm mutation anchor once: SOURCES second-host wording", False)
+    else:
+        _legacy_probs = _sources_problems(_src_region.replace(
+            _host_sentence, "This file does not record a second-host rebuild.", 1))
+        _emit_mutation(
+            "SOURCES second-host wording drifted",
+            "missing No second-host rebuild is recorded.",
+            any(item == "missing No second-host rebuild is recorded." for item in _legacy_probs),
+        )
+    _captured = []
+    _copy_render = _sources_problems(_src_region, checkout_pins=True, captured=_captured)
+    _tree = tmp / "sources-copyback"
+    _dest = _tree / "tools" / "minigbm" / "SOURCES.txt"
+    _dest.parent.mkdir(parents=True)
+    shutil.copyfile(ROOT / "tools/minigbm/SOURCES.txt", _dest)
+    if _copy_render or len(_captured) != 1 or not _captured[0]:
+        print("SOURCES copy-back render:", _copy_render)
+        check("generated SOURCES.txt copied over the tracked file passes the checkout checks", False)
+    else:
+        _dest.write_text(_captured[0], encoding="utf-8")
+        _copied = _dest.read_text(encoding="utf-8")
+        _copy_problems = _sources_checkout_problems(
+            _copied, _script, _c_path.read_bytes(), _patch_path.read_bytes(), _readme, _profile)
+        if _copy_problems:
+            print("SOURCES copy-back:", _copy_problems)
+        check("generated SOURCES.txt copied over the tracked file passes the checkout checks",
+              not _copy_problems and _copied == _captured[0])
+elif _git_checkout:
+    check("minigbm build script is present in this git checkout", False)
+    check("amdgpu_linear.c is present in this git checkout", False)
+    check("upstream-delta.patch is present in this git checkout", False)
+else:
+    _skip("minigbm build script enforces the pins, hardening, and status order", _SOURCE_WHY)
+    _skip("amdgpu_linear.c backend, linear import, and YV12 stride", _SOURCE_WHY)
+    _skip("upstream-delta.patch pin", _SOURCE_WHY)
+
+
+def _release_archive_paths(text):
+    start = text.find('git -C "$ROOT" archive')
+    pipe = text.find("| gzip", start)
+    if start < 0 or pipe < 0 or " -- " not in text[start:pipe]:
+        raise SystemExit("make-release.sh archive path list not found")
+    body = text[start:pipe].split(" -- ", 1)[1].replace("\\\n", " ")
+    return shlex.split(body)
+
+
+_rel_maker = ROOT / "tools/release/make-release.sh"
+if not _rel_maker.is_file():
+    _skip("release-tree profile-test and vendor notice slice",
+          "extracted release tree has no make-release.sh")
+else:
+    _rel_paths = _release_archive_paths(_rel_maker.read_text(encoding="utf-8"))
+    _rel = tmp / "release-tree"
+    if _rel.exists():
+        shutil.rmtree(_rel)
+    for _rel_path in _rel_paths:
+        _src = ROOT / _rel_path
+        _target = _rel / _rel_path
+        if not _src.exists():
+            check(f"release path exists: {_rel_path}", False)
+            continue
+        if _src.is_dir():
+            shutil.copytree(_src, _target, symlinks=False)
+        else:
+            _target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(_src, _target)
+    check("release path list ships minigbm NOTICES and not the build sources",
+          (_rel / "tools/minigbm/NOTICES.txt").is_file()
+          and not (_rel / "tools/minigbm/build-libminigbm-gralloc.sh").exists()
+          and not (_rel / "tools/minigbm/amdgpu_linear.c").exists()
+          and not (_rel / "tools/minigbm/upstream-delta.patch").exists())
+    _child = subprocess.run(
+        [sys.executable, "-B", str(_rel / "tests/builder/profile-test.py")],
+        cwd=_rel, capture_output=True, text=True)
+    _child_out = _child.stdout + _child.stderr
+    for _line in _child_out.splitlines():
+        if _line.startswith("SKIP ") or _line.startswith("profile tests:"):
+            print("release-tree " + _line)
+    check("release-tree profile-test passes",
+          _child.returncode == 0 and "profile tests:" in _child_out and ", 0 failed" in _child_out.split("profile tests:")[-1])
+    if _child.returncode != 0:
+        print("release-tree profile-test tail:", "\n".join(_child_out.splitlines()[-30:]))
+    for _need_skip in (
+        "SKIP minigbm build script enforces the pins, hardening, and status order (release tree does not ship git-only minigbm build sources)",
+        "SKIP amdgpu_linear.c backend, linear import, and YV12 stride (release tree does not ship git-only minigbm build sources)",
+        "SKIP upstream-delta.patch pin (release tree does not ship git-only minigbm build sources)",
+    ):
+        check("release-tree " + _need_skip, _need_skip in _child_out)
+    _vtext = (_rel / "builder/vendor.sh").read_text(encoding="utf-8")
+    _vstart = _vtext.index("    import gralloc\n    if gralloc.install_gralloc(prof, tree, vmap, place):")
+    _vend = _vtext.index('print("amd-hx370: vulkan.radeon.so"', _vstart)
+    _vslice = textwrap.dedent(_vtext[_vstart:_vend])
+    _rtree, _rvmap = _stock_tree("release-vendor", b"stock-gralloc")
+    (_rtree / "etc/init").mkdir(parents=True)
+    (_rtree / "etc/init/fwupd.rc").write_bytes(b"fwupd\n")
+    _rvmap["etc/init/fwupd.rc"] = {
+        "mode": 0o644, "uid": 0, "gid": 0, "caps": None,
+        "selinux": "u:object_r:vendor_configs_file:s0",
+    }
+    _rcalls = []
+    _rns = {
+        "gralloc": gralloc,
+        "prof": {"gralloc": {"sha256": _pinned_sha}},
+        "tree": _rtree,
+        "vmap": _rvmap,
+        "place": _place_like_vendor(_rtree, _rvmap, _rcalls),
+        "root": _rel,
+        "hashlib": hashlib,
+        "print": lambda *a, **k: None,
+    }
+    os.environ["GBOS_MINIGBM"] = str(_pinned_path)
+    _rmsg = ""
+    try:
+        exec(_vslice, _rns)
+    except SystemExit as e:
+        _rmsg = str(e)
+    finally:
+        if _saved_minigbm is None:
+            os.environ.pop("GBOS_MINIGBM", None)
+        else:
+            os.environ["GBOS_MINIGBM"] = _saved_minigbm
+    _notice_bytes = (_rel / "tools/minigbm/NOTICES.txt").read_bytes()
+    check("release-tree vendor slice installs the shipped NOTICES",
+          _rmsg == ""
+          and (_rtree / "lib64/libminigbm_gralloc.so").read_bytes() == _pinned
+          and (_rtree / "etc/NOTICES-amd-hx370-minigbm.txt").read_bytes() == _notice_bytes
+          and any(c[0] == "etc/NOTICES-amd-hx370-minigbm.txt" for c in _rcalls))
 
 shutil.rmtree(tmp, ignore_errors=True)
 print(f"profile tests: {passed} passed, {failed} failed")

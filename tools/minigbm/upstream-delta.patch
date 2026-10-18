@@ -1,0 +1,187 @@
+diff --git a/cros_gralloc/cros_gralloc_driver.cc b/cros_gralloc/cros_gralloc_driver.cc
+index 706dee9..836b1ac 100644
+--- a/cros_gralloc/cros_gralloc_driver.cc
++++ b/cros_gralloc/cros_gralloc_driver.cc
+@@ -218,6 +218,9 @@ bool cros_gralloc_driver::get_resolved_format_and_use_flags(
+ 	if (!combo)
+ 		return false;
+ 
++	if (!drv_is_protected_usage_permitted(drv_.get(), resolved_use_flags))
++		return false;
++
+ 	*out_format = resolved_format;
+ 	*out_use_flags = resolved_use_flags;
+ 	return true;
+diff --git a/drv.c b/drv.c
+index b74ed99..d87401a 100644
+--- a/drv.c
++++ b/drv.c
+@@ -815,3 +815,11 @@ uint32_t drv_get_max_texture_2d_size(struct driver *drv)
+ 
+ 	return UINT32_MAX;
+ }
++
++bool drv_is_protected_usage_permitted(struct driver *drv, uint64_t use_flags)
++{
++	if (drv->backend->is_protected_usage_permitted)
++		return drv->backend->is_protected_usage_permitted(drv, use_flags);
++
++	return true;
++}
+diff --git a/drv.h b/drv.h
+index 38ee79f..7ad30ec 100644
+--- a/drv.h
++++ b/drv.h
+@@ -261,6 +261,8 @@ int drv_resource_info(struct bo *bo, uint32_t strides[DRV_MAX_PLANES],
+ 
+ uint32_t drv_get_max_texture_2d_size(struct driver *drv);
+ 
++bool drv_is_protected_usage_permitted(struct driver *drv, uint64_t use_flags);
++
+ enum drv_log_level {
+ 	DRV_LOGV,
+ 	DRV_LOGD,
+diff --git a/drv_priv.h b/drv_priv.h
+index d590322..a6e41a3 100644
+--- a/drv_priv.h
++++ b/drv_priv.h
+@@ -105,6 +105,7 @@ struct backend {
+ 	int (*resource_info)(struct bo *bo, uint32_t strides[DRV_MAX_PLANES],
+ 			     uint32_t offsets[DRV_MAX_PLANES], uint64_t *format_modifier);
+ 	uint32_t (*get_max_texture_2d_size)(struct driver *drv);
++	bool (*is_protected_usage_permitted)(struct driver *drv, uint64_t use_flags);
+ };
+ 
+ // clang-format off
+diff --git a/external/virtgpu_drm.h b/external/virtgpu_drm.h
+index 7720900..048a450 100644
+--- a/external/virtgpu_drm.h
++++ b/external/virtgpu_drm.h
+@@ -82,9 +82,10 @@ struct drm_virtgpu_execbuffer {
+ #define VIRTGPU_PARAM_CROSS_DEVICE 5 /* Cross virtio-device resource sharing  */
+ #define VIRTGPU_PARAM_CONTEXT_INIT 6 /* DRM_VIRTGPU_CONTEXT_INIT */
+ #define VIRTGPU_PARAM_SUPPORTED_CAPSET_IDs 7 /* Bitmask of supported capability set ids */
+-#define VIRTGPU_PARAM_CREATE_GUEST_HANDLE 8 /* Host OS handle can be created from guest memory. */
+-#define VIRTGPU_PARAM_RESOURCE_SYNC 9 /* Synchronization resources */
+-#define VIRTGPU_PARAM_GUEST_VRAM 10 /* All guest allocations happen via virtgpu dedicated heap. */
++#define VIRTGPU_PARAM_EXPLICIT_DEBUG_NAME 8 /* Ability to set debug name from userspace */
++
++/* Not upstreamed: used by gfxstream */
++#define VIRTGPU_PARAM_CREATE_GUEST_HANDLE 10  /* Host OS handle can be created from guest memory. */
+ 
+ struct drm_virtgpu_getparam {
+ 	__u64 param;
+diff --git a/intel_defines.h b/intel_defines.h
+index e6cdaa7..998ef28 100644
+--- a/intel_defines.h
++++ b/intel_defines.h
+@@ -79,3 +79,23 @@ const uint16_t lnl_ids[] = {
+ 
+ const uint16_t ptl_ids[] = { 0xB080, 0xB081, 0xB082, 0xB083, 0xB08F,
+ 			     0xB090, 0xB0A0, 0xB0B0, 0xFD80, 0xFD81 };
++
++const uint16_t nvl_ids[] = {
++       /* NVL-S */
++       0xD740,
++       0xD741,
++       0xD742,
++       0xD743,
++       0xD744,
++       0xD745,
++       /* NVL-P */
++       0xD750,
++       0xD751,
++       0xD752,
++       0xD753,
++       0xD754,
++       0xD755,
++       0xD756,
++       0xD757,
++       0xD75F
++};
+diff --git a/virtgpu.c b/virtgpu.c
+index 2f4b8db..255d398 100644
+--- a/virtgpu.c
++++ b/virtgpu.c
+@@ -27,7 +27,6 @@ struct virtgpu_param params[] = {
+ 	PARAM(VIRTGPU_PARAM_RESOURCE_BLOB),	   PARAM(VIRTGPU_PARAM_HOST_VISIBLE),
+ 	PARAM(VIRTGPU_PARAM_CROSS_DEVICE),	   PARAM(VIRTGPU_PARAM_CONTEXT_INIT),
+ 	PARAM(VIRTGPU_PARAM_SUPPORTED_CAPSET_IDs), PARAM(VIRTGPU_PARAM_CREATE_GUEST_HANDLE),
+-	PARAM(VIRTGPU_PARAM_RESOURCE_SYNC),	   PARAM(VIRTGPU_PARAM_GUEST_VRAM),
+ };
+ 
+ extern const struct backend virtgpu_virgl;
+diff --git a/virtgpu.h b/virtgpu.h
+index e74afd2..c35b723 100644
+--- a/virtgpu.h
++++ b/virtgpu.h
+@@ -19,8 +19,6 @@ enum virtgpu_param_id {
+ 	param_context_init,
+ 	param_supported_capset_ids,
+ 	param_create_guest_handle,
+-	param_resource_sync,
+-	param_guest_vram,
+ 	param_max,
+ };
+ 
+diff --git a/xe.c b/xe.c
+index 03c019a..b15a309 100644
+--- a/xe.c
++++ b/xe.c
+@@ -15,6 +15,11 @@
+ #include <unistd.h>
+ #include <xf86drm.h>
+ 
++#ifdef __ANDROID__
++#include <android/binder_ibinder.h>
++#include <cutils/android_filesystem_config.h>
++#endif
++
+ #include "drv_helpers.h"
+ #include "drv_priv.h"
+ 
+@@ -103,6 +108,14 @@ static void xe_info_from_device_id(struct xe_device *xe)
+ 			return;
+ 		}
+ 	}
++
++	for (i = 0; i < ARRAY_SIZE(nvl_ids); i++) {
++		if (nvl_ids[i] == xe->device_id) {
++			xe->graphics_version = 30;
++			xe->is_mtl_or_newer = true;
++			return;
++		}
++	}
+ }
+ 
+ static void xe_get_modifier_order(struct xe_device *xe)
+@@ -816,6 +829,19 @@ static int xe_bo_flush(struct bo *bo, struct mapping *mapping)
+ 	return 0;
+ }
+ 
++#ifdef __ANDROID__
++static bool xe_is_protected_usage_permitted(struct driver *drv, uint64_t use_flags)
++{
++	if ((use_flags & BO_USE_PROTECTED) &&
++	    ((use_flags & BO_USE_RENDERING) ||
++	     (use_flags & BO_USE_GPU_DATA_BUFFER))) {
++		uid_t uid = AIBinder_getCallingUid();
++		return uid == AID_SYSTEM;
++	}
++	return true;
++}
++#endif
++
+ const struct backend backend_xe = {
+ 	.name = "xe",
+ 	.init = xe_init,
+@@ -830,6 +856,9 @@ const struct backend backend_xe = {
+ 	.bo_export = drv_prime_bo_export,
+ 	.bo_flush = xe_bo_flush,
+ 	.resolve_format_and_use_flags = drv_resolve_format_and_use_flags_helper,
++#ifdef __ANDROID__
++	.is_protected_usage_permitted = xe_is_protected_usage_permitted,
++#endif
+ };
+ 
+ #endif

@@ -7,6 +7,8 @@ fence exemption and no version-section boundary. The gate command is taken
 from .gitlab-ci.yml and run on copies of the notes. It is not reimplemented
 here. The variants are built from a synthetic template: the real notes stay
 unreleased until the tag commit, and this test must keep passing on that commit.
+The release job's parsed script is also exercised under sh with the available
+awk implementations; output and mutation checks cover its current-section description.
 """
 import difflib
 import os
@@ -61,7 +63,7 @@ PINNED_CI_BLOCKS = {
     ".deps": """.deps: &deps
   before_script:
     - apt-get update -qq
-    - apt-get install -y -qq --no-install-recommends bash coreutils util-linux procps python3 python3-yaml mtools zstd lz4 shellcheck git file gdisk > /dev/null
+    - apt-get install -y -qq --no-install-recommends bash busybox coreutils util-linux procps python3 python3-yaml mtools zstd lz4 shellcheck git file gdisk > /dev/null
     # the runner reuses the checkout between jobs and the test jobs hand it to the tester user; root's git would refuse it
     - git config --global --add safe.directory "$CI_PROJECT_DIR"
 """,
@@ -86,7 +88,7 @@ PINNED_CI_BLOCKS = {
     paths: [out/release/]
     expire_in: 30 days
 """,
-    "release": """release:
+    "release": r"""release:
   stage: release
   image: registry.gitlab.com/gitlab-org/release-cli:latest
   rules:
@@ -94,11 +96,37 @@ PINNED_CI_BLOCKS = {
   needs: [package]
   script:
     - test "$(head -n 1 docs/RELEASE-NOTES.md)" = "# Googlebook Anywhere $CI_COMMIT_TAG" || { echo "docs/RELEASE-NOTES.md line 1 expected '# Googlebook Anywhere $CI_COMMIT_TAG'"; exit 1; }
+    # Keep the current section intact, including heading examples inside Markdown fences.
+    - |
+      LC_ALL=C awk '
+        {
+          line = $0
+          sub(/^(   |  | )/, "", line)
+          if (fence != "") {
+            if (substr(line, 1, 1) == fence) {
+              match(line, /^(`+|~+)/)
+              if (RLENGTH >= width && substr(line, RLENGTH + 1) ~ /^[ \t]*$/) fence = ""
+            }
+          } else if (line ~ /^```/ || line ~ /^~~~/) {
+            match(line, /^(`+|~+)/)
+            marker = substr(line, 1, 1)
+            if (marker == "~" || substr(line, RLENGTH + 1) !~ /`/) {
+              fence = marker
+              width = RLENGTH
+            }
+          } else if (NR > 1 && /^# Googlebook Anywhere /) exit
+          print
+        }
+        END {
+          print ""
+          print "[Full release history](" ENVIRON["CI_PROJECT_URL"] "/-/blob/" ENVIRON["CI_COMMIT_TAG"] "/docs/RELEASE-NOTES.md)"
+        }
+      ' docs/RELEASE-NOTES.md > release-description.md
     - echo "release $CI_COMMIT_TAG"
   release:
     tag_name: $CI_COMMIT_TAG
     name: $CI_COMMIT_TAG
-    description: ./docs/RELEASE-NOTES.md
+    description: ./release-description.md
     assets:
       links:
         - name: googlebook-anywhere-$CI_COMMIT_TAG.tar.gz (installer scripts; no disk/firmware images)
@@ -839,8 +867,8 @@ def tracker_problem(text):
                 if val != "on_success":
                     return "release rules when is not on_success"
         rel_spec = release.get("release")
-        if rel_spec is None or keyed_values(rel_spec, "description") != ["./docs/RELEASE-NOTES.md"]:
-            return "release description is not ./docs/RELEASE-NOTES.md"
+        if rel_spec is None or keyed_values(rel_spec, "description") != ["./release-description.md"]:
+            return "release description is not ./release-description.md"
         needs_entry = release.get("needs")
         if needs_entry is None:
             return "release job does not need the package job"
@@ -1441,6 +1469,103 @@ def current_tag(text):
     return None
 
 
+LINE_BREAK_CHARS = {
+    "\r": "U+000D (carriage return)",
+    "\v": "U+000B (vertical tab)",
+    "\f": "U+000C (form feed)",
+    "\x1c": "U+001C (file separator)",
+    "\x1d": "U+001D (group separator)",
+    "\x1e": "U+001E (record separator)",
+    "\x85": "U+0085 (next line)",
+    "\u2028": "U+2028 (line separator)",
+    "\u2029": "U+2029 (paragraph separator)",
+}
+
+
+def _version_paragraph_problem(paragraph):
+    """Build the normalized view for one paragraph of raw (lineno, line) rows."""
+    view = " ".join(raw for _lineno, raw in paragraph)
+    view = re.sub(r"\]\([^)]*\)", "", view)
+    view = re.sub(r"[*_`~\[\]()]", "", view)
+    view = re.sub(r"\s+", " ", view).lower()
+    if not re.search(r"googlebook anywhere v[0-9]", view):
+        return None
+    if len(paragraph) == 1 and re.match(r"# Googlebook Anywhere v[0-9]", paragraph[0][1]):
+        return None
+    return (
+        f"docs/RELEASE-NOTES.md line {paragraph[0][0]}: 'Googlebook Anywhere v...' may appear only "
+        "in a top-level '# Googlebook Anywhere v...' heading line"
+    )
+
+
+def version_heading_problem(text):
+    """Refuse version strings outside fences unless each paragraph is a column-0 '# Googlebook Anywhere v...' heading.
+
+    The notes are expected as raw bytes for this check: a "\\r" or any other
+    character that str.splitlines() breaks on but awk does not (LF is the only
+    awk line break) refuses the file. Paragraphs form on non-blank runs, and
+    blank lines, setext/thematic-break underline runs, headings and fences
+    take the paragraph and start a new one.
+    """
+    if isinstance(text, (bytes, bytearray)):
+        text = bytes(text).decode("utf-8")
+    for lineno, line in enumerate(text.split("\n"), 1):
+        for char in line:
+            if char in LINE_BREAK_CHARS:
+                return (
+                    f"docs/RELEASE-NOTES.md line {lineno}: expected only '\\n' as a line break; "
+                    f"found {LINE_BREAK_CHARS[char]}"
+                )
+    fence = ""
+    width = 0
+    paragraph = []
+
+    def skim(rows):
+        return _version_paragraph_problem(rows)
+
+    for lineno, raw in enumerate(text.split("\n"), 1):
+        line = re.sub(r"^(?:   |  | )", "", raw)
+        if fence:
+            if line.startswith(fence):
+                m = re.match(r"^(`+|~+)", line)
+                if m and len(m.group(1)) >= width and re.match(r"^[ \t]*$", line[len(m.group(1)):]):
+                    fence = ""
+                    width = 0
+                    problem = skim(paragraph)
+                    if problem:
+                        return problem
+                    paragraph = []
+            continue
+        m = re.match(r"^(`{3,}|~{3,})", line)
+        if m:
+            marker = m.group(1)[0]
+            if marker == "~" or "`" not in line[len(m.group(1)):]:
+                fence = marker
+                width = len(m.group(1))
+                problem = skim(paragraph)
+                if problem:
+                    return problem
+                paragraph = []
+                continue
+        if re.match(r"^[ \t>]*$", line) or re.match(r"^[ \t>]*(=+|-+|\*+|_+)[ \t]*$", line) or re.match(
+            r"^[ \t>]*#", line
+        ):
+            problem = skim(paragraph)
+            if problem:
+                return problem
+            paragraph = []
+        if re.match(r"^[ \t>]*#", line):
+            problem = skim([(lineno, raw)])
+            if problem:
+                return problem
+            continue
+        paragraph.append((lineno, raw))
+    problem = skim(paragraph)
+    if problem:
+        return problem
+    return None
+
+
 def flip_real(text, tag):
     lines = text.splitlines()
     if len(lines) < 3 or lines[1] != "":
@@ -1450,9 +1575,131 @@ def flip_real(text, tag):
     lines[0] = f"# Googlebook Anywhere {tag}"
     lines[2] = RELEASED_LINE
     body = "\n".join(lines) + "\n"
-    if "這一版還沒有發布。多的是一條安裝碟流程：" in body:
-        return body.replace("這一版還沒有發布。多的是一條安裝碟流程：", "這一版多了一條安裝碟流程：", 1)
     return body.replace("這一版還沒有發布。", "", 1)
+
+
+def release_description_runtimes():
+    runtimes = [("sh/awk", ["/bin/sh"], shutil.which("awk"))]
+    for name in ("mawk", "gawk"):
+        binary = shutil.which(name)
+        if binary:
+            runtimes.append((f"sh/{name}", ["/bin/sh"], binary))
+        else:
+            print(f"SKIP release description sh/{name} ({name} not installed)")
+    busybox = shutil.which("busybox")
+    if busybox:
+        runtimes.append(("busybox sh/awk", [busybox, "sh"], busybox))
+    else:
+        print("SKIP release description busybox sh/awk (busybox not installed)")
+    return runtimes
+
+
+def release_description_problem(ci, notes, tag, project, expected, shell, awk, refuse=False):
+    """Execute the actual parsed release script in a disposable checkout, never release-cli."""
+    with tempfile.TemporaryDirectory(prefix="gbos-release-description-") as tmp:
+        directory = Path(tmp)
+        ci_file = directory / ".gitlab-ci.yml"
+        ci_file.write_text(ci, encoding="utf-8")
+        job = _pyyaml.safe_load(ci_file.read_text(encoding="utf-8"))["release"]
+        commands = job["script"]
+        if not isinstance(commands, list) or not all(isinstance(cmd, str) for cmd in commands):
+            return "release.script must be a list of shell strings"
+        source = directory / "docs" / "RELEASE-NOTES.md"
+        source.parent.mkdir()
+        source.write_text(notes, encoding="utf-8")
+        bindir = directory / "bin"
+        bindir.mkdir()
+        # BusyBox selects its awk applet by argv[0]; other binaries use the same name.
+        (bindir / "awk").symlink_to(awk)
+        env = os.environ.copy()
+        env.update(CI_COMMIT_TAG=tag, CI_PROJECT_URL=project)
+        env["PATH"] = str(bindir) + os.pathsep + env.get("PATH", os.defpath)
+        proc = subprocess.run(
+            [*shell, "-eu", "-c", "\n".join(commands)],
+            cwd=directory, env=env, capture_output=True, text=True, timeout=10,
+        )
+        description = directory / job["release"]["description"]
+        if refuse:
+            if proc.returncode == 0 or description.exists():
+                return "wrong tag was not refused before writing the description"
+            if "line 1 expected" not in proc.stdout + proc.stderr:
+                return "wrong tag did not report the existing line-1 diagnostic"
+            return None
+        if proc.returncode:
+            return f"release script exited {proc.returncode}: {proc.stdout}{proc.stderr}"
+        if not description.is_file():
+            return "release.description does not name the generated file"
+        if source.read_text(encoding="utf-8") != notes:
+            return "release script changed the full history file"
+        if description.read_bytes() != expected.encode("utf-8"):
+            return "description differs from the exact current section plus final history link"
+    return None
+
+
+def expect_release_descriptions(ci, flipped, tag):
+    if _pyyaml is None:
+        print("SKIP parsed release description tests (PyYAML not installed)")
+        return  # main already requires PyYAML when CI is set
+    current = "# Googlebook Anywhere v9.9.9\n\n" + RELEASED_LINE + "\n\n## Changes\n\n- Current item.\n\n"
+    older = OLDER + "\n# Googlebook Anywhere v9.9.7\n\nOldest item.\n"
+    # Explicitly retain every line before the known next heading in the real notes.
+    real_current = flipped[:flipped.index("\n# Googlebook Anywhere ", 1) + 1]
+    backticks = (
+        current + "   ````markdown\n# Googlebook Anywhere example\n"
+        "```\n# Googlebook Anywhere after short fence\n"
+        "~~~~\n# Googlebook Anywhere after wrong fence\n"
+        "```` trailing text\n# Googlebook Anywhere after non-closing fence\n"
+        "  `````\n\nStill current after the fence.\n\n"
+    )
+    tildes = (
+        current + " ~~~markdown\n# Googlebook Anywhere example\n"
+        "```\n# Googlebook Anywhere after wrong fence\n"
+        "  ~~~~\t\n\nStill current after the fence.\n\n"
+    )
+    cases = (
+        (f"real {tag} flipped", flipped, real_current, tag),
+        ("three versions", current + older, current, "v9.9.9"),
+        ("only section, no final newline", current.rstrip("\n"), current.rstrip("\n") + "\n", "v9.9.9"),
+        ("backtick-fenced headings", backticks + older, backticks, "v9.9.9"),
+        ("tilde-fenced headings", tildes + older, tildes, "v9.9.9"),
+    )
+    # Exercise broken commands through parsed temporary YAML too: pin failures alone
+    # would not prove these output assertions can detect a broken extraction.
+    release = extract_raw_blocks(ci)["release"]
+    mutants = (
+        ("omit section", "          print\n", "          # print removed\n", cases),
+        ("omit history link", '          print "[Full release history]', '          # print "[Full release history]', cases),
+        ("keep older sections", 'else if (NR > 1 && /^# Googlebook Anywhere /) exit',
+         'else if (0) exit', tuple(case for case in cases if not case[0].startswith("only section"))),
+        ("ignore fences", 'if (fence != "") {', 'if (0) {', cases[3:]),
+    )
+    for runtime, shell, awk in release_description_runtimes():
+        if awk is None:
+            fail(f"{runtime} requires awk")
+        for index, (label, notes, section, case_tag) in enumerate(cases):
+            project = f"https://gitlab.example.invalid/group-{index}/project"
+            expected = section + f"\n[Full release history]({project}/-/blob/{case_tag}/docs/RELEASE-NOTES.md)\n"
+            problem = release_description_problem(ci, notes, case_tag, project, expected, shell, awk)
+            if problem:
+                fail(f"release description {runtime} {label}: {problem}")
+            print(f"release-notes-gate: release description {runtime} {label}: pass")
+        problem = release_description_problem(
+            ci, current, "v0.0.0", "https://gitlab.example.invalid/wrong/tag", "", shell, awk, refuse=True,
+        )
+        if problem:
+            fail(f"release description {runtime}: {problem}")
+        print(f"release-notes-gate: release description {runtime} wrong tag: refuse")
+        for mutation, old, new, affected in mutants:
+            if release.count(old) != 1:
+                fail(f"cannot place release description mutation {mutation}")
+            mutant = ci.replace(release, release.replace(old, new, 1), 1)
+            for label, notes, section, case_tag in affected:
+                project = "https://gitlab.example.invalid/mutation/project"
+                expected = section + f"\n[Full release history]({project}/-/blob/{case_tag}/docs/RELEASE-NOTES.md)\n"
+                problem = release_description_problem(mutant, notes, case_tag, project, expected, shell, awk)
+                if problem is None or not problem.startswith("description differs"):
+                    fail(f"release description mutant {mutation} {runtime} {label}: expected output mismatch, got {problem}")
+                print(f"release-notes-gate: release description mutation {mutation} {runtime} {label}: red")
 
 
 def planted(phrase):
@@ -1725,7 +1972,7 @@ def main():
         True,
     )
     expect_ci(
-        ci.replace("description: ./docs/RELEASE-NOTES.md", "description: ./docs/RELEASE-NOTES.en.md", 1),
+        ci.replace("description: ./release-description.md", "description: ./docs/RELEASE-NOTES.en.md", 1),
         "claude n4 release description changed",
         True,
     )
@@ -1827,6 +2074,99 @@ def main():
     tag = current_tag(real)
     if tag is None:
         fail("docs/RELEASE-NOTES.md line 1 does not name a version")
+    h_prob = version_heading_problem(NOTES.read_bytes())
+    if h_prob is not None:
+        fail(h_prob)
+    for bad_label, bad_notes in (
+        ("indented version heading", real.replace("\n# Googlebook Anywhere v0.2.1\n", "\n # Googlebook Anywhere v0.2.1\n", 1)),
+        ("sub-heading version heading", real.replace("\n# Googlebook Anywhere v0.2.1\n", "\n## Googlebook Anywhere v0.2.1\n", 1)),
+        ("setext === version heading", real.replace("\n# Googlebook Anywhere v0.2.1\n", "\nGooglebook Anywhere v0.2.1\n==========================\n", 1)),
+        ("setext --- version heading", real.replace("\n# Googlebook Anywhere v0.2.1\n", "\nGooglebook Anywhere v0.2.1\n--------------------------\n", 1)),
+        ("multi-line setext version heading", real.replace("\n# Googlebook Anywhere v0.2.1\n", "\nGooglebook Anywhere v0.2.1\nmore notes on this release\n==========================\n", 1)),
+        ("list-item setext === version heading", real.replace("\n# Googlebook Anywhere v0.2.1\n", "\n- Googlebook Anywhere v0.2.1\n  ===\n", 1)),
+        ("list-item setext --- version heading", real.replace("\n# Googlebook Anywhere v0.2.1\n", "\n1. Googlebook Anywhere v0.2.1\n   ---\n", 1)),
+        ("legacy-line setext === version heading", real.replace("\n# Googlebook Anywhere v0.2.1\n", "\nGooglebook Anywhere v0.2.1\n#legacy notes\n===\n", 1)),
+        ("table-line setext === version heading", real.replace("\n# Googlebook Anywhere v0.2.1\n", "\nGooglebook Anywhere v0.2.1\n| legacy notes |\n===\n", 1)),
+        ("list-item ATX version heading", "- # Googlebook Anywhere v0.2.1"),
+        ("quote-marklist ATX version heading", "> - # Googlebook Anywhere v0.2.1"),
+        ("nested quote version line with setext ===", ">  > Googlebook Anywhere v0.2.1\n>  > ==="),
+        ("legacy note line before setext ===", "Googlebook Anywhere v0.2.1\n    # legacy note\n==="),
+        ("prose version mention", "see Googlebook Anywhere v0.2.0 for details"),
+        ("list-item version line before --- rule", "- Googlebook Anywhere v0.2.1\n---"),
+        (
+            "block-quoted version line, quote-blank, --- rule",
+            real.replace("\n# Googlebook Anywhere v0.2.1\n", "\n> Googlebook Anywhere v0.2.1\n>\n---\n", 1),
+        ),
+    ):
+        if version_heading_problem(bad_notes) is None:
+            fail(f"{bad_label} was not refused")
+        print(f"release-notes-gate: {bad_label}: refuse")
+    for bad_label, bad_notes, needles in (
+        ("split setext === version heading", "Googlebook Anywhere\nv0.2.2\n===\n", ("line 1",)),
+        ("split setext --- version heading", "Googlebook\nAnywhere v0.2.1\n---\n", ("line 1",)),
+        ("double-space sub-heading", "## Googlebook  Anywhere v0.2.2\n", ("line 1",)),
+        ("bold sub-heading", "## Googlebook Anywhere **v0.2.2**\n", ("line 1",)),
+        ("tab sub-heading", "## Googlebook Anywhere\tv0.2.1\n", ("line 1",)),
+        ("NBSP sub-heading", "## Googlebook\u00a0Anywhere v0.2.1\n", ("line 1",)),
+        ("inline-code sub-heading", "## Googlebook Anywhere `v0.2.1`\n", ("line 1",)),
+        ("em sub-heading", "## Googlebook *Anywhere* v0.2.1\n", ("line 1",)),
+        ("linked sub-heading", "## Googlebook Anywhere [v0.2.1](https://example.com)\n", ("line 1",)),
+        ("uppercase-V sub-heading", "## Googlebook Anywhere V0.2.1\n", ("line 1",)),
+        ("raw CR inside line (bytes)", b"## old\r# Googlebook Anywhere v0.2.2", ("line 1", "U+000D")),
+        (
+            "CRLF fence close (bytes)",
+            b"```text\nfence example\n```\r\n\n\n# Googlebook Anywhere v0.2.1\n",
+            ("line 3", "U+000D"),
+        ),
+        ("U+2028 inside line", "## \u2028# Googlebook Anywhere v0.2.1\n", ("line 1", "U+2028")),
+    ):
+        problem = version_heading_problem(bad_notes)
+        if problem is None:
+            fail(f"{bad_label} was not refused")
+        for needle in needles:
+            if needle not in problem:
+                fail(f"{bad_label} message missing {needle!r}: {problem}")
+        print(f"release-notes-gate: {bad_label}: refuse")
+    heading_rule = real.replace(
+        "\n# Googlebook Anywhere v0.2.1\n",
+        "\n# Googlebook Anywhere v0.2.1\n---\n",
+        1,
+    )
+    if version_heading_problem(heading_rule) is not None:
+        fail("top-level ATX version heading followed by a --- rule was refused")
+    print("release-notes-gate: top-level ATX heading then --- rule: pass")
+    for good_label, good_notes in (
+        ("ATX heading ends the run before a --- rule", real.replace("\n# Googlebook Anywhere v0.2.1\n", "\n# Googlebook Anywhere v0.2.1\nsome text\n---\n", 1)),
+        ("text without a version before --- and === rules", "text without a version\n***\nmore\n==="),
+    ):
+        if version_heading_problem(good_notes) is not None:
+            fail(f"{good_label} was refused")
+        print(f"release-notes-gate: {good_label}: pass")
+    fenced_shapes = real.replace(
+        "\n# Googlebook Anywhere v0.2.1\n",
+        "\n```markdown\n # Googlebook Anywhere v0.2.1\nGooglebook Anywhere v0.2.0\n===\n```\n\n# Googlebook Anywhere v0.2.1\n",
+        1,
+    )
+    if version_heading_problem(fenced_shapes) is not None:
+        fail("fenced version-heading examples were refused")
+    fence_after_close = "```\n# Googlebook Anywhere inside a closed fence\n```\n## Googlebook Anywhere v0.2.1\n"
+    if version_heading_problem(fence_after_close) is None:
+        fail("a version line after a closed fence was not refused (fence close must resume scanning)")
+    print("release-notes-gate: version line after a closed fence: refuse")
+    short_close = "````\n# Googlebook Anywhere still fenced for a shorter close\n```\n# Googlebook Anywhere v0.2.1\n"
+    if version_heading_problem(short_close) is not None:
+        fail("a shorter close line closed a wider backtick fence too early")
+    print("release-notes-gate: shorter close stays fenced: pass")
+    premature_close = (
+        "````\n# so far fine\n``` tempting early close\n## Googlebook Anywhere v0.2.1 inside width-4 fence\n"
+    )
+    if version_heading_problem(premature_close) is not None:
+        fail("a shorter backtick run closed a width-4 fence too early")
+    print("release-notes-gate: short close cannot close width-4 fence: pass")
+    info_backtick = "```markdown `not a fence`\n## Googlebook Anywhere v0.2.1\n"
+    if version_heading_problem(info_backtick) is None:
+        fail("a backtick fence opener with a backtick in its info string was accepted")
+    print("release-notes-gate: backtick in backtick-fence info string: refuse")
     older_start = real.index("\n# Googlebook Anywhere v0.2.0\n")
     assert_no_unpublished(real[older_start:], "docs/RELEASE-NOTES.md older sections")
     print("release-notes-gate: docs/RELEASE-NOTES.md older sections have no unpublished wording: yes")
@@ -1837,8 +2177,17 @@ def main():
     flipped = flip_real(real, tag)
     if flipped.splitlines()[2] != RELEASED_LINE:
         fail("flipped notes did not put the released status on line 3")
-    if not flipped.splitlines()[4].startswith("這一版多了一條安裝碟流程："):
-        fail("flipped notes intro does not start with 這一版多了一條安裝碟流程：")
+    _unpublished_sentence = "這一版還沒有發布。"
+    if _unpublished_sentence not in real:
+        if flipped.splitlines()[3:] != real.splitlines()[3:]:
+            fail("flipped notes changed a line other than lines 1 and 3")
+    else:
+        _real_tail = "\n".join(real.splitlines()[3:]).replace(_unpublished_sentence, "", 1)
+        _flipped_tail = "\n".join(flipped.splitlines()[3:])
+        if _flipped_tail != _real_tail:
+            fail("flipped notes changed more than lines 1 and 3 and the removed sentence")
+    # The flipped notes are run through the real gate below; any unpublished wording left in them fails there.
+    expect_release_descriptions(ci, flipped, tag)
 
     unreleased_status = with_older(
         "# Googlebook Anywhere v9.9.9\n"

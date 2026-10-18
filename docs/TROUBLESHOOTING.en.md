@@ -166,8 +166,22 @@ For firmware flashing, writing the USB, and safety trade-offs, see `FIRMWARE.md`
   - **Back up the BitLocker recovery key before** changing any Secure Boot
     setting, or you may be unable to decrypt the disk afterward.
   - It provides two boot entries: the default "safe" (does not load `amdgpu`) and
-    "native amdgpu (experimental)" (loads the native `amdgpu`). Stock minigbm has no amdgpu backend, so the native entry may show a black screen; choose the safe entry.
-  - The build needs a self-built kernel (`GBOS_DEV_KERNEL_DIR`) and RADV, or `build.sh` refuses (as `profiles/amd-hx370/profile.toml` says).
+    "native amdgpu (experimental)" (loads the native `amdgpu`). Both entries run
+    the same five early-boot module loads: `bluetooth`, `btusb`,
+    `snd_hda_codec_alc269`, `iwlmvm`, and `snd_hda_intel`. The safe/native
+    difference is `amdgpu`; neither entry skips HDA, Bluetooth, or `iwlmvm`.
+  - This profile ships a rebuilt gralloc with `backend_amdgpu` (sha256 pinned in `[gralloc]`). The safe and native entries share that one file. The native entry has still never been run on hardware, and it may show a black screen; choose the safe entry.
+  - The build needs a self-built kernel (`GBOS_DEV_KERNEL_DIR`), RADV, and a `GBOS_MINIGBM` that `[gralloc]` names with a matching sha256 (`tools/minigbm/build-libminigbm-gralloc.sh`, git repo only), or `build.sh` refuses (as `profiles/amd-hx370/profile.toml` says).
+  - The build needs `GBOS_DEV_KERNEL_DIR/modules/bluetooth.ko`. If that file is
+    missing, the build stops. That is a build prerequisite, not something a
+    firmware file added after boot can repair.
+  - A module being loaded, an ALSA card appearing, and Android audio HAL/routing
+    being able to play are different layers. This profile's `[audio]` fields
+    (`card`, `config_dir`, `sources`) are still empty.
+  - On failure, separate the layers with read-only checks:
+    `dmesg | grep -iE 'firmware|hda|bluetooth|btusb|iwl'`, `lsmod`, `/proc/asound/cards`,
+    `dumpsys media.audio_flinger`, and SELinux AVC denials. The module-load
+    boundary is SAFETY item 9 (`SAFETY.md`).
   - See `SAFETY.md`.
 
 ## Hardware feature limits

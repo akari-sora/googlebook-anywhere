@@ -477,6 +477,12 @@ if KANO_KMODS:
     kmod_load = "".join(KMOD_LOAD[k] + f"    exec_background u:r:vendor_modprobe:s0 -- /vendor/bin/modprobe --dirname=/vendor/lib/kano {k}\n"
                         for k in KANO_KMODS)
     hw_head = (hw_head[:-1] + kmod_load + "\n") if hw_head else ("on early-boot\n" + kmod_load + "\n")
+# Profile [modules]: synchronous modprobe (no -b) from the existing module dirs. Empty for kano and generic-x86,
+# so their kano-hw.rc head is unchanged. vendor_dlkm is not rewritten.
+missing_ko = devprofile.missing_dev_modules(prof, os.environ.get("GBOS_DEV_KERNEL_DIR", ""))
+if missing_ko:
+    raise SystemExit("profile modules need these .ko files in GBOS_DEV_KERNEL_DIR/modules: " + ", ".join(missing_ko))
+hw_head = devprofile.append_module_boot(hw_head, prof)
 dev_kmod_boot = ""
 dev_wifi_hook = ""
 if os.environ.get("GBOS_DEV_KERNEL_DIR") and (Path(os.environ["GBOS_DEV_KERNEL_DIR"]) / "modules/amdgpu.ko").is_file():
@@ -1223,6 +1229,20 @@ on property:sys.boot_completed=1
 (allow system_server_202604 self (process (execmem)))
 (allow zygote_202604 self (process (execmem)))
 """)
+    import gralloc
+    if gralloc.install_gralloc(prof, tree, vmap, place):
+        notices = root / "tools/minigbm/NOTICES.txt"
+        if not notices.is_file():
+            raise SystemExit("missing tools/minigbm/NOTICES.txt")
+        place("etc/NOTICES-amd-hx370-minigbm.txt", notices, "etc/init/fwupd.rc", 0o644)
+        installed = hashlib.sha256((tree / gralloc.REL).read_bytes()).hexdigest()
+        if installed != prof["gralloc"]["sha256"]:
+            raise SystemExit(
+                "installed libminigbm_gralloc.so sha256 "
+                + installed
+                + " differs from profile gralloc.sha256 "
+                + prof["gralloc"]["sha256"])
+        print("amd-hx370: libminigbm_gralloc.so", installed)
     print("amd-hx370: vulkan.radeon.so", sha(radv), "safe default (pastel + gbos_efifb) + native amdgpu entry")
 n = rebuild.write_configs(
     "/vendor",
@@ -1263,6 +1283,7 @@ from pathlib import Path
 sys.path.insert(0, sys.argv[2])
 import rebuild
 import devprofile
+import gralloc
 
 tmp = Path(sys.argv[1])
 
@@ -1345,6 +1366,22 @@ if os.environ.get("GBOS_DEV_KERNEL_DIR"):
         + [m for m in ("modules.dep", "modules.alias", "modules.softdep", "modules.order") if (dev_mod_dir / m).is_file()]
     )
     expect_new = sorted(expect_new + ["lib/dev-modules"] + [f"lib/dev-modules/{f}" for f in dev_files])
+import gralloc
+expect_changed = gralloc.changed_paths(prof, expect_changed)
+if prof.get("gralloc"):
+    expect_new = sorted(set(expect_new + ["etc/NOTICES-amd-hx370-minigbm.txt"]))
+    rel = gralloc.REL
+    got = new.get(rel)
+    want_sha = prof["gralloc"]["sha256"]
+    if got != ("file", want_sha):
+        raise SystemExit(
+            "rebuilt vendor lib64/libminigbm_gralloc.so is "
+            + repr(got)
+            + ", profile gralloc.sha256 is "
+            + want_sha)
+    # A pin equal to the bytes already in the base image is not a content change.
+    if old.get(rel) == ("file", want_sha):
+        expect_changed = [p for p in expect_changed if p != rel]
 if only_old != expect_old or only_new != expect_new or changed != expect_changed:
     raise SystemExit("vendor tree diff is not the expected set of KANO changes (see the three lists above)")
 
@@ -1497,6 +1534,19 @@ with img.open("r+b") as f:
     f.write(vb)
 print("spliced vendor and vbmeta")
 PY
+
+# Check the final vendor readback, both unchanged stock module partitions, and
+# the actual ESP archive (GBOS_INITRD only supplies bootconfig, not its modules).
+# The original vendor tree identifies builder additions; other stock modules are report-only.
+echo "check module firmware"
+for partition in vendor_dlkm system_dlkm; do
+    python3 "$HERE/lib/lp-dump.py" "$IMG" "$TMP" "${partition}_a"
+    ot fsck.erofs --extract="$TMP/firmware-$partition" --overwrite "$TMP/${partition}_a.img"
+done
+python3 "$HERE/kmod/check-firmware.py" --profile "$GBOS_PROFILE" \
+    --vendor "$TMP/vendor-tree-new" --base-vendor "$TMP/vendor-tree-base" \
+    --module-tree "$TMP/firmware-vendor_dlkm" --module-tree "$TMP/firmware-system_dlkm" \
+    --initrd "$TMP/initrd.new.img" --report "$GBOS_OUT/firmware-report.json"
 
 echo "replace ESP initrd"
 mcopy -o -i "$IMG@@$ESP_OFF" "$TMP/initrd.new.img" ::/initrd.img

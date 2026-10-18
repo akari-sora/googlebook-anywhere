@@ -276,6 +276,50 @@ def install_checked_kernel(prof, kernel_dir, debug_opts, quiet_opts, read_bzimag
     return checked
 
 
+def _extract_vendor_gralloc(img, work):
+    """Bytes of lib64/libminigbm_gralloc.so inside the image's vendor_a."""
+    work = Path(work)
+    if work.exists():
+        shutil.rmtree(work)
+    work.mkdir(parents=True)
+    ota = Path(os.environ["GBOS_OTATOOLS"])
+    run(sys.executable, str(Path(__file__).resolve().parent / "lib/lp-dump.py"), img, work, "vendor_a")
+    raw = (work / "vendor_a.img").read_bytes()
+    idx = raw.rfind(b"AVBf")
+    if idx < 0:
+        sys.exit("vendor_a has no AVB footer")
+    orig = struct.unpack_from(">Q", raw, idx + 12)[0]
+    erofs = work / "vendor.erofs"
+    erofs.write_bytes(raw[:orig])
+    tree = work / "tree"
+    tree.mkdir()
+    env = os.environ.copy()
+    env["LD_LIBRARY_PATH"] = str(ota / "lib64")
+    subprocess.run(
+        [str(ota / "bin/fsck.erofs"), f"--extract={tree}", "--overwrite", str(erofs)],
+        check=True, env=env)
+    lib = tree / "lib64/libminigbm_gralloc.so"
+    if not lib.is_file() or lib.is_symlink():
+        sys.exit("image vendor libminigbm_gralloc.so missing")
+    return lib.read_bytes()
+
+def readback_gralloc(img, prof, work, extract):
+    """Refuse when the vendor gralloc inside the image is not the profile pin."""
+    import gralloc
+    g = prof.get("gralloc")
+    if not g:
+        return None
+    try:
+        blob = extract(img, work)
+        err = gralloc.readback_mismatch(blob, g["sha256"])
+    finally:
+        if Path(work).exists():
+            shutil.rmtree(work, ignore_errors=True)
+    if err:
+        sys.exit(err)
+    print("gralloc readback", g["sha256"])
+    return g["sha256"]
+
 DEV_KERNEL_DIR = os.environ.get("GBOS_DEV_KERNEL_DIR", "")
 if DEV_KERNEL_DIR:
     def _read_checked_bz():
@@ -293,6 +337,8 @@ if DEV_KERNEL_DIR:
     )
 else:
     run("mcopy", "-o", "-i", f"{IMG}{ESP}", "::/kernel.efi", OUT / "kernel.efi")
+if PROF.get("gralloc"):
+    readback_gralloc(IMG, PROF, OUT / "gralloc-readback", _extract_vendor_gralloc)
 print("ESP free:", subprocess.run(["mdir", "-i", f"{IMG}{ESP}", "::/"], capture_output=True, text=True).stdout.strip().splitlines()[-1])
 
 # QEMU runs: image on USB (writes go to a throw-away snapshot), blank NVMe attached, until QEMU_SECONDS have passed.

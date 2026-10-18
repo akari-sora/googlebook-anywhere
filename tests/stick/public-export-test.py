@@ -1004,6 +1004,8 @@ def prove_skip_signal():
         orphan = tmp / "forge-orphan"
         clone_repo(REPO, orphan)
         install_synth(orphan, commit=True)
+        # Keep private history reachable even from a tagless, detached clone.
+        git_ok(["git", "branch", "private-history", "HEAD"], orphan)
         git_ok(["git", "checkout", "-q", "--orphan", "clean"], orphan)
         git_ok(["git", "rm", "-r", "-f", "-q", "--", *EXCLUDES], orphan)
         (orphan / MARKER_REL).parent.mkdir(parents=True, exist_ok=True)

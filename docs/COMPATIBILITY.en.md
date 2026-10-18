@@ -132,10 +132,11 @@ last point).
   on real hardware**.
 - It provides two boot entries:
   - **default "safe"**: does not load `amdgpu`.
-  - **"native amdgpu (experimental)"**: loads the native `amdgpu`. Stock minigbm has no amdgpu backend, so this entry may show a black screen; choose the safe entry.
-- The build needs a self-built kernel (`GBOS_DEV_KERNEL_DIR`) and RADV, or `build.sh` refuses (as `profiles/amd-hx370/profile.toml` says).
+  - **"native amdgpu (experimental)"**: loads the native `amdgpu`. This profile ships a rebuilt gralloc with `backend_amdgpu` (sha256 pinned in `[gralloc]`), and it has still never been run on hardware. This entry may show a black screen; choose the safe entry.
+- The build needs a self-built kernel (`GBOS_DEV_KERNEL_DIR`), RADV, and a `GBOS_MINIGBM` that `[gralloc]` names with a matching sha256 (`tools/minigbm/build-libminigbm-gralloc.sh`, git repo only), or `build.sh` refuses (as `profiles/amd-hx370/profile.toml` says).
 - If the machine has **Secure Boot** enabled: **back up the BitLocker recovery
   key before** changing Secure Boot settings, or you may be unable to decrypt.
+- AX210 firmware and HD-audio / Bluetooth module loading added; never tested on hardware.
 
 ## Reporting a new machine
 

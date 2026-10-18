@@ -1,6 +1,29 @@
-# Googlebook Anywhere v0.2.1
+# Googlebook Anywhere v0.2.2
 
 <!-- release-status: released -->
+
+v0.2.2 把已核准的 AMD HX 370 變更接到 v0.2.1 上（v0.2.1 與更早的內容見完整版本紀錄）。`amd-hx370` 仍是實驗 profile，只在 QEMU 驗證過，沒有在實體硬體上跑過。
+
+- AX210 的 Wi-Fi 與藍牙韌體釘在 linux-firmware 20260810。
+- `[modules]` 在 early-boot 依序載入 `bluetooth`、`btusb`、`snd_hda_codec_alc269`、`iwlmvm`、`snd_hda_intel`。allowlist 在 `profiles/_safety.toml`，kano 與 generic-x86 沒有這些列。
+- `libminigbm_gralloc.so` 依 `tools/minigbm` 的配方重建，含 `backend_amdgpu`，並釘住 sha256、硬化旗標與 `tools/minigbm/NOTICES.txt`。
+- CI 的 builder job 先安裝 `gcc` 與 `libc6-dev`，再以 `tester` 使用者執行測試。
+- `tools/minigbm/build-libminigbm-gralloc.sh` 寫出的 `SOURCES.txt` 帶有 `output` 區塊，家目錄路徑寫成字面 `$HOME`。
+- 第 1 階段在換上 ESP initrd 之前，以 `builder/kmod/check-firmware.py` 讀取全部模組 `.modinfo` 的 `firmware=` 宣告，並寫出 `<GBOS_OUT>/firmware-report.json`；這個檢查只對 profile 選用或 builder 加入的必要模組把關，這些模組缺韌體、metadata 讀不出來或不存在時會停止建置。目前 `kano`、`generic-x86` 與 `amd-hx370` 三個 profile 的必要模組都沒有宣告韌體，真正宣告韌體的驅動（`iwlwifi`、`btintel`、`xe`、`amdgpu`、SOF）都只記錄不攔截（report-only），所以 `PASS` 不代表這些韌體釘選已被這個檢查核對。
+
+## 驗證紀錄
+
+- 最終 head 以 CI 的全套指令驗收：私有樹與公開匯出樹各跑 py_compile、`tests/builder/run.sh`、probe、report、stick、update、make-maint、public-export、release-notes-gate、install 與 harness（harness 兩次），再加上從 `.gitlab-ci.yml` 取出的 package gate，分別用 mawk 與 gawk。程式碼的最後一個 commit `c4cad72`（之後只改文件）在 Linux 測試主機（`/bin/sh` 是 dash）實跑的結果：私有樹與公開匯出樹各 15/15 步驟 rc=0（builder 265 passed、probe 60、report 467、stick selftest 72/72、update selftest OK、update mutations 25/25 killed、make-maint 271、install-sh 102、kano-check 15、harness 兩次）；mawk 與 gawk 的 parsed package gate 在 notes 維持開發狀態時 rc=1，第 1 行與第 3 行翻成這一版的正式標題與 released 狀態後 rc=0；`make-public` 匯出 528 個檔案。
+- `amd-hx370` 的 safe 選項載入重建的 gralloc（`backend_amdgpu`，sha256 釘在 `profiles/amd-hx370/profile.toml` 的 `[gralloc]`）。QEMU 自我測試開這個 safe 選項，畫面到設定精靈。native 選項沒有在 QEMU 開，因為 QEMU 沒有 amdgpu。QEMU 自我測試用的映像建自 v0.2.2 rebase 之前的 AMD 分支（映像 sha256 `65de4a4a3e1ed7b2372a26adf73a5b7b518bb0a3c53fd1d39fe0eeec6e0a5c5c`）；之後 builder 只多了建置時的模組韌體檢查（不改映像內容）與 minigbm 建置腳本的小修，`amd-hx370` 的 profile 與 gralloc 沒有改，v0.2.2 的 head 沒有重建這個映像。
+- `kano` 與 `generic-x86` 的 profile 檔與 v0.2.1 相同（沒有 `[gralloc]`）；新的模組韌體檢查是以真實映像解開的分割區實測，沒有為這兩個 profile 重跑完整建置（`e2e`）。
+
+## 已知問題與限制
+
+- `amd-hx370` 的 native 項目從未在實機上跑過。出現黑畫面時改選 safe。
+- `GBOS_MINIGBM` 要從 git repo 的 `tools/minigbm/build-libminigbm-gralloc.sh` 建。發佈包沒有這支腳本，只有 `tools/minigbm/NOTICES.txt`。
+- `tools/minigbm/SOURCES.txt` 只記錄這一台建置機的重建，沒有第二台主機的比對。
+
+# Googlebook Anywhere v0.2.1
 
 這一版多了一條安裝碟流程：從你自己建的 Googlebook 映像做出**一個**檔，開機後可以選「Install Googlebook to the internal disk」，把 Googlebook 裝到 KANO 的內建碟。另外，KANO 家族的內顯放行從 1 個 ID 擴到 12 個，新增一個 AMD 實驗 profile。測試映像自動關機（`GBOS_TEST_AUTOOFF`）已核准。硬體回報是 round-13 已核准的 `install/gbos-report.sh` 與 `tests/report/report-test.sh`。
 

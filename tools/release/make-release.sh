@@ -17,7 +17,7 @@ TMP=$(mktemp -d "$OUT/.release-tmp.XXXXXX")
 trap 'rm -rf "$TMP"' EXIT
 git -C "$ROOT" diff --quiet "$SHA" -- || echo "note: the working tree differs from $C; the archive is made from $SHA"
 git -C "$ROOT" archive --format=tar --prefix="$N/" "$SHA" -- README.md LICENSE base builder install profiles docs \
-    tests/builder tests/install tests/stick tests/probe tests/report tests/update tools/mesa tools/release/png-ok.py tools/release/published-images.sha256 \
+    tests/builder tests/install tests/stick tests/probe tests/report tests/update tools/mesa tools/minigbm/NOTICES.txt tools/release/png-ok.py tools/release/published-images.sha256 \
     | gzip -n -9 > "$TMP/$N.tar.gz"
 
 # content checks: only regular files and directories, nothing that looks like a disk image or a binary; the only binary

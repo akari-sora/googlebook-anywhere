@@ -1,0 +1,121 @@
+# Sources for the amd-hx370 libminigbm_gralloc.so drop-in
+
+minigbm
+url: https://android.googlesource.com/platform/external/minigbm
+commit: ce79bbee67b3e2ea7abb110e1415e9ceceaa6471
+tree: 95c2eb6837a39a6ef62ae454c5d9767cf2066c53
+git-archive-tar-sha256: 54b1d07b4645ad73294eab40dbbc4578af43cdee192d4ba5e0b1c2747f5d8834
+patch: upstream-delta.patch
+patch-sha256: 0d2e6678b9c71a47a412245a85dfbf99702bda0f56da522fe65b996bb0bee022
+note: c662136 + 9d21b5c + 0c4f081 on ce79bbee. nvl_ids is the Intel NVL-S/NVL-P PCI list, not AMD Navi. ANDROID_API_LEVEL=37 at compile.
+amdgpu_linear.c-sha256: ecf3d67c2163e789374979a58ee593b5a63cdd9c373e6a03056cc6ca72ade1bd
+note: upstream-delta.patch replaces stock-abi.patch. Fresh ce79bbee archive plus this patch applies cleanly.
+note: gzip of this archive is not checked. The pins are the tree id and git archive --format=tar --prefix=minigbm/.
+
+libdrm
+url: https://dri.freedesktop.org/libdrm/libdrm-2.4.123.tar.xz
+sha256: a2b98567a149a74b0f50e91e825f9c0315d86e7be9b74394dae8b298caadb79e
+
+aidl
+path: $HOME/gbos-phase/fp/tools/bt/android-37.0/aidl
+sha256: a4ad150a7cf6ea297c299cb779da7a58c537cfc07923d1e15ccbc554a30cd4ba
+note: --lang=ndk --structured --stability=vintf --min_sdk_version=29 on BlendMode Dataspace Cta861_3 XyColor Smpte2086.
+
+ndk
+path: $HOME/gbos-phase/fp/tools/android-ndk-r30
+revision: 30.0.16248370
+clang-binary-sha256: ad535f0b6fc303edba958b51636169ff0291c6e36463236c99ff8abcaa34247c
+note: readlink -f of toolchains/llvm/prebuilt/linux-x86_64/bin/clang (NDK r30 clang-21). The x86_64-linux-android37-clang and clang++ wrappers are not this pin. The build checks that those two paths exist and are scripts.
+note: NDK r30 libc++ headers plus cxxsite/__config_site forcing _LIBCPP_ABI_NAMESPACE __1. The NDK site header sets __ndk1 and would override a command-line -D. external/libcxx on android17-release is Trusty LLVM 8 and is not the compile -I path.
+note: checked inputs are the recipe rows in tools/minigbm/README.md. The full NDK tarball, the C++ headers, and the nine prebuilt link inputs are not individually pinned. No second-host rebuild is recorded.
+cxxsite-sha256: ce3960c90e8fa738f1e1974c104467f4783d38ad3874aed4987a211e24a1067c
+
+output
+libminigbm_gralloc.so-sha256: 297457940c9090754e71d4027e157167825edab4139eb7d8828d1660b98e0d42
+size: 112384
+built-from-amdgpu_linear.c-sha256: ecf3d67c2163e789374979a58ee593b5a63cdd9c373e6a03056cc6ca72ade1bd
+built-from-patch-sha256: 0d2e6678b9c71a47a412245a85dfbf99702bda0f56da522fe65b996bb0bee022
+built-from-tar-sha256: 54b1d07b4645ad73294eab40dbbc4578af43cdee192d4ba5e0b1c2747f5d8834
+note: profile [gralloc] pin. The built-from lines are the source pins that produced this library. The build script exits when they differ from LINEAR_SHA, PATCH_SHA, or TAR_SHA, or when the linked file is not this library pin. LIB_SHA, LIB_FROM_LINEAR, LIB_FROM_PATCH, and LIB_FROM_TAR update together, only after a rebuild whose output sha256 is LIB_SHA. EXTRA dynsyms vs stock: 9 (was 13 before -fvisibility-inlines-hidden).
+
+image
+stock-libminigbm_gralloc.so-sha256: d48536951fd0e9643e71a5c8843e90833ce3e212e182782185470e2fbbfad673
+r11-image-path: $HOME/gbos-phase/amd-r11/out-amd-hx370/image/googlebook-amd-hx370.img
+note: the build script tries the r11 image, then r10, and requires the stock .so sha256 above.
+known-vendor_a-disk: 6288310272
+known-system_a-disk: 747634688
+known-system_ext_a-disk: 8712617984
+
+system/core
+url: https://android.googlesource.com/platform/system/core
+commit: 545d2487e38192a2ce25040897ced877cf6b4f53
+tree: 332cc42dfc29e8660d45b2c27ddc7c2ad4925868
+sparse-index-sha256: f1e9c7d19ee76c14c45ca2fb1c2becd135009862f14576a9dc36f3816f015c15
+
+note: log/log.h is in system/logging. system/window.h is frameworks/native libs/nativewindow. sync/sync.h is system/core libsync/include.
+
+system/logging
+url: https://android.googlesource.com/platform/system/logging
+commit: d35ba620451b28512f46ebb5421f783fd77968d5
+tree: 2d287c1e04ae4ebd59b12f1b1aabcfa1f0fb8db4
+sparse-index-sha256: ecf14d2a236b4f3bf491be43f1f1b5fc2aee126ea68665e5028d3d082542b034
+
+hardware/libhardware
+url: https://android.googlesource.com/platform/hardware/libhardware
+commit: 97ee3e33ec5ba48c0eca8341ed377ac4497a0678
+tree: 217e200ec041deab70c5b6b392476c858d40134e
+sparse-index-sha256: 60af444a48560f9fb6fa25497cf08ac2cf25330160509ae05cd38f3e1d48d7a9
+
+note: include/hardware/gralloc.h symlinks to include_all/hardware/gralloc.h.
+
+system/memory/libdmabufheap
+url: https://android.googlesource.com/platform/system/memory/libdmabufheap
+commit: 09fe72b6ce0feead1b97c2859979b125f815d9b0
+tree: 6876290b56cc48f7f4574925df22b1110b91ddfc
+sparse-index-sha256: 610ffb59869a242faa74b83d1c1a3bfae94d36fc4e637ef871526429b268c708
+
+external/libcxx
+url: https://android.googlesource.com/platform/external/libcxx
+commit: 88894a62bb97313ed9bf79a546f1486de4b2e723
+tree: 2f8cf3c31a33b6bcd5518ce9cd4015f1d45580fe
+sparse-index-sha256: cb2547740d0de8ec56e0a67e8722609739f2c33cb2ac45d21e9ad85e3be94395
+
+note: _LIBCPP_VERSION 8000. Fetched, not used as the -I path.
+
+external/libcxxabi
+url: https://android.googlesource.com/platform/external/libcxxabi
+commit: 84450eba5a24fe5b7df77ed1307bfada05b14dc7
+tree: 35d21bc120b28106663b4b2c72a4c8f958e833b1
+sparse-index-sha256: ff3717bedafb3aff3790bfaab9dd0b5a9b0b66bb17179242f506382bfbf8c6ac
+
+frameworks/native
+url: https://android.googlesource.com/platform/frameworks/native
+commit: ae266dcb706d083868578cfedce381ef44488a07
+tree: d0554d8875771ee2702dc51448d6b24a761bbe7a
+sparse-index-sha256: f383508e73a9e99c4d1581248d2270bfd042de75267eb0b238c0a226d0cbe268
+
+hardware/interfaces
+url: https://android.googlesource.com/platform/hardware/interfaces
+commit: 0162af698935100a590b7359581ac8b1b80693e5
+tree: f5630c44a784efc32362ad4a8c51d9707f0e73a6
+sparse-index-sha256: 1e819f82311b68f2a400255b7729eb9110db021ad306eefd1f8174954b2fbc7e
+
+system/libbase
+url: https://android.googlesource.com/platform/system/libbase
+commit: fef4173e19d97cd4b4fc09a06bccbf800d0d3937
+tree: 4b0a1a3f9ad1c7bb80400e007d52656537798720
+sparse-index-sha256: 397e448f7052b6d20fc17bf972cb5436710a9094fa7073069a1a57a0ee148401
+
+external/drm_hwcomposer
+url: https://android.googlesource.com/platform/external/drm_hwcomposer
+commit: 87daba89b05fabc7f1e9316e3f283f19fd0c45cd
+tree: f3cbaef3dae5c16d074631cd0d13446e9bf00acd
+sparse-index-sha256: db14d54465206173cfb93e47161c93d28a59e514d37c4e01129e8632ab69386b
+
+note: Plan B citation only.
+
+kernel/common
+path: $HOME/gbos-phase/amd-t2/kernel-amd/ksrc
+commit: 3938c8d97142d5cf31543aa96f864a2cf832dda0
+note: amdgpu_dma_buf.c prime import. Citation only.
+

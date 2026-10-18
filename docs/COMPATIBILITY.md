@@ -112,10 +112,11 @@ Ryzen AI 5 PRO 340 實測具備上面這些指令（AVX-IFMA 與 AVX-VNNI-INT8 �
 - 這是 AMD 機型的**實驗性** profile，**從未在真實硬體上執行過**。
 - 提供兩個開機項目：
   - **預設「safe」**：不載入 `amdgpu`。
-  - **「native amdgpu (experimental)」**：載入原生 `amdgpu`。stock minigbm 沒有 amdgpu backend，這個項目可能黑畫面；請改選 safe。
-- 建置需要自建核心（`GBOS_DEV_KERNEL_DIR`）與 RADV，否則 `build.sh` 拒絕（見 `profiles/amd-hx370/profile.toml`）。
+  - **「native amdgpu (experimental)」**：載入原生 `amdgpu`。這個 profile 帶重建的 gralloc，含 `backend_amdgpu`（sha256 釘在 `[gralloc]`），仍從未在實機上跑過。這個項目可能黑畫面；請改選 safe。
+- 建置需要自建核心（`GBOS_DEV_KERNEL_DIR`）、RADV，以及 `[gralloc]` 指定、sha256 相符的 `GBOS_MINIGBM`（`tools/minigbm/build-libminigbm-gralloc.sh`，只在 git repo），否則 `build.sh` 拒絕（見 `profiles/amd-hx370/profile.toml`）。
 - 若機器啟用 **Secure Boot**：變更 Secure Boot 設定**之前**，務必先備份
   **BitLocker 復原金鑰**，否則可能無法解密。
+- 已加入 AX210 韌體與 HD-audio／藍牙模組載入；從未在實機上測試。
 
 ## 回報新機型
 

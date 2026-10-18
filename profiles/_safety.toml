@@ -37,3 +37,21 @@ required = ["cros_ec_debugfs", "tpm_tis_i2c_cr50", "cros_ec_lpcs", "cros_ec_usb"
             "cros_ec_lid_angle", "cros_ec_light_prox", "cros_ec_lightbar", "cros_ec_pwrmon", "cros_ec_cec",
             "leds_cros_ec", "hid_google_hammer", "wilco_ec", "wilco_charger", "wilco_ec_debugfs",
             "wilco_ec_telem", "rtc_wilco_ec"]
+
+[modules]
+# What a profile may name under [modules]. Each item is "<profile-id> <module> <dir>".
+# dir vendor = /vendor/lib/modules (stock vendor_dlkm). dir dev = /vendor/lib/dev-modules
+# (GBOS_DEV_KERNEL_DIR, staged by builder/vendor.sh).
+# unblock may name only modules on the stock vendor_dlkm modules.blocklist. That set is
+# STOCK_MODULES_BLOCKLIST in builder/lib/devprofile.py (one place): today snd_hda_intel,
+# the single line "blocklist snd_hda_intel" in the shipped vendor_dlkm file. This builder
+# does not rewrite vendor_dlkm (super logical partition; no hashtree/vbmeta update for it).
+# The early-boot command omits -b, so that userspace file is not applied. load must not
+# name those modules. kernel module_blacklist= still applies at load time.
+# Names in blacklist.required, in _NEVER_SHIP_KO, or in the storage/firmware-update names
+# the kconfig gate already maps (nvme, sdhci, mtd/spi-nor, thunderbolt, tpm, ccp, …) are refused.
+# kano is absent: it uses SOF, not snd_hda_intel. generic-x86 is absent: the hardware is unknown.
+# A later name may be listed only when every earlier name in this list is listed too,
+# whether that earlier row is vendor or dev (bluetooth before btusb).
+unblock = ["amd-hx370 snd_hda_intel vendor"]
+load = ["amd-hx370 bluetooth dev", "amd-hx370 btusb vendor", "amd-hx370 snd_hda_codec_alc269 vendor", "amd-hx370 iwlmvm vendor"]

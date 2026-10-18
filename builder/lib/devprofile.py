@@ -33,8 +33,14 @@ SCHEMA = {
     "blacklist": {"modules": LSTR, "debug_add": LSTR, "quiet_add": LSTR, "allow": LSTR},
     "firmware_sources": {"linux_firmware_tag": str, "sof_bin_url": str, "sof_bin_sha256": str},
     "firmware": ("tables", {"path": str, "from": str, "src": str, "sha256": str}),
+    "firmware_check": {
+        "optional": ("tables", {"module": str, "firmware": str, "reason": str}),
+        "alternatives": ("tables", {"module": str, "firmware": str, "files": LSTR, "reason": str}),
+    },
     "audio": {"card": str, "config_dir": str, "sources": str},
     "wifi": {"modprobe": LSTR},
+    # optional: setdefault in load(). unblock/load are module names, checked against _safety.toml [modules].
+    "modules": {"unblock": LSTR, "load": LSTR},
     "display": {"stack": str, "hwc_backend": str, "build_prop_set": ("list", ("list", str))},
     "input": {"kbd_backlight_leds": str, "power_button": str},
     "hooks": {"vendor": str},
@@ -50,6 +56,8 @@ SAFETY_SCHEMA = {
     "schema": int,
     "cmdline": {"stock_drop": LSTR, "tail": LSTR, "forbidden_prefixes": LSTR},
     "blacklist": {"required": LSTR},
+    # "<profile-id> <module> <vendor|dev>" allowlist. A profile's [modules] lists may only use its rows.
+    "modules": {"unblock": LSTR, "load": LSTR},
 }
 
 
@@ -90,6 +98,16 @@ def _typed(value, spec, where):
 
 TOKEN = re.compile(r"[\x21-\x7e]+")
 MODULE = re.compile(r"[a-z0-9_]+")
+# profiles/_safety.toml [modules] rows: "<profile-id> <module> <vendor|dev>"
+# The module token matches MODULE ([a-z0-9_]+). A wider class cannot be selected:
+# _check_module_choice still requires MODULE.fullmatch, so that row never matches a profile name.
+MOD_ALLOW = re.compile(r"^([a-z0-9][a-z0-9-]*) ([a-z0-9_]+) (vendor|dev)$")
+MODULE_DIR = {"vendor": "/vendor/lib/modules", "dev": "/vendor/lib/dev-modules"}
+# Stock lapis vendor_dlkm lib/modules/modules.blocklist. The builder does not rewrite that
+# partition; the file in the image every profile boots is the one line "blocklist snd_hda_intel"
+# (the shipped vendor_dlkm, not a source file in this repo). unblock may name only these
+# modules. load may not. This is the only copy of that list.
+STOCK_MODULES_BLOCKLIST = frozenset({"snd_hda_intel"})
 
 
 def _tokens(lst, where):
@@ -98,6 +116,83 @@ def _tokens(lst, where):
             raise ProfileError(f"{where}: {t!r} is not one kernel command line option")
     if len(set(lst)) != len(lst):
         raise ProfileError(f"{where}: duplicate items")
+
+
+def _index_module_allow(s):
+    """profile id -> ordered [(module, dir)] for modules.unblock and modules.load. Dir is vendor or dev."""
+    parsed = {"unblock": {}, "load": {}}
+    seen = set()
+    required = set(s["blacklist"]["required"])
+    storage = _storage_firmware_module_names()
+    for kind in ("unblock", "load"):
+        for item in s["modules"][kind]:
+            m = MOD_ALLOW.fullmatch(item)
+            if not m:
+                raise ProfileError(f"_safety modules.{kind}: {item!r} is not 'profile module vendor|dev'")
+            pid, name, dirname = m.group(1), m.group(2), m.group(3)
+            # Profiles live beside the project _safety.toml, not beside a caller-supplied copy.
+            if not (SAFETY.parent / pid / "profile.toml").is_file():
+                raise ProfileError(
+                    f"_safety modules.{kind}: {pid} has no profiles/{pid}/profile.toml")
+            if kind == "unblock" and dirname != "vendor":
+                raise ProfileError(
+                    f"_safety modules.unblock: {name} must use the vendor dir "
+                    "(modules.blocklist lives in vendor_dlkm)")
+            if name in required:
+                raise ProfileError(f"_safety modules.{kind}: {name} is a required blacklist module")
+            if name in _NEVER_SHIP_KO:
+                raise ProfileError(f"_safety modules.{kind}: {name} is in the never-ship set")
+            if name in storage:
+                raise ProfileError(f"_safety modules.{kind}: {name} is a storage or firmware-update module")
+            if kind == "unblock" and name not in STOCK_MODULES_BLOCKLIST:
+                raise ProfileError(
+                    f"_safety modules.unblock: {name} is not on the stock modules.blocklist")
+            if kind == "load" and name in STOCK_MODULES_BLOCKLIST:
+                raise ProfileError(
+                    f"_safety modules.load: {name} is on the stock modules.blocklist; use unblock")
+            key = (kind, pid, name)
+            if key in seen:
+                raise ProfileError(f"_safety modules.{kind}: {pid} {name} listed twice")
+            seen.add(key)
+            parsed[kind].setdefault(pid, []).append((name, dirname))
+    # Cannot fire: unblock names must be in STOCK_MODULES_BLOCKLIST and load names must
+    # not, so one module cannot be on both lists.
+    for pid, rows in parsed["unblock"].items():
+        load_names = {n for n, _d in parsed["load"].get(pid, [])}
+        for n, _d in rows:
+            if n in load_names:
+                raise ProfileError(f"_safety modules: {pid} {n} is both unblock and load")
+    return parsed
+
+
+def _check_module_choice(names, allowed_rows, blocked, where, pid):
+    """names must be a subsequence of the allowlist. Every earlier row must already be chosen,
+    whether that row is vendor or dev (bluetooth before btusb). Returns {module: dir}."""
+    if not all(MODULE.fullmatch(x) for x in names):
+        raise ProfileError(f"{where}: expected module names")
+    if len(set(names)) != len(names):
+        raise ProfileError(f"{where}: duplicate items")
+    pos = {n: i for i, (n, _d) in enumerate(allowed_rows)}
+    last = -1
+    chosen = set()
+    dirs = {}
+    for n in names:
+        if n not in pos:
+            raise ProfileError(f"{where}: {n} is not allowlisted for {pid}")
+        if n in blocked:
+            raise ProfileError(f"{where}: {n} is on the module blacklist")
+        i = pos[n]
+        # Cannot fire: duplicate names are refused above, and every earlier allowlist row
+        # must already be chosen, so this index is strictly increasing.
+        if i <= last:
+            raise ProfileError(f"{where}: {n} is out of allowlist order for {pid}")
+        for pred, _pred_dir in allowed_rows[:i]:
+            if pred not in chosen:
+                raise ProfileError(f"{where}: {n} requires {pred} earlier in the list")
+        last = i
+        chosen.add(n)
+        dirs[n] = allowed_rows[i][1]
+    return dirs
 
 
 def load_safety(path=SAFETY):
@@ -112,6 +207,7 @@ def load_safety(path=SAFETY):
         raise ProfileError("_safety cmdline.tail must carry efi=noruntime and an initcall_blacklist=")
     if not all(MODULE.fullmatch(m) for m in s["blacklist"]["required"]):
         raise ProfileError("_safety blacklist.required: not module names")
+    s["_modules"] = _index_module_allow(s)
     return s
 
 
@@ -120,13 +216,30 @@ def load(profile_dir, safety_path=SAFETY):
     with open(d / "profile.toml", "rb") as f:
         p = tomllib.load(f)
     p.setdefault("firmware", [])       # [[firmware]] tables: a profile without device firmware simply has none
+    p.setdefault("firmware_check", {})
+    if isinstance(p["firmware_check"], dict):
+        p["firmware_check"].setdefault("optional", [])
+        p["firmware_check"].setdefault("alternatives", [])
     p.setdefault("kmods", [])          # extra kernel modules (KMODS): none unless the profile lists them
     p.setdefault("camera", {"libcamera": False})   # the libcamera camera HAL overlay (hooks.vendor camera()): off
+    if "modules" not in p:
+        p["modules"] = {"unblock": [], "load": []}
+    elif isinstance(p.get("modules"), dict):
+        p["modules"].setdefault("unblock", [])
+        p["modules"].setdefault("load", [])
     if isinstance(p.get("cmdline"), dict):
         p["cmdline"].setdefault("quiet_drop", [])
     if isinstance(p.get("blacklist"), dict):
         p["blacklist"].setdefault("quiet_add", [])
+    # [gralloc] is optional. A profile that asks (amd-hx370) pins libminigbm_gralloc.so.
+    # kano and generic-x86 leave the key absent, so the stock file stays.
+    gralloc = p.pop("gralloc", None)
     _typed(p, SCHEMA, "")
+    if gralloc is not None:
+        _typed({"gralloc": gralloc}, {"gralloc": {"sha256": str}}, "")
+        if not re.fullmatch(r"[0-9a-f]{64}", gralloc["sha256"]):
+            raise ProfileError("gralloc.sha256: expected 64 lower-case hex digits")
+        p["gralloc"] = {"sha256": gralloc["sha256"]}
     s = load_safety(safety_path)
     if p["schema"] != 1:
         raise ProfileError(f"schema {p['schema']} is not supported")
@@ -165,7 +278,37 @@ def load(profile_dir, safety_path=SAFETY):
         raise ProfileError(f"blacklist.modules lacks required module(s): {', '.join(missing)}")
     if set(b["allow"]) & (set(b["modules"]) | set(b["debug_add"]) | set(b["quiet_add"]) | set(s["blacklist"]["required"])):
         raise ProfileError("blacklist.allow overlaps the blacklist or the required modules")
+    blocked = set(b["modules"]) | set(b["debug_add"]) | set(b["quiet_add"]) | set(s["blacklist"]["required"])
+    chosen_dirs = {}
+    for kind in ("unblock", "load"):
+        chosen_dirs.update(_check_module_choice(
+            p["modules"][kind], s["_modules"][kind].get(m["id"], []), blocked, f"modules.{kind}", m["id"]))
+    # Cannot fire: _index_module_allow already rejects a name on both lists, and a profile
+    # name that is not allowlisted for that list fails in _check_module_choice.
+    overlap = set(p["modules"]["unblock"]) & set(p["modules"]["load"])
+    if overlap:
+        raise ProfileError("modules: listed in both unblock and load: " + ", ".join(sorted(overlap)))
+    p["_module_dirs"] = chosen_dirs
     fs = p["firmware_sources"]
+    seen_rules = set()
+    for kind, rules in p["firmware_check"].items():
+        for i, rule in enumerate(rules):
+            where = f"firmware_check.{kind}[{i}]"
+            if not MODULE.fullmatch(rule["module"]):
+                raise ProfileError(f"{where}.module: expected an exact module name (use underscores)")
+            if not rule["reason"].strip() or any(ord(c) < 32 for c in rule["reason"]):
+                raise ProfileError(f"{where}.reason: expected a non-empty, single-line reason")
+            patterns = [rule["firmware"]] + rule.get("files", [])
+            for pattern in patterns:
+                if (not re.fullmatch(r"[A-Za-z0-9._+*?\[\]/-]+", pattern)
+                        or any(part in ("", ".", "..") for part in pattern.split("/"))):
+                    raise ProfileError(f"{where}: expected relative firmware paths/globs")
+            if kind == "alternatives" and not rule["files"]:
+                raise ProfileError(f"{where}.files: expected at least one accepted alternative")
+            key = (rule["module"], rule["firmware"])
+            if key in seen_rules:
+                raise ProfileError(f"{where}: duplicate module/firmware rule")
+            seen_rules.add(key)
     paths = set()
     for i, fw in enumerate(p["firmware"]):
         if fw["from"] not in ("linux-firmware", "sof-bin"):
@@ -227,6 +370,58 @@ def load(profile_dir, safety_path=SAFETY):
     p["_dir"] = str(d.resolve())
     p["_safety"] = s
     return p
+
+
+def module_specs(prof):
+    """(module, dir) for this profile: [modules].load, then [modules].unblock."""
+    dirs = prof["_module_dirs"]
+    return [(n, dirs[n]) for n in prof["modules"]["load"] + prof["modules"]["unblock"]]
+
+
+def module_boot_lines(prof):
+    """Indented init `exec` lines. Empty when the profile lists no modules.
+
+    modprobe is invoked without -b. ueventd passes -b and therefore honors the stock
+    vendor_dlkm modules.blocklist; this command does not. Only STOCK_MODULES_BLOCKLIST
+    names may be unblock (snd_hda_intel today), so that file is not applied and the
+    partition is not rewritten. load must not name those modules. vendor_dlkm is a
+    logical partition inside super. The builder rebuilds only vendor_a (mkfs.erofs,
+    avbtool add_hashtree_footer, update_partition_descriptor) and leaves every other
+    logical partition byte-identical. `exec` waits, so an earlier row (bluetooth before
+    btusb, vendor or dev) is in the kernel before the next modprobe. Output order is
+    load, then unblock, so a codec load runs before snd_hda_intel.
+    """
+    specs = module_specs(prof)
+    if not specs:
+        return ""
+    return "".join(
+        "    exec u:r:vendor_modprobe:s0 -- /vendor/bin/modprobe --dirname="
+        + MODULE_DIR[kind] + " " + name + "\n"
+        for name, kind in specs)
+
+
+def append_module_boot(hw_head, prof):
+    """Append module_boot_lines to an early-boot rc head. Returns hw_head unchanged when there is nothing to add."""
+    lines = module_boot_lines(prof)
+    if not lines:
+        return hw_head
+    if not hw_head:
+        return "on early-boot\n" + lines + "\n"
+    return hw_head.rstrip("\n") + "\n" + lines + "\n"
+
+
+def missing_dev_modules(prof, kdir):
+    """Dev-dir module names whose .ko is not a top-level file in <kdir>/modules. Empty when none are requested."""
+    need = [n for n, kind in module_specs(prof) if kind == "dev"]
+    if not need:
+        return []
+    root = Path(kdir) / "modules" if kdir else None
+    missing = []
+    for n in need:
+        fns = (f"{n}.ko", f"{n.replace('_', '-')}.ko")
+        if root is None or not any((root / fn).is_file() for fn in fns):
+            missing.append(n)
+    return missing
 
 
 def stock_tokens(vendor_cmdline, prof):
@@ -651,6 +846,57 @@ KCONFIG_BUILTIN_MODULE = {
     "CONFIG_SP5100_TCO": "sp5100_tco",
     "CONFIG_UCSI_ACPI": "ucsi_acpi",
 }
+
+# SATA names check_kconfig already walks. libahci is the object drivers/ata/Makefile:6
+# builds together with ahci / ahci_platform, not a separate Kconfig symbol.
+_SATA_KCONFIG = (
+    ("CONFIG_ATA", "libata"),
+    ("CONFIG_SATA_AHCI", "ahci"),
+    ("CONFIG_SATA_AHCI_PLATFORM", "ahci_platform"),
+)
+_SATA_LIBAHCI = "libahci"
+
+# Kconfig symbols whose module names [modules] reuses as the storage / firmware-update
+# class. The names are values of KCONFIG_BUILTIN_MODULE. NVMe and MEI come from
+# KCONFIG_INITCALL_BLACKLIST. SATA names come from _SATA_KCONFIG plus _SATA_LIBAHCI.
+# No glob: a name that is not already in those lists is not added here.
+_STORAGE_FW_BUILTIN = (
+    "CONFIG_MMC_SDHCI_PCI",
+    "CONFIG_MMC_SDHCI_ACPI",
+    "CONFIG_MTD",
+    "CONFIG_MTD_SPI_NOR",
+    "CONFIG_SPI_INTEL",
+    "CONFIG_SPI_INTEL_PCI",
+    "CONFIG_SPI_INTEL_PLATFORM",
+    "CONFIG_SPI_AMD",
+    "CONFIG_SPI_AMD_PCI",
+    "CONFIG_SPI_SPIDEV",
+    "CONFIG_USB4",
+    "CONFIG_THUNDERBOLT",
+    "CONFIG_TCG_TPM",
+    "CONFIG_TCG_TIS",
+    "CONFIG_TCG_TIS_CORE",
+    "CONFIG_TCG_TIS_SPI",
+    "CONFIG_TCG_TIS_I2C_CR50",
+    "CONFIG_TCG_CRB",
+    "CONFIG_CRYPTO_DEV_CCP_DD",
+    "CONFIG_CRYPTO_DEV_CCP_CRYPTO",
+)
+
+
+def _storage_firmware_module_names():
+    """Module names [modules] refuses as storage or firmware-update.
+
+    Union of names the kconfig gate already maps: KCONFIG_INITCALL_BLACKLIST
+    (nvme, mei_me), KCONFIG_BUILTIN_MODULE for _STORAGE_FW_BUILTIN (sdhci, mtd,
+    spi-nor, thunderbolt, tpm, ccp, …), and the SATA names including libahci.
+    """
+    names = {row[1] for row in KCONFIG_INITCALL_BLACKLIST.values()}
+    for sym in _STORAGE_FW_BUILTIN:
+        names.add(KCONFIG_BUILTIN_MODULE[sym])
+    names.update(mod for _sym, mod in _SATA_KCONFIG)
+    names.add(_SATA_LIBAHCI)
+    return frozenset(names)
 
 KCONFIG_REQUIRED_Y = (
     # kernel/module/Kconfig:2, Makefile:2141, kernel/Makefile:58
@@ -2181,15 +2427,15 @@ def check_kconfig(profile_dir, kernel_dir, safety_path=SAFETY):
     # :154 (SATA_AHCI_PLATFORM -> ahci_platform.o + libahci.o). drivers/ata/Makefile:6 builds libahci.o
     # with ahci.o. Existing profiles do not list ahci, so =m is refused below for that reason.
     # A profile that blacklists ahci must also blacklist libahci.
-    for k, mod in (("CONFIG_ATA", "libata"), ("CONFIG_SATA_AHCI", "ahci"), ("CONFIG_SATA_AHCI_PLATFORM", "ahci_platform")):
+    for k, mod in _SATA_KCONFIG:
         v = cfg.get(k)
         if v == "y":
             raise ProfileError(f"{cfg_path}: {k}=y is forbidden (exposes internal SATA disks; initcall_blacklist only blocks NVMe)")
         if v == "m" and mod not in bmods:
             raise ProfileError(f"{cfg_path}: {k}=m without {mod!r} in blacklist.modules exposes internal SATA disks")
-        if v == "m" and k != "CONFIG_ATA" and mod in bmods and "libahci" not in bmods:
+        if v == "m" and k != "CONFIG_ATA" and mod in bmods and _SATA_LIBAHCI not in bmods:
             raise ProfileError(
-                f"{cfg_path}: {k}=m lists {mod!r} in blacklist.modules but not 'libahci' "
+                f"{cfg_path}: {k}=m lists {mod!r} in blacklist.modules but not {_SATA_LIBAHCI!r} "
                 "(drivers/ata/Makefile:6 builds libahci.o together with ahci)"
             )
     # 3. Options forbidden as both =y and =m
