@@ -226,7 +226,9 @@ done
 Z="$T/fake.zip"; echo zip > "$Z"
 ZSHA=$(sed -n 's/^ZIP_SHA256=//p' "$R/base/builds/16452207.sh")
 echo "$ZSHA $(stat -c '%s %Y' "$Z")" > "$Z.ok"   # the stamp of a verified zip, so the fake zip is not hashed
-mkdir -p "$T/log"
+mkdir -p "$T/log" "$T/inc/openssl"
+touch "$T/inc/gelf.h" "$T/inc/dwarf.h" "$T/inc/openssl/opensslv.h"   # the host headers the ac.ko build needs
+export GBOS_HOST_INCLUDE="$T/inc"
 iexpect() {  # iexpect <name> <exit> <regex> [VAR=value ...] -- <install.sh args>; output in $out
     local name=$1 code=$2 re=$3 rc; shift 3
     local -a envs=()
@@ -382,4 +384,9 @@ for pair in \
 done
 iexpect "amd-hx370 default inputs restored: reused again" 0 "reusing $W3/build" \
     GBOS_PROFILE="$R/profiles/amd-hx370" GBOS_DEV_KERNEL_DIR="$T/devk-test" -- --work "$W3"
+mkdir -p "$T/noinc/openssl"; touch "$T/noinc/gelf.h" "$T/noinc/openssl/opensslv.h"   # libelf and OpenSSL, no libdw
+k0=$(cat "$T/log/kmod" 2>/dev/null | wc -l | tr -d ' '); export k0
+iexpect "no dwarf.h on the host: refused before the kernel build, with the libdw-dev hint" 2 \
+    "missing \(to build ac.ko\): dwarf.h$|missing \(to build ac.ko\): dwarf.h;" GBOS_HOST_INCLUDE="$T/noinc" -- --work "$T/work-nodw"
+check "... the hint names libdw-dev for Debian/Ubuntu, and ac.ko was not built" 'grep -q "apt install .*libdw-dev" <<< "$out" && [ "$(cat "$T/log/kmod" 2>/dev/null | wc -l | tr -d " ")" = "$k0" ]'
 finish

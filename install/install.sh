@@ -211,11 +211,18 @@ if [ "$WANT_AC" = 1 ] || [ "$WANT_WF" = 1 ]; then
     if [ ! -f "$WORK/inputs/kmod/ac.ko" ] || { [ "$WANT_WF" = 1 ] && [ ! -f "$KMOD_WF" ]; }; then
         missing=()
         for c in git make perl flex bison nice xargs base64; do command -v "$c" >/dev/null || missing+=("$c"); done
+        # host headers the kernel build compiles against: libelf (gelf.h), libdw (dwarf.h), OpenSSL
+        # (GBOS_HOST_INCLUDE: the include directories looked in; tests point it at a fake tree)
+        for h in gelf.h dwarf.h openssl/opensslv.h; do
+            found=0
+            for d in ${GBOS_HOST_INCLUDE:-/usr/include /usr/local/include}; do [ ! -f "$d/$h" ] || found=1; done
+            [ "$found" = 1 ] || missing+=("$h")
+        done
         if [ ${#missing[@]} -gt 0 ]; then
-            echo "missing (to build ac.ko): ${missing[*]}; the kernel build also needs the libelf and OpenSSL headers"
+            echo "missing (to build ac.ko): ${missing[*]}; the kernel build needs these tools and the libelf, libdw (dwarf.h) and OpenSSL headers"
             echo "Arch:          sudo pacman -S --needed git make perl flex bison libelf openssl"
-            echo "Debian/Ubuntu: sudo apt install git make perl flex bison libelf-dev libssl-dev"
-            echo "Fedora:        sudo dnf install git make perl flex bison elfutils-libelf-devel openssl-devel"
+            echo "Debian/Ubuntu: sudo apt install git make perl flex bison libelf-dev libdw-dev libssl-dev"
+            echo "Fedora:        sudo dnf install git make perl flex bison elfutils-libelf-devel elfutils-devel openssl-devel"
             exit 2
         fi
         log "    ac.ko from the pinned kernel source and toolchain (about 2.5 GB to download, 5-15 minutes)"
