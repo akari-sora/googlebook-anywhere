@@ -147,6 +147,97 @@ else:
     print("SKIP comparison with sgdisk -e (sgdisk is not installed)")
 
 
+# --- grow (write-usb.sh's default): userdata takes the free space at the end of the disk
+def grown(img, disk, disk_sectors, fill=True):
+    """Like relocate with grow=True; the disk beyond the image is filled with 0xA5 first (an old stick's contents)."""
+    sparse_copy(img, disk, disk_sectors * 512)
+    isz = os.path.getsize(img)
+    if fill:
+        with open(disk, "r+b") as f:
+            f.seek(isz)
+            left = disk_sectors * 512 - isz
+            while left:
+                k = min(left, 1 << 20)
+                f.write(b"\xa5" * k)
+                left -= k
+    ifd = os.open(img, os.O_RDONLY)
+    plan = wusb.gpt_plan(ifd, isz, disk_sectors * 512, grow=True)
+    os.close(ifd)
+    wfd = os.open(disk, os.O_RDWR)
+    wusb.gpt_write(wfd, plan, disk)
+    wusb.gpt_check(wfd, plan, disk)
+    os.close(wfd)
+    return plan
+
+
+GDISK_N = 262144         # 128 MiB disk
+# (a) userdata is the last partition: extended in place
+g1 = os.path.join(T, "g-grow1.img")
+plan = grown(img, g1, GDISK_N)
+h, parts = gptlib.read_gpt(g1)
+hi, pi = gptlib.read_gpt(img)
+ok("grow: userdata that is the last partition keeps its start and ends at the last usable sector",
+   parts[3]["first"] == pi[3]["first"] and parts[3]["last"] == GDISK_N - 34, str(parts[3]))
+ok("grow: type, GUID, name and attributes of every partition are kept; only userdata's end moved",
+   all(parts[k] == pi[k] for k in (1, 2)) and {k: v for k, v in parts[3].items() if k != "last"}
+   == {k: v for k, v in pi[3].items() if k != "last"} and h["disk"] == hi["disk"])
+ok("grow: the first 16 MiB of userdata are zeroed", region(g1, parts[3]["first"], 32768) == bytes(16 << 20))
+ok("grow: the partitions before userdata are unchanged", region(g1, 2048, 6144) == region(img, 2048, 6144))
+ok("grow: backup GPT at the last sector", h["alt"] == GDISK_N - 1)
+os.unlink(g1)
+
+# (b) the KANO layout: userdata is partition 1 in the middle, another partition (ota_recovery_b) after it
+kimg = os.path.join(T, "k.img")
+K_N = 65536              # 32 MiB image
+with open(kimg, "wb") as f:
+    f.truncate(K_N * 512)
+    gptlib.write_gpt(f, K_N, [
+        dict(num=1, name="userdata", type="0fc63daf-8483-4772-8e79-3d69d8477de4", first=40960, last=61439,
+             guid="11111111-2222-3333-4444-555555555555", attrs=1 << 55),
+        dict(num=2, name="EFI-SYSTEM", type="c12a7328-f81f-11d2-ba4b-00a0c93ec93b", first=2048, last=40959),
+        dict(num=10, name="ota_recovery_b", type="0fc63daf-8483-4772-8e79-3d69d8477de4", first=61440, last=65400),
+    ])
+    f.seek(50000 * 512)
+    f.write(b"old userdata" * 10)
+g2 = os.path.join(T, "g-grow2.img")
+plan = grown(kimg, g2, GDISK_N)
+h, parts = gptlib.read_gpt(g2)
+hk, pk = gptlib.read_gpt(kimg)
+ud = parts[1]
+ok("grow: userdata before another partition moves to the first 1 MiB boundary after the last partition and the image",
+   ud["first"] == 65536 and ud["last"] == GDISK_N - 34, str(ud))
+ok("grow: the moved userdata keeps its type, GUID, name and attributes",
+   {k: v for k, v in ud.items() if k not in ("first", "last")} == {k: v for k, v in pk[1].items() if k not in ("first", "last")})
+ok("grow: the other partitions are unchanged", parts[2] == pk[2] and parts[10] == pk[10] and len(parts) == len(pk))
+ok("grow: the moved userdata starts with 16 MiB of zeros", region(g2, ud["first"], 32768) == bytes(16 << 20))
+ok("grow: the image range of the disk is unchanged apart from the MBR and GPT",
+   region(g2, 34, K_N - 34 - 33) == region(kimg, 34, K_N - 34 - 33))
+ok("grow: the old stick contents after the zeroed range are left alone (not a full wipe)",
+   region(g2, ud["first"] + 32768, 1) == b"\xa5" * 512)
+if shutil.which("sgdisk"):
+    r = subprocess.run(["sgdisk", "-v", g2], capture_output=True, text=True)
+    ok("grow: sgdisk -v finds no problems", "No problems found" in r.stdout, r.stdout + r.stderr)
+else:
+    print("SKIP grow: sgdisk -v (sgdisk is not installed)")
+os.unlink(g2)
+
+# (c) a disk barely larger than the image: userdata is not grown (it would shrink); only the backup GPT moves
+g3 = os.path.join(T, "g-grow3.img")
+plan = grown(kimg, g3, K_N + 4096)
+h, parts = gptlib.read_gpt(g3)
+ok("grow: skipped when the free space is smaller than userdata (GPT moved as without grow)",
+   plan["grow"] is None and parts == pk and h["alt"] == K_N + 4095)
+os.unlink(g3)
+ifd = os.open(kimg, os.O_RDONLY)
+try:
+    wusb.gpt_plan(ifd, K_N * 512, GDISK_N * 512, grow=True)
+    p0 = wusb.gpt_plan(ifd, K_N * 512, GDISK_N * 512, grow=False)
+    ok("no grow (--no-grow): the table is the image's", p0["grow"] is None and p0["table"] == region(kimg, 2, 32))
+finally:
+    os.close(ifd)
+os.unlink(kimg)
+
+
 def broken(name, edit, want, disk_sectors=DISK_N):
     p = os.path.join(T, "bad.img")
     sparse_copy(img, p, IMG_N * 512)

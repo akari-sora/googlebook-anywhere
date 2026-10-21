@@ -2,6 +2,8 @@
 # Write a finished googlebook-kano.img to a USB disk (Linux host, as root).
 #
 # usage: sudo install/write-usb.sh <googlebook-kano.img> /dev/disk/by-id/usb-...
+#        By default /data (userdata) is grown to fill the stick (see wusb_py write); --no-grow keeps the image's own
+#            userdata size, as before.
 #        install/write-usb.sh --check-only <image> <disk>   every check, nothing written. --check-only runs the same
 #            re-check that follows the serial prompt in a real run (without the prompt). As a normal user it skips the
 #            one probe that needs root (the exclusive open) and says so.
@@ -36,21 +38,23 @@
 # Test hook: GBOS_WUSB_TEST_SYSFS=<dir> stands in for /sys. It is honoured only together with --check-only (anything
 # else refuses), so it can never steer a write. tests/install/run.sh uses it.
 set -euo pipefail
-USAGE="usage: sudo write-usb.sh [--keep-data [--without-fallback]] <googlebook-kano.img> /dev/disk/by-id/usb-...   or   write-usb.sh --check-only <image> <disk>"
+USAGE="usage: sudo write-usb.sh [--no-grow | --keep-data [--without-fallback]] <googlebook-kano.img> /dev/disk/by-id/usb-...   or   write-usb.sh --check-only <image> <disk>"
 PHASE=
 refuse() { echo "refusing${PHASE:+ ($PHASE)}: $*"; exit 2; }
 
-CHECK_ONLY=0 KEEP=0 NOFALLBACK=0
+CHECK_ONLY=0 KEEP=0 NOFALLBACK=0 GROW=grow
 while [ $# -gt 2 ]; do
     case "$1" in
         --check-only) CHECK_ONLY=1; shift ;;
         --keep-data) KEEP=1; shift ;;
         --without-fallback) NOFALLBACK=1; shift ;;
+        --no-grow) GROW=nogrow; shift ;;
         *) break ;;
     esac
 done
 if [ $# -ne 2 ]; then echo "$USAGE"; exit 2; fi
 [ "$NOFALLBACK" = 0 ] || [ "$KEEP" = 1 ] || { echo "--without-fallback goes with --keep-data"; exit 2; }
+[ "$GROW" = grow ] || [ "$KEEP" = 0 ] || { echo "--no-grow is for a fresh write; --keep-data never changes the GPT"; exit 2; }
 case ${BASH_SOURCE[0]} in */*) HERE=${BASH_SOURCE[0]%/*} ;; *) HERE=. ;; esac
 ENGINE=$HERE/gbos-update.py
 IMG=$1 ARG=$2
@@ -170,7 +174,12 @@ write <image> <sha256> <device> <major:minor> <device bytes> <sysfs device path>
     descriptor and compare it with the image and the sha256. Then, still through the exclusive descriptor, move the
     backup GPT to the end of the disk exactly as `sgdisk -e` does (backup entries and header at the end, primary header
     and protective MBR updated, the old backup left where it was), drop the cache again and read all of it back. The
-    exclusive descriptor stays open until that last comparison is done.
+    exclusive descriptor stays open until that last comparison is done. With grow (what write-usb.sh passes unless
+    --no-grow), the same step also gives userdata the free space at the end of the disk: if userdata is the last
+    partition it is extended in place, otherwise its entry moves to the first 1 MiB boundary after the last partition
+    and runs to the last usable sector (as the installer stick does on the internal disk). Its type, unique GUID,
+    attributes and name stay. The first 16 MiB of the new range are zeroed first, so Android finds no filesystem and
+    formats /data (f2fs) at the new size on the first boot. Skipped when it would not make userdata larger.
 Nothing here opens with O_CREAT, so a device node that disappeared can never turn into a regular file.
 Exit 0 done, 2 refused before the first byte was written, 1 failed after writing started, 3 the image is written and
 read back correctly but the GPT step failed.
@@ -370,15 +379,56 @@ def gpt_with(b, hsize, **fields):
     """A copy of the header sector b with some fields changed and its CRC recomputed."""
     h = bytearray(b)
     for name, value in fields.items():
+        if name == "ecrc":
+            struct.pack_into("<I", h, 88, value)
+            continue
         struct.pack_into("<Q", h, {"my": 24, "alt": 32, "last": 48, "elba": 72}[name], value)
     struct.pack_into("<I", h, 16, 0)
     struct.pack_into("<I", h, 16, zlib.crc32(bytes(h[:hsize])))
     return bytes(h)
 
 
-def gpt_plan(ifd, size, devbytes, what="the image"):
+GROW_ALIGN = 2048        # new userdata starts on a 1 MiB boundary, as the installer stick's gbos-install.sh does
+GROW_ZERO = 16 << 20     # bytes zeroed at the new userdata start, so Android sees an unformatted /data and formats it
+
+
+def userdata_grow(table, n_ent, esz, last_usable, img_n):
+    """The table with the userdata entry moved to [after the image's last partition, aligned] .. last usable LBA, or
+    None when that would not make userdata larger. Only the start and end LBA of the one entry named userdata change:
+    type GUID, unique GUID, attributes and name stay. The old userdata area is left in place, unused."""
+    ud, top = None, 0
+    for i in range(n_ent):
+        e = table[i * esz:(i + 1) * esz]
+        if e[:16] == bytes(16):
+            continue
+        name = e[56:128].decode("utf-16le", "replace").split("\0")[0]
+        a, z = struct.unpack_from("<QQ", e, 32)
+        if name == "userdata":
+            if ud is not None:
+                raise Stop("the image has more than one partition named userdata")
+            ud = (i, a, z)
+        else:
+            top = max(top, z)
+    if ud is None:
+        return None   # nothing to grow (not a Googlebook image): written as it is
+    i, a, z = ud
+    if z >= top:   # userdata already is the last partition: extend it in place
+        start = a
+    else:
+        start = (top + 1 + GROW_ALIGN - 1) // GROW_ALIGN * GROW_ALIGN
+        if start < img_n:
+            start = max(start, (img_n + GROW_ALIGN - 1) // GROW_ALIGN * GROW_ALIGN)
+    if last_usable < start or last_usable - start + 1 <= z - a + 1 or (last_usable - start + 1) * 512 < 2 * GROW_ZERO:
+        return None
+    t = bytearray(table)
+    struct.pack_into("<QQ", t, i * esz + 32, start, last_usable)
+    return dict(table=bytes(t), index=i, old=(a, z), new=(start, last_usable), moved=start != a)
+
+
+def gpt_plan(ifd, size, devbytes, what="the image", grow=False):
     """Check the image's protective MBR and both GPTs, and return the sectors that make the disk's GPT: what
-    `sgdisk -e` writes on a disk larger than the image. Nothing is written here."""
+    `sgdisk -e` writes on a disk larger than the image. With grow, userdata also takes the free space at the end of
+    the disk (userdata_grow). Nothing is written here."""
     img_n, n = size // 512, devbytes // 512
     if n < img_n:
         raise Stop("the disk (%d sectors) is smaller than the image (%d sectors)" % (n, img_n))
@@ -412,13 +462,16 @@ def gpt_plan(ifd, size, devbytes, what="the image"):
         a, z = struct.unpack_from("<QQ", e, 32)
         if not h["first"] <= a <= z <= h["last"]:
             raise Stop("%s: partition %d (%d-%d) lies outside the usable area" % (what, i + 1, a, z))
+    g = userdata_grow(table, h["n"], h["esz"], n - 2 - t, img_n) if grow and n > img_n else None
     if n == img_n:  # the backup is already at the end of the disk: nothing changes
-        return dict(img_n=img_n, n=n, t=t, table=table, mbr=mbr, primary=hb, backup=bb)
+        return dict(img_n=img_n, n=n, t=t, table=table, mbr=mbr, primary=hb, backup=bb, grow=None)
     newmbr = bytearray(mbr)
     struct.pack_into("<I", newmbr, 446 + 12, min(n - 1, 0xFFFFFFFF))
-    return dict(img_n=img_n, n=n, t=t, table=table, mbr=bytes(newmbr),
-                primary=gpt_with(hb, h["hsize"], alt=n - 1, last=n - 2 - t),
-                backup=gpt_with(hb, h["hsize"], my=n - 1, alt=1, last=n - 2 - t, elba=n - 1 - t))
+    nt = g["table"] if g else table
+    crc = zlib.crc32(nt)
+    return dict(img_n=img_n, n=n, t=t, table=nt, mbr=bytes(newmbr), grow=g,
+                primary=gpt_with(hb, h["hsize"], alt=n - 1, last=n - 2 - t, ecrc=crc),
+                backup=gpt_with(hb, h["hsize"], my=n - 1, alt=1, last=n - 2 - t, elba=n - 1 - t, ecrc=crc))
 
 
 def gpt_write(wfd, plan, what):
@@ -428,7 +481,11 @@ def gpt_write(wfd, plan, what):
     if plan["n"] == plan["img_n"]:
         return  # the image already ends at the end of the disk
     n, t = plan["n"], plan["t"]
-    for data, lba in ((plan["table"], n - 1 - t), (plan["backup"], n - 1), (plan["primary"], 1), (plan["mbr"], 0)):
+    steps = [(plan["table"], n - 1 - t), (plan["backup"], n - 1)]
+    if plan.get("grow"):
+        # the new userdata start is zeroed before any table points at it, then the primary entries are rewritten
+        steps = [(bytes(GROW_ZERO), plan["grow"]["new"][0])] + steps + [(plan["table"], 2)]
+    for data, lba in steps + [(plan["primary"], 1), (plan["mbr"], 0)]:
         pwrite_full(wfd, data, lba * 512, what)
         try:
             os.fsync(wfd)
@@ -447,8 +504,12 @@ def gpt_check(rfd, plan, what):
             raise Stop("%s: the %s at LBA %d did not read back as written" % (what, name, lba))
     h = gpt_header(plan["primary"], 1, what)
     b = gpt_header(plan["backup"], n - 1, what)
-    if h["alt"] != n - 1 or b["alt"] != 1 or b["elba"] != n - 1 - t or zlib.crc32(plan["table"][:tbytes]) != h["ecrc"]:
+    if h["alt"] != n - 1 or b["alt"] != 1 or b["elba"] != n - 1 - t or zlib.crc32(plan["table"][:tbytes]) != h["ecrc"] \
+            or b["ecrc"] != h["ecrc"]:
         raise Stop("%s: the new GPT is inconsistent" % what)
+    g = plan.get("grow")
+    if g and pread_full(rfd, GROW_ZERO, g["new"][0] * 512, what) != bytes(GROW_ZERO):
+        raise Stop("%s: the start of the new userdata did not read back as zeros" % what)
 
 
 def verify(ifd, wfd, dev, rdev, size, sha):
@@ -473,7 +534,7 @@ def verify(ifd, wfd, dev, rdev, size, sha):
         raise Stop("the read-back sha256 %s is not the image's %s" % (h.hexdigest(), sha))
 
 
-def write(img, sha, dev, rdev_text, devbytes_text, syspath):
+def write(img, sha, dev, rdev_text, devbytes_text, syspath, grow="nogrow"):
     rdev = parse_rdev(rdev_text)
     if len(sha) != 64 or sha.strip("0123456789abcdef"):
         raise Stop("bad sha256 %r" % sha)
@@ -488,7 +549,7 @@ def write(img, sha, dev, rdev_text, devbytes_text, syspath):
         raise Stop("%s must be a non-empty regular file of whole 512-byte sectors" % img)
     if size > devbytes:
         raise Stop("the image (%d bytes) is larger than the disk (%d bytes)" % (size, devbytes))
-    plan = gpt_plan(ifd, size, devbytes)  # a malformed image GPT is refused before anything is written
+    plan = gpt_plan(ifd, size, devbytes, grow=grow_flag(grow))  # a malformed image GPT is refused before anything is written
     check_node(dev, rdev)
     wfd = open_dev(dev, os.O_WRONLY | os.O_EXCL, rdev)
     # the number still belongs to the disk that was confirmed: same sysfs device, size and sector size
@@ -514,11 +575,29 @@ def write(img, sha, dev, rdev_text, devbytes_text, syspath):
     os.close(rfd)
     print("== GPT read back: protective MBR, primary and backup GPT as planned (backup at LBA %d)" % (plan["n"] - 1),
           file=sys.stderr)
+    describe_grow(plan, sys.stderr)
     os.close(wfd)  # gives up the exclusive claim only now
     os.close(ifd)
 
 
-def gptcheck(img, devbytes_text):
+def grow_flag(text):
+    if text not in ("grow", "nogrow"):
+        raise Stop("bad grow mode %r" % text)
+    return text == "grow"
+
+
+def describe_grow(plan, out):
+    g = plan.get("grow")
+    if g:
+        (a, z), (s, e) = g["old"], g["new"]
+        print("userdata: %d MiB at LBA %d -> %d MiB at LBA %d-%d%s; first %d MiB zeroed, Android formats /data on the "
+              "first boot" % ((z - a + 1) // 2048, a, (e - s + 1) // 2048, s, e,
+                              " (moved past the last partition)" if g["moved"] else "", GROW_ZERO >> 20), file=out)
+    else:
+        print("userdata: left at the image's size", file=out)
+
+
+def gptcheck(img, devbytes_text, grow="nogrow"):
     try:
         devbytes = int(devbytes_text, 10)
     except ValueError:
@@ -527,9 +606,10 @@ def gptcheck(img, devbytes_text):
     ist = os.fstat(ifd)
     if not stat.S_ISREG(ist.st_mode) or ist.st_size == 0 or ist.st_size % 512:
         raise Stop("%s must be a non-empty regular file of whole 512-byte sectors" % img)
-    plan = gpt_plan(ifd, ist.st_size, devbytes)
+    plan = gpt_plan(ifd, ist.st_size, devbytes, grow=grow_flag(grow))
     os.close(ifd)
     print("image GPT OK: backup GPT at LBA %d of the image, LBA %d of the disk" % (plan["img_n"] - 1, plan["n"] - 1))
+    describe_grow(plan, sys.stdout)
 
 
 def status():
@@ -542,13 +622,13 @@ def main(argv):
             rdev = parse_rdev(argv[2])
             check_node(argv[1], rdev)
             os.close(open_dev(argv[1], os.O_RDONLY | os.O_EXCL, rdev))
-        elif len(argv) == 3 and argv[0] == "gptcheck":
+        elif len(argv) in (3, 4) and argv[0] == "gptcheck":
             gptcheck(*argv[1:])
-        elif len(argv) == 7 and argv[0] == "write":
+        elif len(argv) in (7, 8) and argv[0] == "write":
             write(*argv[1:])
         else:
-            raise Stop("usage: probe <device> <major:minor> | gptcheck <image> <device bytes> | "
-                       "write <image> <sha256> <device> <major:minor> <device bytes> <sysfs device path>")
+            raise Stop("usage: probe <device> <major:minor> | gptcheck <image> <device bytes> [grow|nogrow] | "
+                       "write <image> <sha256> <device> <major:minor> <device bytes> <sysfs device path> [grow|nogrow]")
     except (Stop, OSError) as e:
         print("%s: %s" % ("FAIL" if started else "refusing", e), file=sys.stderr)
         return status()
@@ -586,7 +666,7 @@ RM=$(sysread "$SYS/block/$I_NAME/removable") || RM=unknown
 echo "== checking image sha256"
 [ "$(sha256sum < "$IMG" | cut -d' ' -f1)" = "$SHA" ] || { echo "image sha256 mismatch"; exit 1; }
 echo "== checking the image's protective MBR and GPT"
-wusb_py gptcheck "$IMG" "$I_BYTES" || refuse "the image's GPT cannot be moved to the end of $I_NODE (above)"
+wusb_py gptcheck "$IMG" "$I_BYTES" "$GROW" || refuse "the image's GPT cannot be moved to the end of $I_NODE (above)"
 lsblk -o NAME,SIZE,TRAN,MODEL,SERIAL "$I_NODE" || refuse "lsblk cannot describe $I_NODE"
 printf '%s\n' "$IDENT" | sed 's/^/  /'
 CONFIRMED=$IDENT
@@ -669,7 +749,7 @@ if [ "$KEEP" = 1 ]; then
     exit 0
 fi
 echo "== writing $SIZE bytes to $I_NODE"
-if wusb_py write "$IMG" "$SHA" "$I_NODE" "$I_RDEV" "$I_BYTES" "$I_SYSPATH"; then :; else
+if wusb_py write "$IMG" "$SHA" "$I_NODE" "$I_RDEV" "$I_BYTES" "$I_SYSPATH" "$GROW"; then :; else
     rc=$?
     if [ "$rc" = 2 ]; then echo "nothing was written to $I_NODE"; exit 2; fi
     if [ "$rc" = 3 ]; then

@@ -123,6 +123,8 @@ The output is `~/gbos-work/build/image/googlebook-kano.img`; the `.sha256` next 
 - **Linux**: `sudo install/write-usb.sh ~/gbos-work/build/image/googlebook-kano.img /dev/disk/by-id/usb-<your-stick>`
   (it accepts only a whole USB disk, refuses the system disk and disks in use, asks you to type the disk's serial number to confirm, reads back the whole write and compares it, then moves the backup GPT to the end of the stick and checks it).
   You need `sgdisk` first (the `gdisk` package); without it, the script stops without writing anything. If there is a `.not-self-tested` marker next to the image, you also have to type `untested` before it writes.
+  By default it also gives /data (the `userdata` partition) the rest of the stick: the image's own userdata is only about 4.3 GB, so without this most of a large stick goes unused and Play can refuse to install apps. Only the userdata entry changes (moved past the last partition, same GUID, type, name and attributes); its first 16 MiB are zeroed and Android formats /data at the new size on the first boot. `--no-grow` writes the image's own size as before. This was tested on disk-image files and a loop device (`tests/install/`), not yet on a real stick or a booted grown image.
+  Etcher and Rufus (below) write the image as-is, so /data stays about 4.3 GB on sticks written with them.
 - **macOS, Windows**: use [balenaEtcher](https://etcher.balena.io/) (Mac/Windows/Linux) or [Rufus](https://rufus.ie/)
   (Windows, choose "DD Image" mode). In Windows, files built in WSL are in `\\wsl$\Ubuntu\home\<you>\gbos-work\build\image\`.
   Check the file before writing: on Windows `certutil -hashfile googlebook-kano.img SHA256`, on macOS `shasum -a 256 googlebook-kano.img`;

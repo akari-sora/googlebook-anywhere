@@ -333,4 +333,32 @@ assert d[1024:len(i)] == i[1024:], "image content"
 PY
 then ok "the device holds the image with a valid GPT whose backup is at its end (checked with tests/stick/gptlib.py)"
 else bad "the device content or GPT is not what the writer reported"; fi
+
+# grow (write-usb.sh's default): a KANO-shaped image (userdata in the middle, ota_recovery_b after it) on a 128 MiB loop
+python3 - "$T/kg.img" "$ROOT/tests/stick" << 'PY' || { bad "cannot make the grow test image"; finish; }
+import sys
+sys.path.insert(0, sys.argv[2])
+import gptlib
+n = 65536
+with open(sys.argv[1], "wb") as f:
+    f.truncate(n * 512)
+    gptlib.write_gpt(f, n, [
+        dict(num=1, name="userdata", type="0fc63daf-8483-4772-8e79-3d69d8477de4", first=40960, last=61439, attrs=1 << 55),
+        dict(num=2, name="EFI-SYSTEM", type="c12a7328-f81f-11d2-ba4b-00a0c93ec93b", first=2048, last=40959),
+        dict(num=10, name="ota_recovery_b", type="0fc63daf-8483-4772-8e79-3d69d8477de4", first=61440, last=65400)])
+PY
+(cd "$T" && sha256sum kg.img > kg.img.sha256)
+head -c $((128 << 20)) /dev/urandom > "$T/kg-disk"
+LOOP=$(losetup --find --show "$T/kg-disk" 2>/dev/null) || { LOOP=''; skp "grow on a loop device (no loop device available here)"; finish; }
+lmm=$(majmin_of "$LOOP"); lsys=$(readlink -f "/sys/dev/block/$lmm"); lbytes=$(( $(cat "/sys/block/${LOOP##*/}/size") * 512 ))
+wexpect "the writer grows userdata to the end of the device" 0 "userdata: 10 MiB at LBA 40960 -> 95 MiB at LBA 65536-262110 \\(moved" \
+    write "$T/kg.img" "$(cut -c1-64 "$T/kg.img.sha256")" "$LOOP" "$lmm" "$lbytes" "$lsys" grow
+sg=$(sgdisk -v "$LOOP" 2>&1)
+grep -q "No problems found" <<< "$sg" && ok "sgdisk -v finds no problems after the grow" || bad "sgdisk -v after the grow: $sg"
+sgi=$(sgdisk -i 1 "$LOOP" 2>&1)
+grep -q "First sector: 65536 " <<< "$sgi" && grep -q "Last sector: 262110 " <<< "$sgi" && grep -q "Partition name: 'userdata'" <<< "$sgi" \
+    && ok "sgdisk -i reads userdata at its new range, name kept" || bad "sgdisk -i 1: $sgi"
+[ "$(dd if="$LOOP" bs=1M skip=32 count=16 status=none | tr -d '\0' | wc -c)" = 0 ] \
+    && ok "the first 16 MiB of the grown userdata read back as zeros" || bad "the grown userdata does not start with zeros"
+losetup -d "$LOOP"; LOOP=''
 finish

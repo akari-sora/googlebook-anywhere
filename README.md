@@ -123,6 +123,8 @@ Google 的映像不能轉散布，所以每個人都要從官方 zip 自己建�
 - **Linux**：`sudo install/write-usb.sh ~/gbos-work/build/image/googlebook-kano.img /dev/disk/by-id/usb-<你的隨身碟>`
   （只接受 USB 整顆碟，拒絕系統碟與使用中的碟，要你輸入碟的序號確認，寫完會整段回讀比對，再把備份 GPT 移到隨身碟尾端並核對）。
   需要先裝 `sgdisk`（`gdisk` 套件），沒有的話什麼都不寫就停止。映像旁有 `.not-self-tested` 時，還要多輸入 `untested` 才會寫。
+  預設也會把隨身碟剩下的空間給 /data（`userdata` 分割區）：映像本身的 userdata 只有約 4.3 GB，不擴大的話大隨身碟大多用不到，Play 也可能因空間不足拒絕安裝 App。只改 userdata 那一筆（移到最後一個分割區之後，GUID、類型、名稱與屬性不變），開頭 16 MiB 寫零，第一次開機由 Android 以新大小格式化 /data。加 `--no-grow` 則照舊寫映像原本的大小。這項只在磁碟映像檔與 loop 裝置上測過（`tests/install/`），還沒在真的隨身碟上、也沒開機驗證擴大後的映像。
+  Etcher 與 Rufus（下面）原樣寫入，用它們寫的隨身碟 /data 仍約 4.3 GB。
 - **macOS、Windows**：用 [balenaEtcher](https://etcher.balena.io/)（Mac／Windows／Linux）或 [Rufus](https://rufus.ie/)
   （Windows，選「DD 映像」模式）。WSL 建出來的檔案在 Windows 的 `\\wsl$\Ubuntu\home\<你>\gbos-work\build\image\`。
   寫入前先核對：Windows `certutil -hashfile googlebook-kano.img SHA256`，macOS `shasum -a 256 googlebook-kano.img`，

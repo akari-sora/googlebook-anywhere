@@ -96,3 +96,19 @@ Tests: `tests/install/run.sh` (Linux: 53 as a user + 1 SKIP for the root-only lo
 `tests/install/install-sh-test.sh` (Linux user: 50; macOS: the 19 Docker cases with bash 3.2), `tests/install/kano-check-test.sh` 15.
 A CI container without loop devices now lists every pretend-disk case it could not run as its own SKIP line and prints
 a NOTE with the count.
+
+## write-usb.sh grows /data; install.sh checks the ac.ko build headers (issues #1, #2)
+
+- `write-usb.sh` (fresh write, default; `--no-grow` keeps the old behaviour, `--keep-data` refuses `--no-grow`): in the
+  GPT step, the `userdata` entry gets the free space at the end of the stick. Last partition: extended in place.
+  Otherwise (the KANO layout, `ota_recovery_b` after it): moved to the first 1 MiB boundary after the last partition and
+  the image. Only its first/last LBA change. The first 16 MiB of the new range are zeroed before any GPT points at
+  them, so Android formats /data (f2fs in this build) at the new size on the first boot. Skipped when it would not grow.
+- `install.sh`: before the module build, `gelf.h`, `dwarf.h` and `openssl/opensslv.h` must be in /usr/include or
+  /usr/local/include; the hint now lists `libdw-dev` (Debian/Ubuntu) and `elfutils-devel` (Fedora). The Docker image
+  installs `libdw-dev`.
+
+Tests (Linux box, Debian trixie, 2026-10-21): `tests/install/run.sh` 56 passed / 2 skipped as a user and 68 passed /
+1 skipped as root (includes the grow on a 128 MiB loop device, `sgdisk -v` clean); `gpt-test.py` all passed with
+sgdisk; `install-sh-test.sh` 104 passed. Not tested: a real USB stick, booting a grown image in QEMU or on hardware.
+It is not known whether this changes the CX34 bootloop (#3).
