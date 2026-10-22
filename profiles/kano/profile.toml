@@ -119,31 +119,37 @@ path = "intel/ibt-0040-0041.sfi"
 from = "linux-firmware"
 src = "intel/ibt-0040-0041.sfi"
 sha256 = "8dcfb3a7c1592c11c3e80505d21ee78dbde3de0c830d8e3e856371c37717b62c"
+requested_by = "runtime: btintel (Linux v6.18 drivers/bluetooth/btintel.c btintel_get_fw_name_tlv() format; the file-end MODULE_FIRMWARE list) formats intel/ibt-%04x-%04x.sfi at runtime from AX211 cnvi_top/cnvr_top over HCI; MODULE_FIRMWARE only lists ibt-11-5 and ibt-12-16"
 [[firmware]]
 path = "intel/ibt-0040-0041.ddc"
 from = "linux-firmware"
 src = "intel/ibt-0040-0041.ddc"
 sha256 = "fe272982577efdc289cfe3e8bedafca607c0b7d6c9df1aab1880e22ef930d077"
+requested_by = "runtime: btintel (Linux v6.18 drivers/bluetooth/btintel.c btintel_get_fw_name_tlv() format; the file-end MODULE_FIRMWARE list) formats intel/ibt-%04x-%04x.ddc at runtime from AX211 cnvi_top/cnvr_top over HCI; MODULE_FIRMWARE only lists ibt-11-5 and ibt-12-16"
 [[firmware]]                         # SOF DSP (IPC3; ADL uses the TGL image) and the max98373 + nau8825 topology
 path = "intel/sof/community/sof-adl.ri"
 from = "sof-bin"
 src = "sof-bin-2025.12.2/sof/community/sof-tgl.ri"
 sha256 = "e3489dcb277e87eee8bc091ab7d51163a63c85541c22522775122b54263769f3"
+requested_by = "runtime: snd-sof-pci-intel-tgl + snd-sof-pci (Linux v6.18 sound/soc/sof/intel/pci-tgl.c adl_desc, sound/soc/sof/sof-pci-dev.c community_key_platforms) assemble intel/sof/community/sof-adl.ri at runtime from the ADL PCI descriptor and DMI community_key_platforms"
 [[firmware]]
 path = "intel/sof-tplg/sof-adl-max98373-nau8825.tplg"
 from = "sof-bin"
 src = "sof-bin-2025.12.2/sof-tplg/sof-adl-max98373-nau8825.tplg"
 sha256 = "4beb29400d9beed0c80bcc11b3f4e82aad70a54d6e851638c81eb087a10d4de5"
+requested_by = "runtime: snd-sof-pci-intel-tgl + snd-soc-acpi-intel-match (Linux v6.18 sound/soc/intel/common/soc-acpi-intel-adl-match.c sof_tplg_filename) assemble intel/sof-tplg/sof-adl-max98373-nau8825.tplg at runtime from ACPI codec/amp IDs 10508825 + MX98373"
 [[firmware]]                         # RPL cAVS (CP714-2WN, 8086:51ca/51cb) requests community/sof-rpl.ri. In sof-bin
 path = "intel/sof/community/sof-rpl.ri"  # v2025.12.2 that member is a symlink to sof-tgl.ri; pin the regular file.
 from = "sof-bin"
 src = "sof-bin-2025.12.2/sof/community/sof-tgl.ri"
 sha256 = "e3489dcb277e87eee8bc091ab7d51163a63c85541c22522775122b54263769f3"
+requested_by = "runtime: snd-sof-pci-intel-tgl + snd-sof-pci (Linux v6.18 sound/soc/sof/intel/pci-tgl.c rpl_desc, sound/soc/sof/sof-pci-dev.c community_key_platforms) assemble intel/sof/community/sof-rpl.ri at runtime from the RPL PCI descriptor and DMI community_key_platforms"
 [[firmware]]                         # same bytes as the ADL tplg. SOF v2.2.13 rpl.m4 includes adl.m4 (sof-bin
 path = "intel/sof-tplg/sof-rpl-max98373-nau8825.tplg"  # v2025.12.2 has no RPL-named file). Untested on 13th-gen hardware.
 from = "sof-bin"
 src = "sof-bin-2025.12.2/sof-tplg/sof-adl-max98373-nau8825.tplg"
 sha256 = "4beb29400d9beed0c80bcc11b3f4e82aad70a54d6e851638c81eb087a10d4de5"
+requested_by = "runtime: snd-sof-pci-intel-tgl + snd-soc-acpi-intel-match (Linux v6.18 sound/soc/intel/common/soc-acpi-intel-rpl-match.c sof_tplg_filename) assemble intel/sof-tplg/sof-rpl-max98373-nau8825.tplg at runtime from ACPI codec/amp IDs 10508825 + MX98373"
 
 [audio]
 # card sof-nau8825 (NAU8825 headset + 2x MAX98373, SOF IPC3); the DRAS files are written by hooks.vendor (audio())

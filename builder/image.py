@@ -15,6 +15,7 @@ import devprofile
 GBOS_OUT = Path(os.environ["GBOS_OUT"])
 SRC = GBOS_OUT / "vendor/stage-vendor.img"
 PROF = devprofile.load(os.environ.get("GBOS_PROFILE") or Path(__file__).resolve().parent.parent / "profiles/kano")
+DROP = devprofile.first_stage_drop(PROF)  # stage-1 modules the final initrd drops (QEMU self-test below)
 if PROF["model"]["status"] != "verified":
     print(f"WARNING: profile {PROF['model']['id']} is {PROF['model']['status']!r}, not verified on its hardware "
           "(profiles/<model>/profile.toml model.status)", flush=True)
@@ -94,7 +95,6 @@ size, _ = struct.unpack("<II", src[-20:-12]); bc = src[-20 - size:]; body = src[
 digest = (GBOS_OUT / "vendor/logs/vbmeta.digest.txt").read_text().split()[0]
 assert re.fullmatch(r"[0-9a-f]{64}", digest) and f"androidboot.vbmeta.digest={digest}\n".encode() in bc, \
     "ESP bootconfig must carry the re-signed vbmeta digest"
-DROP = set(PROF["cmdline"]["first_stage_drop"])
 STUB = bool(PROF["cmdline"]["pci_stub_ids"])
 out = bytearray(); off = 0; changed = 0; added = 0; depchanged = 0
 while off < len(body):
@@ -106,7 +106,7 @@ while off < len(body):
     nend = (off + 110 + ns + 3) & ~3; name = body[off+110:off+110+ns-1].decode(); data = body[nend:nend+fs]
     nxt = (nend + fs + 3) & ~3
     if name == "lib/modules/modules.load":
-        data = ("\n".join((["pci-stub.ko"] if STUB else []) + [l for l in data.decode().splitlines() if l and l not in DROP]) + "\n").encode()
+        data = devprofile.stage2_modules_load(data.decode(), PROF).encode()
         h[54:62] = b"%08X" % len(data); changed += 1
         out += h + body[off+110:nend] + data + b"\0" * ((-len(data)) % 4)
         if not STUB:

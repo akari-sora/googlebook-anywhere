@@ -5,7 +5,8 @@
 把 Google 官方的 **Googlebook OS**（lapis，Android 17 桌面版）裝到原本不支援它的 x86-64 電腦上。第一個目標機型是
 **Acer Chromebook Spin 714（KANO 主機板）**。
 
-- 下載與版本說明：[GitLab Releases](https://gitlab.com/aa22396584/googlebook-anywhere/-/releases)（最新 v0.2.1，見 [docs/RELEASE-NOTES.md](docs/RELEASE-NOTES.md)）
+- 下載與版本說明：[GitLab Releases](https://gitlab.com/aa22396584/googlebook-anywhere/-/releases)（目前版本見 [docs/RELEASE-NOTES.md](docs/RELEASE-NOTES.md)，較早版本見 [docs/RELEASE-HISTORY.md](docs/RELEASE-HISTORY.md)）
+- 軟體驗收：[v0.2.3，2026-10-22](docs/VERIFICATION-v0.2.3.md)；實機驗證範圍仍見 [KANO 硬體狀態](docs/STATUS-KANO.md)。
 - 原始碼與 issue：[gitlab.com/aa22396584/googlebook-anywhere](https://gitlab.com/aa22396584/googlebook-anywhere)（正本）。GitHub 上的 [akari-sora/googlebook-anywhere](https://github.com/akari-sora/googlebook-anywhere) 是唯讀鏡像，issue 與下載請到 GitLab。
 
 > 這不是 Google 的官方專案。repo 裡沒有任何 Google 的檔案：腳本從 Google 下載官方 recovery 映像，用固定的 SHA-256 核對後，
@@ -225,7 +226,8 @@ install/gbos-report.sh --probe gbos-probe --out gbos-report
 
 | 文件 | 內容 |
 |---|---|
-| [docs/RELEASE-NOTES.md](docs/RELEASE-NOTES.md) | 每一版的變更與已知問題 |
+| [docs/RELEASE-NOTES.md](docs/RELEASE-NOTES.md) | 目前這一版的變更與已知問題 |
+| [docs/RELEASE-HISTORY.md](docs/RELEASE-HISTORY.md) | 較早版本的發行說明（完整版本紀錄） |
 | [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md)（[English](docs/COMPATIBILITY.en.md)） | 哪些機器可以裝、CPU 最低需求 |
 | [docs/STATUS-KANO.md](docs/STATUS-KANO.md) | KANO 各子型號與每項功能的驗證狀態 |
 | [docs/FIRMWARE.md](docs/FIRMWARE.md) | 換成 UEFI 韌體的步驟與風險 |
@@ -314,12 +316,14 @@ tests/stick/qemu-install.py --asis <工作目錄> <Googlebook 映像> <安裝碟
 - 第 1 行必須正好是 `# Googlebook Anywhere <tag>`（例如 `# Googlebook Anywhere v0.2.1`）。拿掉標題上的 ` (未發布)`。
 - 第 2 行是空行。
 - 第 3 行必須正好是 `<!-- release-status: released -->`（開發期間是 `unreleased`）。寫在別行的 released 不算。
-- 版本字串 `Googlebook Anywhere v…` 只能出現在頂格的 `# Googlebook Anywhere v…` 版本標題行（不縮排、不放進清單或引用、不用 setext、不用 `##`）；內文提到舊版本時只寫 `v0.2.1` 這種版本號。
-- 整個檔案只接受純 Markdown（除了第 3 行的狀態註解外，行內 code span 以外的任何原始 HTML 標籤、註解或 `<https://...>` 自動連結一律拒絕；任何數字字元參照 `&#`——不論是否帶分號——與具名字元參照 `&name;` 一律拒絕；含空白、引號、括號、title 或跨行的連結目標 `](...)` 一律拒絕；跳脫方括號 `\[`、`\]` 與跳脫括號 `\(`、`\)` 一律拒絕；連結目標裡的反引號、參考式連結 `[文字][標籤]` 與連結定義 `[標籤]: 網址` 一律拒絕，請用 `[文字](網址)`；第 3 行以外的 HTML 註解 `<!--` 一律拒絕），且從頭到尾不能出現任何未發布字樣（包含三個反引號或 `~~~` 圍起來的程式碼區塊、縮排區塊，以及舊版本段落，沒有任何豁免）：除了逐行檢查列出的字樣外，也會以每個 Markdown 段落（空行或僅含 `>` 的行、setext 底線／分隔線、清單項目、表格列或標題，包含引用區塊內）為單位，在移除連結目標（`](...)`）與單行參考連結標籤（`][...]`）後，並把圖片的 `![`、GitLab 行內差異的 `{+ +}`／`[+ +]`／`{- -}` 與行內數學式的 `` $` ``／`` `$ `` 當成標記移除後，以兩種英文檢視（一種刪除標記符號並將空白與換行折成單一空白，另一種將標記符號與 `-_/` 換成空白再將空白與換行折成單一空白）及一種中文檢視（僅刪除標記符號、空白與換行）比對，因此跨行換行、清單或引用續行、連字號／底線／斜線、連結或強調標記拆開的列出字樣一樣會被擋下。限制：同一段落內相鄰的表格儲存格或句子接起來若剛好湊出禁語仍可能被擋下（請換個寫法）；刻意混淆（例如長得像的字母、不可見字元）不在這個檢查的範圍內——打 tag 的 commit 會經過審查。這一段要拿掉標題的 `(未發布)` 和導言的「這一版還沒有發布。」。會被擋下的字樣還有：未發布、還沒有發布、還沒發布、待發布、即將發布、沒正式發布、沒有正式發布、未正式發布、未發佈、還沒有發佈、還沒發佈、未发布、unreleased、unpublished、not yet released（英文不分大小寫）。
+- 這個檔案只放目前這一版：第 2 行以後不能有任何版本（包括目前這一版）的 `# Googlebook Anywhere v<版本>` 標題（確切規則見下面的標題檢查）。較早版本的段落都在 `docs/RELEASE-HISTORY.md`（第 1 行是 `# Googlebook Anywhere release history`）；每次發版時，先把上一版的整段原樣移到該檔標題下方的最前面（只刪掉該段第 3 行的 `<!-- release-status: ... -->` 狀態註解；history 裡不能有任何狀態行），再在 `docs/RELEASE-NOTES.md` 寫新版本。搬完後 history 的樣子是：第 1 行標題、第 2 行空行、接著搬進來的整段（從它的 `# Googlebook Anywhere <版本>` 標題開始），再一個空行，然後是原本較早的各段；history 第 2 行原本有沒有空行都可以，gate 只檢查第 1 行標題與沒有狀態行。
+- 檔案必須以恰好一個換行結尾（最後一行後面沒有空行），否則 release job 接上的 history 連結會黏到最後一段；gate 會帶行號拒絕。
+- 標題檢查（heading lint）是盡力而為的撰寫輔助，不是 Markdown 解析器，只抓最常見的疏忽：第 2 行以後，從第 0 欄開始、以 1–6 個 `#` 加一個空白或 tab 再接 `Googlebook Anywhere v<數字>` 的行（任何版本，包括目前這一版）一律拒絕，程式碼區塊裡也一樣；要在範例裡保留這種行，就把它縮排 4 格，或把整個程式碼區塊放進清單項目或 `>` 引用（lint 不看那些地方；只把那一行放進清單或引用會變成真的標題）。其他都不檢查。已知漏洞：縮排、放在 `>` 引用或清單裡、setext、粗體／連結／程式碼標記或表格形式的舊版標題都會通過，`#` 後沒空白、沒有版號、7 個以上 `#`、小寫名稱或名稱裡其他空白也會通過。真正的保證是結構上的：發版只發布 `docs/RELEASE-NOTES.md` 本身（加上 history 連結），而上面的程序會把上一版移出這個檔案。
+- 整個檔案只接受純 Markdown（除了第 3 行的狀態註解外，行內 code span 以外的任何原始 HTML 標籤、註解或 `<https://...>` 自動連結一律拒絕；任何數字字元參照 `&#`——不論是否帶分號——與具名字元參照 `&name;` 一律拒絕；含空白、引號、括號、title 或跨行的連結目標 `](...)` 一律拒絕；跳脫方括號 `\[`、`\]` 與跳脫括號 `\(`、`\)` 一律拒絕；連結目標裡的反引號、參考式連結 `[文字][標籤]` 與連結定義 `[標籤]: 網址` 一律拒絕，請用 `[文字](網址)`；第 3 行以外的 HTML 註解 `<!--` 一律拒絕），且從頭到尾不能出現任何未發布字樣（包含三個反引號或 `~~~` 圍起來的程式碼區塊與縮排區塊，沒有任何豁免）：除了逐行檢查列出的字樣外，也會以每個 Markdown 段落（空行或僅含 `>` 的行、setext 底線／分隔線、清單項目、表格列或標題，包含引用區塊內）為單位，在移除連結目標（`](...)`）與單行參考連結標籤（`][...]`）後，並把圖片的 `![`、GitLab 行內差異的 `{+ +}`／`[+ +]`／`{- -}` 與行內數學式的 `` $` ``／`` `$ `` 當成標記移除後，以兩種英文檢視（一種刪除標記符號並將空白與換行折成單一空白，另一種將標記符號與 `-_/` 換成空白再將空白與換行折成單一空白）及一種中文檢視（僅刪除標記符號、空白與換行）比對，因此跨行換行、清單或引用續行、連字號／底線／斜線、連結或強調標記拆開的列出字樣一樣會被擋下。限制：同一段落內相鄰的表格儲存格或句子接起來若剛好湊出禁語仍可能被擋下（請換個寫法）；刻意混淆（例如長得像的字母、不可見字元）不在這個檢查的範圍內——打 tag 的 commit 會經過審查。這一段要拿掉標題的 `(未發布)` 和導言的「這一版還沒有發布。」。會被擋下的字樣還有：未發布、還沒有發布、還沒發布、待發布、即將發布、沒正式發布、沒有正式發布、未正式發布、未發佈、還沒有發佈、還沒發佈、未发布、unreleased、unpublished、not yet released（英文不分大小寫）。
 
 私有 GitLab 專案的 CI/CD 變數 `GBOS_REQUIRE_PRIVATE_SCAN` 寫在專案設定，不寫進 repo。沒有設、去頭尾空白後是空字串、`0` 或 `false`（不分大小寫）時，真正的公開匯出仍會 SKIP。其他任何非空值（包含 `1` 和 `true`）都會強制掃描，缺少 `tools/release/private-patterns.txt` 就失敗。不要把這個變數勾成 Protect variable，否則未受保護的分支和 merge request pipeline 拿不到它，會在沒有掃描的情況下跑。公開 CI 不要設這個變數。
 
-打 tag 的 pipeline 會核對發行說明的第一個標題與 tag 一致，只發布該版本的段落（保留三個反引號或 `~~~` 圍起來的程式碼區塊內的標題），並在結尾補上指向同一個 tag 的完整 `docs/RELEASE-NOTES.md` 歷史絕對連結，讓發版附加檔案保持好找。
+打 tag 的 pipeline 會核對發行說明第 1 行與 tag 一致，把整個 `docs/RELEASE-NOTES.md` 原樣當成發行說明發布（不切段），並在結尾空一行補上指向同一個 tag 的 `docs/RELEASE-HISTORY.md` 完整版本紀錄絕對連結，讓發版附加檔案保持好找。
 
 </details>
 

@@ -8,15 +8,31 @@ from .gitlab-ci.yml and run on copies of the notes. It is not reimplemented
 here. The variants are built from a synthetic template: the real notes stay
 unreleased until the tag commit, and this test must keep passing on that commit.
 The release job's parsed script is also exercised under sh with the available
-awk implementations; output and mutation checks cover its current-section description.
+shells; output and mutation checks cover its description (the notes file verbatim plus the history link).
+
+The guarantee is structural: a release publishes exactly docs/RELEASE-NOTES.md (plus the
+history link), and the documented procedure moves the previous version out of that file
+into docs/RELEASE-HISTORY.md. The heading lint is a best-effort authoring aid that only
+catches the most common slip; it is not a Markdown parser, and it must never refuse valid
+current-version content: a false positive is the worse error. Its one rule, with no
+fence tracking and no exemptions: a line 2..N that starts at column 0 with 1-6 '#', a
+space or tab, and 'Googlebook Anywhere v<digit>' (any version, the current one too) is
+refused. To keep such a line in an example, indent it by 4 spaces or put it in a list or
+quote, which the lint does not look at. Known lint gap (no self-test asserts their
+refusal): indented, quoted, listed, setext, emphasized, linked, code-span and table forms
+of an older heading, a heading without the space or the version, 7 or more '#', and a
+lowercase name or other spacing of the name.
 """
+import contextlib
 import difflib
+import io
 import os
 import re
 import shutil
 import subprocess
 import sys
 import tempfile
+import unicodedata
 from pathlib import Path
 
 try:
@@ -96,32 +112,9 @@ PINNED_CI_BLOCKS = {
   needs: [package]
   script:
     - test "$(head -n 1 docs/RELEASE-NOTES.md)" = "# Googlebook Anywhere $CI_COMMIT_TAG" || { echo "docs/RELEASE-NOTES.md line 1 expected '# Googlebook Anywhere $CI_COMMIT_TAG'"; exit 1; }
-    # Keep the current section intact, including heading examples inside Markdown fences.
-    - |
-      LC_ALL=C awk '
-        {
-          line = $0
-          sub(/^(   |  | )/, "", line)
-          if (fence != "") {
-            if (substr(line, 1, 1) == fence) {
-              match(line, /^(`+|~+)/)
-              if (RLENGTH >= width && substr(line, RLENGTH + 1) ~ /^[ \t]*$/) fence = ""
-            }
-          } else if (line ~ /^```/ || line ~ /^~~~/) {
-            match(line, /^(`+|~+)/)
-            marker = substr(line, 1, 1)
-            if (marker == "~" || substr(line, RLENGTH + 1) !~ /`/) {
-              fence = marker
-              width = RLENGTH
-            }
-          } else if (NR > 1 && /^# Googlebook Anywhere /) exit
-          print
-        }
-        END {
-          print ""
-          print "[Full release history](" ENVIRON["CI_PROJECT_URL"] "/-/blob/" ENVIRON["CI_COMMIT_TAG"] "/docs/RELEASE-NOTES.md)"
-        }
-      ' docs/RELEASE-NOTES.md > release-description.md
+    # docs/RELEASE-NOTES.md holds only this version (older ones are in docs/RELEASE-HISTORY.md): publish it verbatim.
+    - cat docs/RELEASE-NOTES.md > release-description.md
+    - printf '\n[Full release history](%s/-/blob/%s/docs/RELEASE-HISTORY.md)\n' "$CI_PROJECT_URL" "$CI_COMMIT_TAG" >> release-description.md
     - echo "release $CI_COMMIT_TAG"
   release:
     tag_name: $CI_COMMIT_TAG
@@ -1482,88 +1475,723 @@ LINE_BREAK_CHARS = {
 }
 
 
-def _version_paragraph_problem(paragraph):
-    """Build the normalized view for one paragraph of raw (lineno, line) rows."""
-    view = " ".join(raw for _lineno, raw in paragraph)
-    view = re.sub(r"\]\([^)]*\)", "", view)
-    view = re.sub(r"[*_`~\[\]()]", "", view)
-    view = re.sub(r"\s+", " ", view).lower()
-    if not re.search(r"googlebook anywhere v[0-9]", view):
-        return None
-    if len(paragraph) == 1 and re.match(r"# Googlebook Anywhere v[0-9]", paragraph[0][1]):
-        return None
-    return (
-        f"docs/RELEASE-NOTES.md line {paragraph[0][0]}: 'Googlebook Anywhere v...' may appear only "
-        "in a top-level '# Googlebook Anywhere v...' heading line"
-    )
+HISTORY = REPO / "docs/RELEASE-HISTORY.md"
+HISTORY_TITLE = "# Googlebook Anywhere release history"
+# The whole heading lint (round 7): a line 2..N that starts at column 0 with 1-6 '#', a
+# space or tab, and 'Googlebook Anywhere v<digit>'. No fence tracking, no exemptions.
+OLDER_HEADING = re.compile(r"#{1,6}[ \t]+Googlebook Anywhere v[0-9]")
+HEADING_WORKAROUND = (
+    "to keep such a line in an example, indent it by 4 spaces, or put the whole fenced code "
+    "block inside a list item or a quote (the lint does not look there)"
+)
+
+
+def older_heading_line(text):
+    """The line number of the first column-0 '# Googlebook Anywhere v<digit>' heading on lines 2..N, else None."""
+    for lineno, line in enumerate(text.split("\n"), 1):
+        if lineno > 1 and OLDER_HEADING.match(line):
+            return lineno
+    return None
+
+
+STATUS_PREFIX = "<!-- release-status"
 
 
 def version_heading_problem(text):
-    """Refuse version strings outside fences unless each paragraph is a column-0 '# Googlebook Anywhere v...' heading.
+    """Refuse notes that are not one plain current-version file.
 
     The notes are expected as raw bytes for this check: a "\\r" or any other
     character that str.splitlines() breaks on but awk does not (LF is the only
-    awk line break) refuses the file. Paragraphs form on non-blank runs, and
-    blank lines, setext/thematic-break underline runs, headings and fences
-    take the paragraph and start a new one.
+    awk line break) refuses the file, and so does any Unicode format character
+    (category Cf: zero-width space/joiner/non-joiner, word joiner, a BOM after the
+    start, bidi controls, soft hyphen), which no reader can see. A line 2..N may not
+    start at column 0 with 1-6 '#', a space or tab, and 'Googlebook Anywhere v<digit>'
+    (older_heading_line; no fence tracking): the file holds only the current version,
+    which the release job publishes verbatim, and older versions live in
+    docs/RELEASE-HISTORY.md.
     """
     if isinstance(text, (bytes, bytearray)):
         text = bytes(text).decode("utf-8")
     for lineno, line in enumerate(text.split("\n"), 1):
-        for char in line:
+        for column, char in enumerate(line):
             if char in LINE_BREAK_CHARS:
                 return (
                     f"docs/RELEASE-NOTES.md line {lineno}: expected only '\\n' as a line break; "
                     f"found {LINE_BREAK_CHARS[char]}"
                 )
-    fence = ""
-    width = 0
-    paragraph = []
-
-    def skim(rows):
-        return _version_paragraph_problem(rows)
-
-    for lineno, raw in enumerate(text.split("\n"), 1):
-        line = re.sub(r"^(?:   |  | )", "", raw)
-        if fence:
-            if line.startswith(fence):
-                m = re.match(r"^(`+|~+)", line)
-                if m and len(m.group(1)) >= width and re.match(r"^[ \t]*$", line[len(m.group(1)):]):
-                    fence = ""
-                    width = 0
-                    problem = skim(paragraph)
-                    if problem:
-                        return problem
-                    paragraph = []
-            continue
-        m = re.match(r"^(`{3,}|~{3,})", line)
-        if m:
-            marker = m.group(1)[0]
-            if marker == "~" or "`" not in line[len(m.group(1)):]:
-                fence = marker
-                width = len(m.group(1))
-                problem = skim(paragraph)
-                if problem:
-                    return problem
-                paragraph = []
-                continue
-        if re.match(r"^[ \t>]*$", line) or re.match(r"^[ \t>]*(=+|-+|\*+|_+)[ \t]*$", line) or re.match(
-            r"^[ \t>]*#", line
-        ):
-            problem = skim(paragraph)
-            if problem:
-                return problem
-            paragraph = []
-        if re.match(r"^[ \t>]*#", line):
-            problem = skim([(lineno, raw)])
-            if problem:
-                return problem
-            continue
-        paragraph.append((lineno, raw))
-    problem = skim(paragraph)
-    if problem:
-        return problem
+            if unicodedata.category(char) == "Cf" and not (lineno == 1 and column == 0 and char == "\ufeff"):
+                return (
+                    f"docs/RELEASE-NOTES.md line {lineno}: expected no invisible format character; "
+                    f"found U+{ord(char):04X} ({unicodedata.name(char, 'format character').lower()})"
+                )
+    lineno = older_heading_line(text)
+    if lineno is not None:
+        return (
+            f"docs/RELEASE-NOTES.md line {lineno}: expected only the current version; a column-0 "
+            "'# Googlebook Anywhere v...' heading after line 1 (any version, the current one too) is "
+            "refused: the file holds one section, and an earlier section belongs in "
+            f"docs/RELEASE-HISTORY.md; {HEADING_WORKAROUND}"
+        )
+    lines = text.split("\n")
+    if not text.endswith("\n"):
+        return (
+            f"docs/RELEASE-NOTES.md line {len(lines)}: expected the file to end with exactly one newline; "
+            "found none (the release job then joins the history link to the last line)"
+        )
+    if text.endswith("\n\n"):
+        last = len(lines) - 1
+        while last > 1 and lines[last - 1] == "":
+            last -= 1
+        return (
+            f"docs/RELEASE-NOTES.md line {last + 1}: expected the file to end with exactly one newline; "
+            "found empty lines at the end"
+        )
     return None
+
+
+def notes_heading_problem(path):
+    """Run version_heading_problem() on the raw bytes of a notes file.
+
+    A text read would turn a lone "\\r" into "\\n" before the check could see it.
+    """
+    return version_heading_problem(Path(path).read_bytes())
+
+
+def history_problem(path):
+    """docs/RELEASE-HISTORY.md must exist and start with its title line."""
+    path = Path(path)
+    if not path.is_file() or path.is_symlink():
+        return "docs/RELEASE-HISTORY.md is missing (older release sections live there)"
+    try:
+        data = path.read_bytes()
+        text = data.decode("utf-8")
+    except OSError as exc:
+        return f"docs/RELEASE-HISTORY.md cannot be read ({type(exc).__name__})"
+    except UnicodeDecodeError as exc:
+        line = data[:exc.start].count(b"\n") + 1
+        return f"docs/RELEASE-HISTORY.md line {line}: expected UTF-8 text; found byte 0x{data[exc.start]:02x}"
+    first = data.split(b"\n", 1)[0]
+    if first != HISTORY_TITLE.encode("utf-8"):
+        return f"docs/RELEASE-HISTORY.md line 1 expected {HISTORY_TITLE!r}"
+    for lineno, line in enumerate(text.split("\n"), 1):
+        if STATUS_PREFIX in line:
+            return (
+                f"docs/RELEASE-HISTORY.md line {lineno}: expected no release-status line (drop line 3 of a "
+                "section when it moves here)"
+            )
+    return None
+
+
+def run_main_on(notes, history=HISTORY, notes_only=True):
+    captured = io.StringIO()
+    code = 0
+    try:
+        with contextlib.redirect_stdout(captured), contextlib.redirect_stderr(captured):
+            main(notes=notes, notes_only=notes_only, history=history)
+    except SystemExit as exc:
+        code = exc.code
+    return code, captured.getvalue()
+
+
+def notes_lint_checks(real, tag):
+    """The notes hold only the current version (round 3): the heading lint, the history
+    file, the raw-bytes / lone-CR and Unicode Cf (D3) refusals through the real main()."""
+    for label, notes, needle in (
+        ("older top-level heading", real + "\n# Googlebook Anywhere v0.2.1\n", "older top-level heading"),
+        ("older sub-heading", "# Googlebook Anywhere v9.9.9\n\nx\n## Googlebook Anywhere v0.2.1\n", "md line 4:"),
+        ("six-hash heading", "# Googlebook Anywhere v9.9.9\n\n###### Googlebook Anywhere v0.2.1\n", "md line 3:"),
+    ):
+        problem = version_heading_problem(notes)
+        if problem is None:
+            fail(f"heading lint: {label} was not refused")
+        if needle != label and needle not in problem:
+            fail(f"heading lint: {label} message missing {needle!r}: {problem}")
+        if "belongs in docs/RELEASE-HISTORY.md" not in problem:
+            fail(f"heading lint: {label} message does not name the history file: {problem}")
+        print(f"release-notes-gate: heading lint {label}: refuse")
+    for label, notes in (
+        ("the real notes", real),
+        ("prose mention of an older version", "# Googlebook Anywhere v9.9.9\n\nsee Googlebook Anywhere v0.2.0 notes\n"),
+        ("sub-heading about something else", "# Googlebook Anywhere v9.9.9\n\n## Googlebook hardware\n"),
+    ):
+        problem = version_heading_problem(notes)
+        if problem is not None:
+            fail(f"heading lint: {label} was refused: {problem}")
+        print(f"release-notes-gate: heading lint {label}: pass")
+    # D3: every Unicode format character is refused with its line, wherever it is.
+    for char in ("\u200b", "\u200c", "\u200d", "\u2060", "\ufeff", "\u202e", "\u2066", "\u200e", "\u00ad"):
+        problem = version_heading_problem(f"plain text\n\nordinary{char}prose\n")
+        needle = f"md line 3: expected no invisible format character; found U+{ord(char):04X}"
+        if problem is None or needle not in problem:
+            fail(f"format character U+{ord(char):04X} was not refused at line 3: {problem}")
+    if version_heading_problem("\ufeffplain text\n") is not None:
+        fail("a BOM at the very start was refused")
+    print("release-notes-gate: Unicode format characters (Cf) refused with their line; leading BOM allowed: pass")
+    for label, notes, needle in (
+        ("raw CR inside line (bytes)", b"## old\r# Googlebook Anywhere v0.2.2", "line 1: expected only '\\n'"),
+        ("CRLF line (bytes)", b"```text\nfence example\n```\r\n", "line 3: expected only '\\n'"),
+        ("U+2028 inside line", "## \u2028# Googlebook Anywhere v0.2.1\n", "U+2028"),
+    ):
+        problem = version_heading_problem(notes)
+        if problem is None or needle not in problem:
+            fail(f"{label} was not refused with {needle!r}: {problem}")
+        print(f"release-notes-gate: {label}: refuse")
+    # The real main() reads the notes as raw bytes and checks the history file.
+    with tempfile.TemporaryDirectory(prefix="gbos-notes-main-") as tmp_main:
+        tmp_main = Path(tmp_main)
+        lone_cr = tmp_main / "RELEASE-NOTES.md"
+        lone_cr.write_bytes(
+            b"# Googlebook Anywhere v9.9.9\n\n" + RELEASED_LINE.encode() + b"\n\n## old\r# Googlebook Anywhere v0.2.2\n"
+        )
+        code, output = run_main_on(lone_cr)
+        if code != 1 or "md line 5: expected only '\\n' as a line break; found U+000D" not in output:
+            fail(f"main() on a notes file with a lone CR did not refuse it from the raw bytes: rc={code} {output!r}")
+        print("release-notes-gate: main() reads the notes file as raw bytes (lone CR): refuse")
+        clean = tmp_main / "clean.md"
+        clean.write_text("# Googlebook Anywhere v9.9.9\n\n" + RELEASED_LINE + "\n\nx\n", encoding="utf-8")
+        older = tmp_main / "older.md"
+        older.write_text(clean.read_text(encoding="utf-8") + "\n# Googlebook Anywhere v9.9.8\n\nold\n", encoding="utf-8")
+        code, output = run_main_on(older)
+        if code != 1 or "md line 7: expected only the current version" not in output:
+            fail(f"main() accepted notes with an older version heading: rc={code} {output!r}")
+        print("release-notes-gate: main() on notes with an older version heading: refuse")
+        wrong_title = tmp_main / "wrong-history.md"
+        wrong_title.write_text("# Release history\n\n# Googlebook Anywhere v9.9.8\n", encoding="utf-8")
+        for label, history, needle in (
+            ("missing history file", tmp_main / "absent.md", "docs/RELEASE-HISTORY.md is missing"),
+            ("history file without its title line", wrong_title, "docs/RELEASE-HISTORY.md line 1 expected"),
+        ):
+            code, output = run_main_on(clean, history=history)
+            if code != 1 or needle not in output:
+                fail(f"main() did not refuse a {label}: rc={code} {output!r}")
+            print(f"release-notes-gate: main() with a {label}: refuse")
+        code, output = run_main_on(clean)
+        if code not in (0, None):
+            fail(f"main() refused clean notes with the real history file: rc={code} {output!r}")
+        print("release-notes-gate: main() on clean notes with the real history file: pass")
+
+
+SIM_ENV = "GBOS_NOTES_GATE_NO_SIM"
+
+
+def next_tag(tag):
+    parts = tag[1:].split(".")
+    parts[-1] = str(int(parts[-1]) + 1)
+    return "v" + ".".join(parts)
+
+
+def move_current_to_history(real, history, layout="documented"):
+    """The README procedure, literally: delete line 3 (the status comment) of the released
+    notes, then insert the remaining section directly below line 1 (the title) of the
+    history. The documented layout is: line 1 the title, line 2 empty, the moved section,
+    one empty line, then the older sections as they were (any empty lines that followed the
+    title are not repeated). layout="pasted" is the bare paste with no empty lines added;
+    the history check accepts both, and whatever the history had on line 2."""
+    lines = real.split("\n")
+    if len(lines) < 3 or not lines[2].startswith(STATUS_PREFIX):
+        fail("docs/RELEASE-NOTES.md line 3 must be the release-status line")
+    moved = "\n".join(lines[:2] + lines[3:])
+    if not moved.endswith("\n"):
+        moved += "\n"
+    title, _sep, rest = history.partition("\n")
+    if title != HISTORY_TITLE:
+        fail(f"docs/RELEASE-HISTORY.md line 1 expected {HISTORY_TITLE!r}")
+    if layout == "pasted":
+        return title + "\n" + moved + rest
+    return title + "\n\n" + moved + "\n" + rest.lstrip("\n")
+
+
+def simulation_tree(tmp):
+    """A copy of the tracked files (or of the tree when there is no git index)."""
+    dest = Path(tmp) / "tree"
+    listed = subprocess.run(["git", "-C", str(REPO), "ls-files", "-z"], capture_output=True)
+    if listed.returncode == 0 and listed.stdout:
+        for rel in listed.stdout.decode("utf-8").split("\0"):
+            if not rel or not (REPO / rel).is_file():
+                continue
+            target = dest / rel
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(REPO / rel, target, follow_symlinks=False)
+    else:
+        shutil.copytree(REPO, dest, symlinks=True, ignore=shutil.ignore_patterns(".git"))
+    return dest
+
+
+SIM_RAN = []
+
+
+def next_release_simulation(real, history, dry=False):
+    """N1: the real notes must not be constrained by the gate's self-tests. Follow the
+    documented procedure for the next release (and two legal edits of today's notes) on a
+    copy of the tree; the gate must pass on each. Round 8 decision: the gate never runs
+    tests/stick/docs-story-test.py (CI runs it on the real tree), so a simulation checks
+    only the gate's own rules. dry=True walks every history-dependent step in-process
+    without starting a gate (the NM3 check on unusual history layouts)."""
+    if os.environ.get(SIM_ENV) and not dry:
+        print("release-notes-gate: next-release simulation: skipped inside a simulation")
+        return
+    tag = current_tag(real)
+    new = next_tag(tag)
+    # The section that moves is the released one (as on the tag commit).
+    released = flip_real(real, tag)
+    moved_history = move_current_to_history(released, history)
+    head = f"# Googlebook Anywhere {new}\n\n{UNRELEASED_LINE}\n\n本版延續上一版。\n\n"
+    reused = next((l for l in real.split("\n") if l.startswith("- ")), "- 沿用的已知問題。")
+    # L4: the repo's own development-period format, and the same notes flipped for the tag.
+    dev = (f"# Googlebook Anywhere {new} (未發布)\n\n{UNRELEASED_LINE}\n\n這一版還沒有發布。"
+           "本版延續上一版。\n\n## 驗證紀錄\n\n- 尚待補上。\n")
+    flipped_next = flip_real(dev, new)
+    title_only = HISTORY_TITLE + "\n" + history.partition("\n")[2].lstrip("\n")
+    # README: drop line 3 (the status comment), move the rest unchanged below the title.
+    lines = released.split("\n")
+    del lines[2]
+    h_title, _sep, h_rest = history.partition("\n")
+    literal = h_title + "\n\n" + "\n".join(lines).rstrip("\n") + "\n\n" + h_rest.lstrip("\n")
+    literal_next = (f"# Googlebook Anywhere {new}\n\n{RELEASED_LINE}\n\n本版延續上一版。\n\n"
+                    "## 新版驗證\n\n- 新版內容。\n")
+    literal_dev = (f"# Googlebook Anywhere {new} (未發布)\n\n{UNRELEASED_LINE}\n\n這一版還沒有發布。"
+                   "本版延續上一版。\n\n## 新版驗證\n\n- 新版內容。\n")
+    variants = (
+        ("next release with a 驗證紀錄 section", head + "## 驗證紀錄\n\n- 尚待補上。\n", moved_history, True),
+        ("next release without a 驗證紀錄 section", head + "## 變更\n\n- 新項目。\n", moved_history, True),
+        ("next release reusing a known issue line", head + "## 已知問題與限制\n\n" + reused + "\n", moved_history, True),
+        ("codex legal edit: one more item", real + "- 其他見 README「現況」與 docs/STATUS-KANO.md。\n", history, True),
+        ("codex legal edit: renamed sub-heading",
+         re.sub(r"^## .*$", "## 測試紀錄", real, count=1, flags=re.M), history, True),
+        # L3: the literal procedure on a history whose title has no empty line after it,
+        # and the bare paste right below line 1.
+        ("codex I2 history title directly followed by a section", head + "## 變更\n\n- 新項目。\n",
+         move_current_to_history(released, title_only), True),
+        ("claude I-1 section pasted right below the title", head + "## 變更\n\n- 新項目。\n",
+         move_current_to_history(released, history, layout="pasted"), True),
+        ("today's history without the empty line 2", real, title_only, True),
+        # Codex r6 I2: history layouts the README procedure allows; the gate never indexes them.
+        ("codex r6 I2 history with only its title", real, HISTORY_TITLE + "\n", True),
+        ("codex r6 I2 version heading with no empty line after it", real,
+         HISTORY_TITLE + "\n# Googlebook Anywhere v0.2.1\nOld notes.\n", True),
+        ("codex r6 I2 history with prose and no version heading", real,
+         HISTORY_TITLE + "\n\n較早版本的說明。\n", True),
+        # Round 8 G2 (claude): the README move done literally on the REAL notes, new notes
+        # without the report-only sentence; the gate alone must accept it.
+        ("README-literal move of the real notes, new released notes, CI=1", literal_next, literal, True),
+        ("README-literal move of the real notes, new development notes, no CI", literal_dev, literal, False),
+        # New notes without the report-only sentence on a history that has none either: the
+        # gate's rules hold; only docs-story (not run here) would object.
+        ("new notes without the report-only sentence on a title-only history, CI=1", literal_next,
+         HISTORY_TITLE + "\n", True),
+        ("claude m-2 development format (未發布), gate without CI=1", dev, moved_history, False),
+        ("claude m-2 development format flipped for the tag, CI=1", flipped_next, moved_history, True),
+    )
+    run = subprocess.run
+    if dry:
+        def run(*_args, **_kwargs):
+            return subprocess.CompletedProcess([], 0, "", "")
+    with tempfile.TemporaryDirectory(prefix="gbos-next-release-") as tmp:
+        tree = simulation_tree(tmp)
+        for label, notes, hist, with_ci in variants:
+            env = dict(os.environ, **{SIM_ENV: "1"})
+            if with_ci:
+                env["CI"] = "1"
+            else:
+                env.pop("CI", None)
+            (tree / "docs/RELEASE-NOTES.md").write_text(notes, encoding="utf-8")
+            (tree / "docs/RELEASE-HISTORY.md").write_text(hist, encoding="utf-8")
+            proc = run([sys.executable, "-I", "tests/stick/release-notes-gate.py"], cwd=tree,
+                       env=env, capture_output=True, text=True, timeout=120)
+            if dry:
+                continue
+            if proc.returncode != 0:
+                tail = (proc.stdout + proc.stderr).strip().splitlines()[-3:]
+                fail(f"next-release simulation {label}: gate rc={proc.returncode}: {tail}")
+            SIM_RAN.append(label)
+            print(f"release-notes-gate: next-release simulation {label}: gate pass")
+        # K3 / K4: the full gate entry on a broken history: one clean failure line, no
+        # traceback; and the history scan is really called from main().
+        (tree / "docs/RELEASE-NOTES.md").write_text(real, encoding="utf-8")
+        # F2: a synthetic history, never an index into the real file; F3 (codex r5 M2): the
+        # wording sits at the tail of a long history, so a truncated scan misses it.
+        wording = (HISTORY_TITLE + "\n\n# Googlebook Anywhere v0.2.1\n\n"
+                   + "".join(f"- 舊版項目 {i}。\n" for i in range(400))
+                   + "\n# Googlebook Anywhere v0.1.0\n\nunreleased build\n")
+        env = dict(os.environ, CI="1", **{SIM_ENV: "1"})
+        for label, data, needle in (
+            ("codex r5 M3 / r6 I2 wording at the tail of a synthetic history", wording.encode("utf-8"),
+             "docs/RELEASE-HISTORY.md lines 2..N fixture still has unpublished wording"),
+            ("codex r5 M2 non-UTF-8 history", (HISTORY_TITLE + "\n\nok \xff\n").encode("latin-1"),
+             "docs/RELEASE-HISTORY.md line 3: expected UTF-8 text; found byte 0xff"),
+            ("missing history", None, "docs/RELEASE-HISTORY.md is missing (older release sections live there)"),
+        ):
+            target = tree / "docs/RELEASE-HISTORY.md"
+            target.unlink(missing_ok=True)
+            if data is not None:
+                target.write_bytes(data)
+            proc = run([sys.executable, "-I", "tests/stick/release-notes-gate.py"], cwd=tree,
+                       env=env, capture_output=True, text=True, timeout=120)
+            if dry:
+                continue
+            errors = [l for l in proc.stderr.splitlines() if l.strip()]
+            if (proc.returncode == 0 or "Traceback" in proc.stdout + proc.stderr
+                    or errors != [f"release-notes-gate: {needle}"]):
+                fail(f"full gate entry, {label}: expected rc 1 and the one line {needle!r}; "
+                     f"got rc={proc.returncode}, stderr={errors[-3:]}")
+            print(f"release-notes-gate: full gate entry {label}: one clean failure line")
+
+
+def round4_checks(real, history):
+    """Review round 3: an indented code line is not checked, one final newline, the D3
+    category and BOM boundaries, no status line in the history, the next release."""
+    code_block = "# Googlebook Anywhere v9.9.9\n\n    # Googlebook Anywhere v0.2.1 (indented code)\n"
+    if version_heading_problem(code_block) is not None:
+        fail(f"heading lint: a 4-space indented code line was refused: {version_heading_problem(code_block)}")
+    print("release-notes-gate: heading lint 4-space indented code line: pass")
+    # N3: exactly one final newline, so the release job always leaves an empty line.
+    for label, notes, needle in (
+        ("codex r3 M3 no final newline", "# Googlebook Anywhere v9.9.9\n\nlast line", "md line 3: expected the file to end with exactly one newline"),
+        ("trailing empty lines", "# Googlebook Anywhere v9.9.9\n\nlast line\n\n\n", "md line 4: expected the file to end with exactly one newline"),
+    ):
+        problem = version_heading_problem(notes)
+        if problem is None or needle not in problem:
+            fail(f"final newline lint: {label} was not refused with {needle!r}: {problem}")
+        print(f"release-notes-gate: final newline lint {label}: refuse")
+    if version_heading_problem("# Googlebook Anywhere v9.9.9\n\nlast line\n") is not None:
+        fail("final newline lint: a file ending with one newline was refused")
+    print("release-notes-gate: final newline lint exactly one newline: pass")
+    # N5: D3 refuses exactly Cf; a BOM is allowed only at the very start of line 1.
+    for char in ("\u0301", "\u034f", "\ufe0f", "\u00a0"):
+        problem = version_heading_problem(f"# Googlebook Anywhere v9.9.9\n\nCafe{char} notes\n")
+        if problem is not None:
+            fail(f"D3: U+{ord(char):04X} ({unicodedata.category(char)}) is not Cf but was refused: {problem}")
+    print("release-notes-gate: D3 non-Cf marks (U+0301, U+034F, U+FE0F, U+00A0): pass")
+    for notes, needle in (
+        ("# Googlebook Anywhere v9.9.9\n\ufeff# Googlebook Anywhere v0.2.1\n", "md line 2: expected no invisible format character; found U+FEFF"),
+        ("# Googlebook Anywhere v9.9.9\n\n\ufeffprose\n", "md line 3: expected no invisible format character; found U+FEFF"),
+        ("x\ufeff\n", "md line 1: expected no invisible format character; found U+FEFF"),
+    ):
+        problem = version_heading_problem(notes)
+        if problem is None or needle not in problem:
+            fail(f"D3: a BOM outside line 1 column 0 was not refused with {needle!r}: {problem}")
+    print("release-notes-gate: D3 BOM after line 1 column 0: refuse")
+    # N2: a moved section drops its status line; the history has none.
+    with tempfile.TemporaryDirectory(prefix="gbos-history-") as tmp:
+        bad = Path(tmp) / "RELEASE-HISTORY.md"
+        bad.write_text(HISTORY_TITLE + "\n\n# Googlebook Anywhere v9.9.8\n\n" + RELEASED_LINE + "\n\nold\n", encoding="utf-8")
+        problem = history_problem(bad)
+        if problem is None or "line 5: expected no release-status line" not in problem:
+            fail(f"a history file with a status line was not refused: {problem}")
+        print("release-notes-gate: history file with a release-status line: refuse")
+        good = Path(tmp) / "moved.md"
+        good.write_text(move_current_to_history(real, history), encoding="utf-8")
+        if history_problem(good) is not None:
+            fail(f"the documented move left a history the gate refuses: {history_problem(good)}")
+    print("release-notes-gate: documented move of the current section: history accepted")
+    next_release_simulation(real, history)
+    # Round 8 G2 (NM3): every history-dependent step of the simulation on history layouts
+    # the README allows, in-process; an index into the real history raises here.
+    for label, layout in (
+        ("a history with only its title", HISTORY_TITLE + "\n"),
+        ("a version heading with no empty line after it", HISTORY_TITLE + "\n# Googlebook Anywhere v0.2.1\nOld notes.\n"),
+        ("prose and no version heading", HISTORY_TITLE + "\n\n較早版本的說明。\n"),
+    ):
+        try:
+            next_release_simulation(real, layout, dry=True)
+        except Exception as exc:  # noqa: BLE001 - the point of the test
+            fail(f"next-release simulation on {label}: {type(exc).__name__}: {exc}")
+        print(f"release-notes-gate: next-release simulation steps on {label}: pass")
+
+
+def history_unpublished_check(path):
+    """L6: every line after the title of the history, whatever versions it holds, carries
+    no unpublished wording (each moved section passed the package gate). Never an
+    exception: a missing or unreadable file is a gate failure."""
+    try:
+        text = Path(path).read_bytes().decode("utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        fail(f"docs/RELEASE-HISTORY.md cannot be read: {type(exc).__name__}")
+    assert_no_unpublished(text.partition("\n")[2], "docs/RELEASE-HISTORY.md lines 2..N")
+
+
+def round5_checks(real):
+    """Review round 4: quoted indented code, setext, pseudo headings and prose mentions
+    pass (the round-7 lint only looks at column-0 ATX lines); the literal move
+    procedure's output is accepted by the history check (L3); the history scan covers the
+    whole file and never crashes (L6). The simulation variants (L3, L4) run in main."""
+    top = "# Googlebook Anywhere v9.9.9\n\n" + RELEASED_LINE + "\n\n本版內容。\n\n"
+    must_pass = (
+        ("codex r4 I1 quoted 4-space code", top + "> Markdown 範例：\n>\n>     # Googlebook Anywhere v0.2.3\n"),
+        ("quoted code with a tab-free 5-space body", top + ">      ## Googlebook Anywhere v0.2.1\n"),
+        ("nested quoted 4-space code", top + "> > 範例\n> >\n> >     # Googlebook Anywhere v0.2.1\n"),
+        ("unquoted 4-space code", top + "    # Googlebook Anywhere v0.2.1\n"),
+        ("prose mention in a sentence", top + "這一版修正了 Googlebook Anywhere v0.2.1 的安裝碟問題。\n"),
+        ("list item mentioning a version mid-sentence", top + "- 從 Googlebook Anywhere v0.2.1 升級時保留資料。\n"),
+        ("bold mention mid-sentence", top + "請先升級到 **Googlebook Anywhere v0.2.1** 再更新。\n"),
+        ("list item then a thematic break", top + "- 見 Googlebook Anywhere v0.2.1 的說明\n---\n"),
+        ("setext heading about something else", top + "相容性\n======\n"),
+        ("pseudo heading naming the current version", top + "**Googlebook Anywhere v9.9.9** 的重點：\n"),
+        ("current-version line in the development format",
+         "# Googlebook Anywhere v9.9.9 (未發布)\n\n" + UNRELEASED_LINE + "\n\n- Googlebook Anywhere v9.9.9 起改用新流程。\n"),
+    )
+    for label, notes in must_pass:
+        problem = version_heading_problem(notes)
+        if problem is not None:
+            fail(f"heading lint: {label} was refused: {problem}")
+        print(f"release-notes-gate: heading lint {label}: pass")
+    must_fail = (
+        ("column-0 older heading", top + "# Googlebook Anywhere v0.2.1\n", "md line 7:"),
+        ("column-0 level-6 older heading with a tab", top + "######\tGooglebook Anywhere v0.1.0 舊版\n", "md line 7:"),
+    )
+    for label, notes, needle in must_fail:
+        problem = version_heading_problem(notes)
+        if problem is None or needle not in problem or "belongs in docs/RELEASE-HISTORY.md" not in problem:
+            fail(f"heading lint: {label} was not refused at {needle!r}: {problem}")
+        print(f"release-notes-gate: heading lint {label}: refuse")
+    # The real notes path: the full main() refuses the notes with a column-0 older heading.
+    if not real.endswith("\n"):
+        fail("docs/RELEASE-NOTES.md must end with a newline")
+    mixed = real + "\n# Googlebook Anywhere v0.2.1\n\n舊版正文。\n"
+    with tempfile.TemporaryDirectory(prefix="gbos-mixed-setext-") as tmp:
+        path = Path(tmp) / "RELEASE-NOTES.md"
+        path.write_text(mixed, encoding="utf-8")
+        code, output = run_main_on(path)
+        needle = f"docs/RELEASE-NOTES.md line {real.count(chr(10)) + 2}: expected only the current version"
+        if code == 0 or needle not in output or "belongs in docs/RELEASE-HISTORY.md" not in output:
+            fail(f"the real notes with a column-0 older heading were not refused by the heading lint in main(): rc={code}: {output.strip().splitlines()[-2:]}")
+    print("release-notes-gate: real notes with a column-0 older section heading: refuse")
+    round6_checks(real)
+    round7_checks(real)
+    # L3: the literal procedure's output passes history_problem in both layouts and on a
+    # history without the empty line 2.
+    released = flip_real(real, current_tag(real))
+    history = HISTORY.read_text(encoding="utf-8")
+    title_only = HISTORY_TITLE + "\n" + history.partition("\n")[2].lstrip("\n")
+    with tempfile.TemporaryDirectory(prefix="gbos-history-") as tmp:
+        for label, text in (
+            ("documented layout", move_current_to_history(released, history)),
+            ("documented layout on a title-only line 2", move_current_to_history(released, title_only)),
+            ("bare paste below the title", move_current_to_history(released, history, layout="pasted")),
+        ):
+            path = Path(tmp) / "RELEASE-HISTORY.md"
+            path.write_text(text, encoding="utf-8")
+            if history_problem(path) is not None:
+                fail(f"literal move ({label}): the history check refused it: {history_problem(path)}")
+            lines = text.split("\n")
+            if lines[0] != HISTORY_TITLE or STATUS_PREFIX in text:
+                fail(f"literal move ({label}): wrong layout")
+            print(f"release-notes-gate: literal move {label}: history accepted")
+        documented = move_current_to_history(released, title_only).split("\n")
+        if documented[1] != "" or documented[2] != released.split("\n")[0]:
+            fail("literal move: the documented layout must be title, empty line, moved heading")
+    # L6: the history scan covers every section and never raises.
+    with tempfile.TemporaryDirectory(prefix="gbos-history-scan-") as tmp:
+        for label, text, expect_fail in (
+            ("wording in the newest section", HISTORY_TITLE + "\n\n# Googlebook Anywhere v0.2.1\n\n這一版還沒有發布。\n", True),
+            ("wording in the last section", HISTORY_TITLE + "\n\n# Googlebook Anywhere v0.2.1\n\nok\n\n# Googlebook Anywhere v0.0.1\n\nunreleased build\n", True),
+            ("no v0.2.0 section at all", HISTORY_TITLE + "\n\n# Googlebook Anywhere v0.3.0\n\nok\n", False),
+            ("title only, no newline", HISTORY_TITLE, False),
+            ("not UTF-8", None, True),
+            ("missing file", "MISSING", True),
+        ):
+            path = Path(tmp) / f"h{abs(hash(label))}.md"
+            if text is None:
+                path.write_bytes(b"\xff\xfe")
+            elif text != "MISSING":
+                path.write_text(text, encoding="utf-8")
+            captured = io.StringIO()
+            code = 0
+            try:
+                with contextlib.redirect_stderr(captured), contextlib.redirect_stdout(captured):
+                    history_unpublished_check(path)
+            except SystemExit as exc:
+                code = exc.code
+            except Exception as exc:  # noqa: BLE001 - the point of the test
+                fail(f"history scan ({label}) raised {type(exc).__name__}")
+            if bool(code) != expect_fail:
+                fail(f"history scan ({label}): expected {'refuse' if expect_fail else 'pass'}, rc={code}")
+            print(f"release-notes-gate: history scan {label}: {'refuse' if expect_fail else 'pass'}")
+
+
+def round6_checks(real):
+    """Review round 5: the lint is minimal (one column-0 ATX rule). Every false-positive
+    shape the reviewers reported is valid current-version content and must pass through the
+    real main() (notes_only), and an unreadable history fails main() with one clean line."""
+    top = "# Googlebook Anywhere v9.9.9\n\n" + RELEASED_LINE + "\n\n本版內容。\n\n"
+    must_pass = (
+        ("codex r5 I1 closed fence in a list item", "- ```text\n  # Googlebook Anywhere v0.2.3\n  ```\n"),
+        ("codex r5 I1 ordered list ~~~ fence", "1. ~~~text\n   # Googlebook Anywhere v0.2.1\n   ~~~\n"),
+        ("codex r5 I2 tab-indented code", "\tGooglebook Anywhere v0.2.1 安裝範例。\n"),
+        ("codex r5 I2 quoted code with two tabs", "> \t\tGooglebook Anywhere v0.2.1\n"),
+        ("codex r5 I3 wrapped sentence", "本版修正從\nGooglebook Anywhere v0.2.1 升級時的安裝問題。\n"),
+        ("codex r5 I3 list continuation", "- 本版修正從\n  Googlebook Anywhere v0.2.1 升級時的問題。\n"),
+        ("codex r5 I3 table without outer pipes", "Googlebook Anywhere v0.2.1 | 本版\n--- | ---\n舊行為 | 新行為\n"),
+        ("codex r5 I3 current version in a code span", "`Googlebook Anywhere v9.9.9`USB 安裝流程已修正。\n"),
+        ("codex r5 I4 sentence then a quoted rule", "相容於 Googlebook Anywhere v9.9.9。\n> ---\n"),
+        ("codex r5 I4 current-version setext", "Googlebook Anywhere v9.9.9 相容性\n===\n"),
+        ("claude r5 I-1 list sentence starting with the name", "- Googlebook Anywhere v0.2.1 的使用者可以直接升級，不用重灌。\n"),
+        ("claude r5 I-1 tab code example", "範例輸出：\n\n\tGooglebook Anywhere v0.2.1 (build 1)\n"),
+        ("claude r5 I-1 hard-wrapped continuation", "這一版修正了上一版\nGooglebook Anywhere v0.2.2 的安裝碟問題。\n"),
+        ("claude r5 I-1 paragraph starting with the name (zh)", "Googlebook Anywhere v0.2.2 的使用者可以直接升級。\n"),
+        ("claude r5 I-1 paragraph starting with the name (en)", "Googlebook Anywhere v0.2.2 users can upgrade in place.\n"),
+        ("claude r5 I-1 range sentence", "Googlebook Anywhere v0.2.2 到 v0.2.3 之間沒有格式變更。\n"),
+        ("claude r5 I-1 table row without a leading pipe", "Googlebook Anywhere v0.2.2 | 舊版\n"),
+        ("claude r5 I-1 linked list item", "- [Googlebook Anywhere v0.2.2 的發行說明](docs/RELEASE-HISTORY.md)\n"),
+        ("claude r5 I-1 list item starting with a code span", "- `Googlebook Anywhere v0.2.2` 的映像不再支援。\n"),
+        ("claude r5 I-1 fence opened on a list-marker line", "1. ```\n   Googlebook Anywhere v0.2.1\n   ```\n"),
+        ("claude r5 I-2 current-version setext sub-heading", "Googlebook Anywhere v9.9.9 的重點\n---\n"),
+        ("claude r5 I-2 ATX heading then a rule", "## 從 Googlebook Anywhere v0.2.1 升級\n---\n"),
+        ("claude r5 I-2 quote then an unquoted rule", "> 從 Googlebook Anywhere v0.2.2 升級時請先備份。\n---\n"),
+        ("claude r5 I-2 table row then a rule", "| Googlebook Anywhere v0.2.2 | 舊 |\n---\n"),
+        ("claude r5 I-2 upgrade sub-heading in setext form", "從 Googlebook Anywhere v0.2.2 升級\n---\n"),
+        ("deepseek r5 I-1 tab-indented heading", "\t# Googlebook Anywhere v0.2.1\n"),
+        ("deepseek r5 I-1 tab-indented sample line", "\tGooglebook Anywhere v0.2.1 的輸出範例\n"),
+        ("deepseek r5 I-1 quoted tab-indented heading", "> \t# Googlebook Anywhere v0.2.1\n"),
+        ("deepseek r5 I-1 quoted tab-indented sample", ">\t\tGooglebook Anywhere v0.2.1 範例\n"),
+    )
+    with tempfile.TemporaryDirectory(prefix="gbos-round6-") as tmp:
+        path = Path(tmp) / "RELEASE-NOTES.md"
+        for label, snippet in must_pass:
+            path.write_text(top + snippet, encoding="utf-8")
+            try:
+                code, output = run_main_on(path)
+            except Exception as exc:  # noqa: BLE001 - a traceback is a failure here
+                fail(f"heading lint: {label} raised {type(exc).__name__} in main()")
+            if code != 0:
+                fail(f"heading lint: {label} was refused by main(): {output.strip().splitlines()[-1:]}")
+            print(f"release-notes-gate: heading lint {label}: pass")
+        # K3 through the real main(): an unreadable history is one clean failure line.
+        path.write_text(top.rstrip("\n") + "\n", encoding="utf-8")
+        hist = Path(tmp) / "RELEASE-HISTORY.md"
+        cases = [
+            ("non-UTF-8 history", (HISTORY_TITLE + "\n\nok \xff\n").encode("latin-1"),
+             "release-notes-gate: docs/RELEASE-HISTORY.md line 3: expected UTF-8 text; found byte 0xff"),
+            ("non-UTF-8 title line", b"\xfe# x\n", "release-notes-gate: docs/RELEASE-HISTORY.md line 1: expected UTF-8 text; found byte 0xfe"),
+            ("missing history", None, "release-notes-gate: docs/RELEASE-HISTORY.md is missing (older release sections live there)"),
+        ]
+        if hasattr(os, "geteuid") and os.geteuid() != 0:
+            cases.append(("unreadable history", "chmod", "release-notes-gate: docs/RELEASE-HISTORY.md cannot be read (PermissionError)"))
+        else:
+            print("SKIP heading lint unreadable history (running as root)")
+        for label, data, line in cases:
+            hist.unlink(missing_ok=True)
+            if data == "chmod":
+                hist.write_text(HISTORY_TITLE + "\n", encoding="utf-8")
+                hist.chmod(0)
+            elif data is not None:
+                hist.write_bytes(data)
+            try:
+                code, output = run_main_on(path, history=hist)
+            except Exception as exc:  # noqa: BLE001 - the point of the test
+                fail(f"main() with a {label} raised {type(exc).__name__}")
+            finally:
+                if hist.exists():
+                    hist.chmod(0o600)
+            if code == 0 or output.strip().splitlines() != [line]:
+                fail(f"main() with a {label}: expected rc 1 and the one line {line!r}; got rc={code}: {output!r}")
+            print(f"release-notes-gate: main() with a {label}: one clean failure line")
+
+
+def round7_checks(real):
+    """Review round 6: no fence logic. Shapes without a column-0 heading line pass through
+    the real main(); a column-0 heading inside a top-level fence is refused with the
+    workaround (spec change); legal gap shapes pass; read errors are one clean line."""
+    top = "# Googlebook Anywhere v9.9.9\n\n" + RELEASED_LINE + "\n\n本版內容。\n\n"
+    list_fence = "- ```text\n  sample\n  ```\n\n"
+    must_pass = (
+        ("codex r6 I1 list fence then a top-level fence, example indented",
+         list_fence + "```\n    # Googlebook Anywhere v0.2.2\n```\n"),
+        ("codex r6 I1 list fence then a top-level fence without a heading",
+         list_fence + "```\nGooglebook Anywhere v0.2.2 sample\n```\n"),
+        # Claude r7 M-1: a heading line itself in a list item renders as a real heading; it
+        # passes only as a known lint gap, it is NOT the workaround.
+        ("known lint gap (not the workaround): a heading line in a list item", "- ```bash\n  make\n  ```\n\n範例：\n\n- # Googlebook Anywhere v0.2.1\n"),
+        ("claude r6 I-1 B list fence then ~~~ with an indented example", "- ```bash\n  make\n  ```\n~~~\n    # Googlebook Anywhere v0.2.1\n~~~\n"),
+        ("claude r6 I-1 D ordered ~~~ list fence then a quoted example", "1. ~~~text\n   x\n   ~~~\n\n> ## Googlebook Anywhere v0.2.2\n"),
+        ("claude r6 I-1 E line-start code span", "```diff``` 區塊現在會上色。\n\n```\n範例\n```\n"),
+        ("claude r6 M-1 heading without a version", "## Googlebook Anywhere 安裝碟\n"),
+        ("claude r6 M-1 seven hashes", "####### Googlebook Anywhere v0.2.1\n"),
+        ("claude r6 M-1 no space after the hashes", "#Googlebook Anywhere v0.2.1\n"),
+        ("claude r6 M-1 lowercase name", "## googlebook anywhere v0.2.1\n"),
+        ("deepseek r6 double space in the name", "## Googlebook  Anywhere v0.2.1\n"),
+        ("workaround: the whole fenced block inside a list item",
+         "- 範例：\n\n  ```markdown\n  # Googlebook Anywhere v0.2.1\n  ```\n"),
+        ("workaround: the whole fenced block inside a quote",
+         "> ```markdown\n> # Googlebook Anywhere v0.2.1\n> ```\n"),
+        ("fence info line inside a fence", "````\n```python\nprint(1)\n```\n````\n"),
+    )
+    must_fail = (
+        ("codex r6 I1 exact: top-level fenced column-0 heading", list_fence + "```\n# Googlebook Anywhere v0.2.2\n```\n", 12),
+        ("claude r6 I-1 A exact", "- ```bash\n  make\n  ```\n\n範例：\n\n```\n# Googlebook Anywhere v0.2.1\n```\n", 14),
+        ("spec change: top-level fenced example", "```markdown\n# Googlebook Anywhere v0.2.1\n```\n", 8),
+        ("spec change: ~~~ fenced level-2 example", "~~~\n## Googlebook Anywhere v0.2.1\n~~~\n", 8),
+        ("claude r6 M-2 the current version repeated", "## Googlebook Anywhere v9.9.9 重點\n", 7),
+        ("tab after the hashes", "###\tGooglebook Anywhere v0.1.0\n", 7),
+    )
+    with tempfile.TemporaryDirectory(prefix="gbos-round7-") as tmp:
+        path = Path(tmp) / "RELEASE-NOTES.md"
+        for label, snippet in must_pass:
+            path.write_text(top + snippet, encoding="utf-8")
+            code, output = run_main_on(path)
+            if code != 0:
+                fail(f"heading lint: {label} was refused by main(): {output.strip().splitlines()[-1:]}")
+            print(f"release-notes-gate: heading lint {label}: pass")
+        for label, snippet, lineno in must_fail:
+            path.write_text(top + snippet, encoding="utf-8")
+            code, output = run_main_on(path)
+            needle = f"docs/RELEASE-NOTES.md line {lineno}: expected only the current version"
+            # Codex r7 M1: literal text, so a degraded HEADING_WORKAROUND goes red.
+            if (code == 0 or needle not in output
+                    or "indent it by 4 spaces, or put the whole fenced code block inside a list item or a quote" not in output):
+                fail(f"heading lint: {label} was not refused at line {lineno} with the workaround: rc={code}: {output.strip()[-300:]}")
+            print(f"release-notes-gate: heading lint {label}: refuse (with the workaround)")
+        # The workaround the message gives really passes.
+        path.write_text(top + "```markdown\n    # Googlebook Anywhere v0.2.1\n```\n", encoding="utf-8")
+        code, output = run_main_on(path)
+        if code != 0:
+            fail(f"heading lint: the documented workaround (indent by 4 spaces) was refused: {output.strip()[-200:]}")
+        print("release-notes-gate: heading lint documented workaround: pass")
+        # Claude/DeepSeek r6 M-4: the OSError branch of history_problem without chmod (also as root).
+        path.write_text(top.rstrip("\n") + "\n", encoding="utf-8")
+        hist = Path(tmp) / "RELEASE-HISTORY.md"
+        hist.write_text(HISTORY_TITLE + "\n", encoding="utf-8")
+        original = Path.read_bytes
+
+        def refuse_history(self):
+            if self == hist:
+                raise PermissionError(13, "Permission denied")
+            return original(self)
+
+        Path.read_bytes = refuse_history
+        try:
+            code, output = run_main_on(path, history=hist)
+        finally:
+            Path.read_bytes = original
+        line = "release-notes-gate: docs/RELEASE-HISTORY.md cannot be read (PermissionError)"
+        if code == 0 or output.strip().splitlines() != [line]:
+            fail(f"main() with a history that raises PermissionError: expected the one line {line!r}; got rc={code}: {output!r}")
+        print("release-notes-gate: main() with a history read error: one clean failure line")
+        # Claude r7 M-3: the notes OSError branch of main(), without chmod (also as root).
+        def refuse_notes(self):
+            if self == path:
+                raise PermissionError(13, "Permission denied")
+            return original(self)
+
+        Path.read_bytes = refuse_notes
+        try:
+            code, output = run_main_on(path, history=hist)
+        finally:
+            Path.read_bytes = original
+        line = "release-notes-gate: docs/RELEASE-NOTES.md cannot be read (PermissionError)"
+        if code == 0 or output.strip().splitlines() != [line]:
+            fail(f"main() with notes that raise PermissionError: expected the one line {line!r}; got rc={code}: {output!r}")
+        print("release-notes-gate: main() with a notes read error: one clean failure line")
+        # Claude r6 M-6: a non-UTF-8 notes file.
+        path.write_bytes(top.rstrip("\n").encode("utf-8") + b"\nok \xff\n")
+        try:
+            code, output = run_main_on(path)
+        except Exception as exc:  # noqa: BLE001 - the point of the test
+            fail(f"main() with non-UTF-8 notes raised {type(exc).__name__}")
+        line = "release-notes-gate: docs/RELEASE-NOTES.md line 6: expected UTF-8 text; found byte 0xff"
+        if code == 0 or output.strip().splitlines() != [line]:
+            fail(f"main() with non-UTF-8 notes: expected the one line {line!r}; got rc={code}: {output!r}")
+        print("release-notes-gate: main() with non-UTF-8 notes: one clean failure line")
 
 
 def flip_real(text, tag):
@@ -1579,23 +2207,34 @@ def flip_real(text, tag):
 
 
 def release_description_runtimes():
-    runtimes = [("sh/awk", ["/bin/sh"], shutil.which("awk"))]
-    for name in ("mawk", "gawk"):
-        binary = shutil.which(name)
-        if binary:
-            runtimes.append((f"sh/{name}", ["/bin/sh"], binary))
-        else:
-            print(f"SKIP release description sh/{name} ({name} not installed)")
-    busybox = shutil.which("busybox")
-    if busybox:
-        runtimes.append(("busybox sh/awk", [busybox, "sh"], busybox))
-    else:
-        print("SKIP release description busybox sh/awk (busybox not installed)")
+    """Every POSIX shell available here: /bin/sh, dash, bash --posix, busybox sh, mksh, ksh, yash, posh."""
+    runtimes = [("sh", ["/bin/sh"])]
+    found = {}
+    for name in ("dash", "bash", "busybox", "mksh", "ksh", "yash", "posh"):
+        found[name] = shutil.which(name)
+    if found["dash"]:
+        runtimes.append(("dash", [found["dash"]]))
+    if found["bash"]:
+        runtimes.append(("bash --posix", [found["bash"], "--posix"]))
+    if found["busybox"]:
+        runtimes.append(("busybox sh", [found["busybox"], "sh"]))
+    for name in ("mksh", "ksh", "yash", "posh"):
+        if found[name]:
+            runtimes.append((name, [found[name]]))
+    for name in ("dash", "bash", "busybox", "mksh", "ksh", "yash", "posh"):
+        if not found[name]:
+            print(f"SKIP release description {name} ({name} not installed)")
     return runtimes
 
 
-def release_description_problem(ci, notes, tag, project, expected, shell, awk, refuse=False):
-    """Execute the actual parsed release script in a disposable checkout, never release-cli."""
+def history_link(project, tag):
+    return f"[Full release history]({project}/-/blob/{tag}/docs/RELEASE-HISTORY.md)"
+
+
+def release_description(ci, notes, tag, project, shell, refuse=False):
+    """Execute the actual parsed release script in a disposable checkout, never release-cli.
+
+    Returns (problem, description bytes or None)."""
     with tempfile.TemporaryDirectory(prefix="gbos-release-description-") as tmp:
         directory = Path(tmp)
         ci_file = directory / ".gitlab-ci.yml"
@@ -1603,17 +2242,12 @@ def release_description_problem(ci, notes, tag, project, expected, shell, awk, r
         job = _pyyaml.safe_load(ci_file.read_text(encoding="utf-8"))["release"]
         commands = job["script"]
         if not isinstance(commands, list) or not all(isinstance(cmd, str) for cmd in commands):
-            return "release.script must be a list of shell strings"
+            return "release.script must be a list of shell strings", None
         source = directory / "docs" / "RELEASE-NOTES.md"
         source.parent.mkdir()
         source.write_text(notes, encoding="utf-8")
-        bindir = directory / "bin"
-        bindir.mkdir()
-        # BusyBox selects its awk applet by argv[0]; other binaries use the same name.
-        (bindir / "awk").symlink_to(awk)
         env = os.environ.copy()
         env.update(CI_COMMIT_TAG=tag, CI_PROJECT_URL=project)
-        env["PATH"] = str(bindir) + os.pathsep + env.get("PATH", os.defpath)
         proc = subprocess.run(
             [*shell, "-eu", "-c", "\n".join(commands)],
             cwd=directory, env=env, capture_output=True, text=True, timeout=10,
@@ -1621,70 +2255,82 @@ def release_description_problem(ci, notes, tag, project, expected, shell, awk, r
         description = directory / job["release"]["description"]
         if refuse:
             if proc.returncode == 0 or description.exists():
-                return "wrong tag was not refused before writing the description"
+                return "wrong tag was not refused before writing the description", None
             if "line 1 expected" not in proc.stdout + proc.stderr:
-                return "wrong tag did not report the existing line-1 diagnostic"
-            return None
+                return "wrong tag did not report the existing line-1 diagnostic", None
+            return None, None
         if proc.returncode:
-            return f"release script exited {proc.returncode}: {proc.stdout}{proc.stderr}"
+            return f"release script exited {proc.returncode}: {proc.stdout}{proc.stderr}", None
         if not description.is_file():
-            return "release.description does not name the generated file"
+            return "release.description does not name the generated file", None
         if source.read_text(encoding="utf-8") != notes:
-            return "release script changed the full history file"
-        if description.read_bytes() != expected.encode("utf-8"):
-            return "description differs from the exact current section plus final history link"
+            return "release script changed the notes file", None
+        return None, description.read_bytes()
+
+
+def release_description_problem(ci, notes, tag, project, shell):
+    """None when the description is the notes file verbatim, an empty line and the history link."""
+    problem, got = release_description(ci, notes, tag, project, shell)
+    if problem:
+        return problem
+    expected = notes + "\n" + history_link(project, tag) + "\n"
+    if got != expected.encode("utf-8"):
+        return "description differs from the notes file plus an empty line and the history link"
     return None
 
 
-def expect_release_descriptions(ci, flipped, tag):
+def expect_release_descriptions(ci, flipped, tag, history):
+    """The release description is docs/RELEASE-NOTES.md verbatim plus the history link.
+
+    The reviewers' leak shapes (fences in list continuations, lazy continuations,
+    quoted and split headings) cannot pull another version's text: that text is not in
+    the notes file, and nothing is cut. An older top-level heading (which the heading
+    lint refuses) still cannot shorten the description."""
     if _pyyaml is None:
         print("SKIP parsed release description tests (PyYAML not installed)")
         return  # main already requires PyYAML when CI is set
-    current = "# Googlebook Anywhere v9.9.9\n\n" + RELEASED_LINE + "\n\n## Changes\n\n- Current item.\n\n"
-    older = OLDER + "\n# Googlebook Anywhere v9.9.7\n\nOldest item.\n"
-    # Explicitly retain every line before the known next heading in the real notes.
-    real_current = flipped[:flipped.index("\n# Googlebook Anywhere ", 1) + 1]
-    backticks = (
-        current + "   ````markdown\n# Googlebook Anywhere example\n"
-        "```\n# Googlebook Anywhere after short fence\n"
-        "~~~~\n# Googlebook Anywhere after wrong fence\n"
-        "```` trailing text\n# Googlebook Anywhere after non-closing fence\n"
-        "  `````\n\nStill current after the fence.\n\n"
+    top = "# Googlebook Anywhere v9.9.9\n\n" + RELEASED_LINE + "\n\n本版內容。\n\n"
+    shapes = (
+        ("codex r2 I1 lazy quote continuation",
+         "> Googlebook\nAnywhere\n> v0.2.2\n> ===\n\n本版其餘內容。\n"),
+        ("codex r2 I2 list continuation fences",
+         "- first item\n\n  ```\n  example\n## Googlebook Anywhere v0.2.2\n\n前一段文字。\n\n"
+         "- second item\n\n  ```\n  example\n    ```\n"),
+        ("claude r2 I-1 closer three columns deeper",
+         "- 範例：\n\n  ```\n  make\n     ```\n\n## Googlebook Anywhere v0.2.2\n文字\n\n"
+         "- 範例二：\n\n  ```\n  x\n     ```\n"),
+        ("round 1 list fences", "- ```text\n  first container\n  ```\n## Googlebook Anywhere v0.2.2\n"),
+        ("quoted split heading", "> Googlebook Anywhere\n> v0.2.2\n> ===\n"),
+        ("split setext heading", "Googlebook Anywhere\nv0.2.2\n===\n"),
+        ("inline diff sub-heading", "## Googlebook Anywhere {+v0.2.2+}\n"),
+        ("deepseek 4-column open, column-0 close", "- item\n\n    ```\n    x\n```\n## Googlebook Anywhere v0.2.2\n"),
     )
-    tildes = (
-        current + " ~~~markdown\n# Googlebook Anywhere example\n"
-        "```\n# Googlebook Anywhere after wrong fence\n"
-        "  ~~~~\t\n\nStill current after the fence.\n\n"
-    )
-    cases = (
-        (f"real {tag} flipped", flipped, real_current, tag),
-        ("three versions", current + older, current, "v9.9.9"),
-        ("only section, no final newline", current.rstrip("\n"), current.rstrip("\n") + "\n", "v9.9.9"),
-        ("backtick-fenced headings", backticks + older, backticks, "v9.9.9"),
-        ("tilde-fenced headings", tildes + older, tildes, "v9.9.9"),
-    )
-    # Exercise broken commands through parsed temporary YAML too: pin failures alone
-    # would not prove these output assertions can detect a broken extraction.
+    cases = [(f"real {tag} flipped", flipped, tag)]
+    cases += [(label, top + shape, "v9.9.9") for label, shape in shapes]
+    cases.append(("only section, no final newline", top.rstrip("\n"), "v9.9.9"))
+    cut_case = ("older top-level heading (lint refuses; the job must not cut)",
+                top + "# Googlebook Anywhere v9.9.8\n\n舊版內容。\n", "v9.9.9")
+    cases.append(cut_case)
     release = extract_raw_blocks(ci)["release"]
+    cat = "    - cat docs/RELEASE-NOTES.md > release-description.md\n"
     mutants = (
-        ("omit section", "          print\n", "          # print removed\n", cases),
-        ("omit history link", '          print "[Full release history]', '          # print "[Full release history]', cases),
-        ("keep older sections", 'else if (NR > 1 && /^# Googlebook Anywhere /) exit',
-         'else if (0) exit', tuple(case for case in cases if not case[0].startswith("only section"))),
-        ("ignore fences", 'if (fence != "") {', 'if (0) {', cases[3:]),
+        ("cut at the next version heading", cat,
+         "    - LC_ALL=C awk 'NR > 1 && /^# Googlebook Anywhere /{exit} {print}' docs/RELEASE-NOTES.md > release-description.md\n",
+         [cut_case]),
+        ("omit notes", cat, "    - true > release-description.md\n", cases[:1]),
+        ("omit history link", "printf '\\n[Full release history]", "printf '\\n[Full history]", cases[:1]),
+        ("history link to the notes file", "/docs/RELEASE-HISTORY.md)", "/docs/RELEASE-NOTES.md)", cases[:1]),
+        ("no empty line before the link", "printf '\\n[Full", "printf '[Full", cases[:1]),
     )
-    for runtime, shell, awk in release_description_runtimes():
-        if awk is None:
-            fail(f"{runtime} requires awk")
-        for index, (label, notes, section, case_tag) in enumerate(cases):
+    for runtime, shell in release_description_runtimes():
+        for index, (label, notes, case_tag) in enumerate(cases):
             project = f"https://gitlab.example.invalid/group-{index}/project"
-            expected = section + f"\n[Full release history]({project}/-/blob/{case_tag}/docs/RELEASE-NOTES.md)\n"
-            problem = release_description_problem(ci, notes, case_tag, project, expected, shell, awk)
+            problem = release_description_problem(ci, notes, case_tag, project, shell)
             if problem:
                 fail(f"release description {runtime} {label}: {problem}")
-            print(f"release-notes-gate: release description {runtime} {label}: pass")
-        problem = release_description_problem(
-            ci, current, "v0.0.0", "https://gitlab.example.invalid/wrong/tag", "", shell, awk, refuse=True,
+            print(f"release-notes-gate: release description {runtime} {label}: notes file verbatim + history link")
+        problem, _got = release_description(
+            ci, top, "v0.0.0", "https://gitlab.example.invalid/wrong/tag", shell, refuse=True,
         )
         if problem:
             fail(f"release description {runtime}: {problem}")
@@ -1693,13 +2339,20 @@ def expect_release_descriptions(ci, flipped, tag):
             if release.count(old) != 1:
                 fail(f"cannot place release description mutation {mutation}")
             mutant = ci.replace(release, release.replace(old, new, 1), 1)
-            for label, notes, section, case_tag in affected:
+            for label, notes, case_tag in affected:
                 project = "https://gitlab.example.invalid/mutation/project"
-                expected = section + f"\n[Full release history]({project}/-/blob/{case_tag}/docs/RELEASE-NOTES.md)\n"
-                problem = release_description_problem(mutant, notes, case_tag, project, expected, shell, awk)
+                problem = release_description_problem(mutant, notes, case_tag, project, shell)
                 if problem is None or not problem.startswith("description differs"):
                     fail(f"release description mutant {mutation} {runtime} {label}: expected output mismatch, got {problem}")
                 print(f"release-notes-gate: release description mutation {mutation} {runtime} {label}: red")
+
+
+def synthetic_flipped(tag, snippet):
+    """Synthetic released notes for tag with snippet in the body; never the real notes."""
+    return (
+        f"# Googlebook Anywhere {tag}\n\n{RELEASED_LINE}\n\n本版內容。\n\n"
+        + snippet + "\n\n## 驗證紀錄\n\n- 測試項目。\n"
+    )
 
 
 def planted(phrase):
@@ -1817,9 +2470,33 @@ GATE11_PASS_CASES = {
 GATE10_PASS_CASES = GATE11_PASS_CASES
 
 
-def main():
-    if not CI.is_file() or not NOTES.is_file():
+def main(notes=NOTES, notes_only=False, history=HISTORY):
+    """Run the gate. notes, notes_only and history let a self-test drive this real entry on temp files."""
+    if not CI.is_file() or not Path(notes).is_file():
         fail("missing .gitlab-ci.yml or docs/RELEASE-NOTES.md")
+    notes = Path(notes)
+    # Claude r6 M-6: an unreadable or non-UTF-8 notes file is one clean failure line.
+    try:
+        data = notes.read_bytes()
+        data.decode("utf-8")
+    except OSError as exc:
+        fail(f"docs/RELEASE-NOTES.md cannot be read ({type(exc).__name__})")
+    except UnicodeDecodeError as exc:
+        bad_line = data[:exc.start].count(b"\n") + 1
+        fail(f"docs/RELEASE-NOTES.md line {bad_line}: expected UTF-8 text; "
+             f"found byte 0x{data[exc.start]:02x}")
+    real = notes.read_text(encoding="utf-8")
+    tag = current_tag(real)
+    if tag is None:
+        fail("docs/RELEASE-NOTES.md line 1 does not name a version")
+    h_prob = notes_heading_problem(notes)
+    if h_prob is not None:
+        fail(h_prob)
+    hist_prob = history_problem(history)
+    if hist_prob is not None:
+        fail(hist_prob)
+    if notes_only:
+        return
     ci = CI.read_text(encoding="utf-8")
     command = gate_command(ci)
     print("release-notes-gate: gate under package.script before make-release.sh: yes")
@@ -2070,106 +2747,11 @@ def main():
     )
     expect_ci(move_release_job_above_package(ci), "job order ignored", False)
 
-    real = NOTES.read_text(encoding="utf-8")
-    tag = current_tag(real)
-    if tag is None:
-        fail("docs/RELEASE-NOTES.md line 1 does not name a version")
-    h_prob = version_heading_problem(NOTES.read_bytes())
-    if h_prob is not None:
-        fail(h_prob)
-    for bad_label, bad_notes in (
-        ("indented version heading", real.replace("\n# Googlebook Anywhere v0.2.1\n", "\n # Googlebook Anywhere v0.2.1\n", 1)),
-        ("sub-heading version heading", real.replace("\n# Googlebook Anywhere v0.2.1\n", "\n## Googlebook Anywhere v0.2.1\n", 1)),
-        ("setext === version heading", real.replace("\n# Googlebook Anywhere v0.2.1\n", "\nGooglebook Anywhere v0.2.1\n==========================\n", 1)),
-        ("setext --- version heading", real.replace("\n# Googlebook Anywhere v0.2.1\n", "\nGooglebook Anywhere v0.2.1\n--------------------------\n", 1)),
-        ("multi-line setext version heading", real.replace("\n# Googlebook Anywhere v0.2.1\n", "\nGooglebook Anywhere v0.2.1\nmore notes on this release\n==========================\n", 1)),
-        ("list-item setext === version heading", real.replace("\n# Googlebook Anywhere v0.2.1\n", "\n- Googlebook Anywhere v0.2.1\n  ===\n", 1)),
-        ("list-item setext --- version heading", real.replace("\n# Googlebook Anywhere v0.2.1\n", "\n1. Googlebook Anywhere v0.2.1\n   ---\n", 1)),
-        ("legacy-line setext === version heading", real.replace("\n# Googlebook Anywhere v0.2.1\n", "\nGooglebook Anywhere v0.2.1\n#legacy notes\n===\n", 1)),
-        ("table-line setext === version heading", real.replace("\n# Googlebook Anywhere v0.2.1\n", "\nGooglebook Anywhere v0.2.1\n| legacy notes |\n===\n", 1)),
-        ("list-item ATX version heading", "- # Googlebook Anywhere v0.2.1"),
-        ("quote-marklist ATX version heading", "> - # Googlebook Anywhere v0.2.1"),
-        ("nested quote version line with setext ===", ">  > Googlebook Anywhere v0.2.1\n>  > ==="),
-        ("legacy note line before setext ===", "Googlebook Anywhere v0.2.1\n    # legacy note\n==="),
-        ("prose version mention", "see Googlebook Anywhere v0.2.0 for details"),
-        ("list-item version line before --- rule", "- Googlebook Anywhere v0.2.1\n---"),
-        (
-            "block-quoted version line, quote-blank, --- rule",
-            real.replace("\n# Googlebook Anywhere v0.2.1\n", "\n> Googlebook Anywhere v0.2.1\n>\n---\n", 1),
-        ),
-    ):
-        if version_heading_problem(bad_notes) is None:
-            fail(f"{bad_label} was not refused")
-        print(f"release-notes-gate: {bad_label}: refuse")
-    for bad_label, bad_notes, needles in (
-        ("split setext === version heading", "Googlebook Anywhere\nv0.2.2\n===\n", ("line 1",)),
-        ("split setext --- version heading", "Googlebook\nAnywhere v0.2.1\n---\n", ("line 1",)),
-        ("double-space sub-heading", "## Googlebook  Anywhere v0.2.2\n", ("line 1",)),
-        ("bold sub-heading", "## Googlebook Anywhere **v0.2.2**\n", ("line 1",)),
-        ("tab sub-heading", "## Googlebook Anywhere\tv0.2.1\n", ("line 1",)),
-        ("NBSP sub-heading", "## Googlebook\u00a0Anywhere v0.2.1\n", ("line 1",)),
-        ("inline-code sub-heading", "## Googlebook Anywhere `v0.2.1`\n", ("line 1",)),
-        ("em sub-heading", "## Googlebook *Anywhere* v0.2.1\n", ("line 1",)),
-        ("linked sub-heading", "## Googlebook Anywhere [v0.2.1](https://example.com)\n", ("line 1",)),
-        ("uppercase-V sub-heading", "## Googlebook Anywhere V0.2.1\n", ("line 1",)),
-        ("raw CR inside line (bytes)", b"## old\r# Googlebook Anywhere v0.2.2", ("line 1", "U+000D")),
-        (
-            "CRLF fence close (bytes)",
-            b"```text\nfence example\n```\r\n\n\n# Googlebook Anywhere v0.2.1\n",
-            ("line 3", "U+000D"),
-        ),
-        ("U+2028 inside line", "## \u2028# Googlebook Anywhere v0.2.1\n", ("line 1", "U+2028")),
-    ):
-        problem = version_heading_problem(bad_notes)
-        if problem is None:
-            fail(f"{bad_label} was not refused")
-        for needle in needles:
-            if needle not in problem:
-                fail(f"{bad_label} message missing {needle!r}: {problem}")
-        print(f"release-notes-gate: {bad_label}: refuse")
-    heading_rule = real.replace(
-        "\n# Googlebook Anywhere v0.2.1\n",
-        "\n# Googlebook Anywhere v0.2.1\n---\n",
-        1,
-    )
-    if version_heading_problem(heading_rule) is not None:
-        fail("top-level ATX version heading followed by a --- rule was refused")
-    print("release-notes-gate: top-level ATX heading then --- rule: pass")
-    for good_label, good_notes in (
-        ("ATX heading ends the run before a --- rule", real.replace("\n# Googlebook Anywhere v0.2.1\n", "\n# Googlebook Anywhere v0.2.1\nsome text\n---\n", 1)),
-        ("text without a version before --- and === rules", "text without a version\n***\nmore\n==="),
-    ):
-        if version_heading_problem(good_notes) is not None:
-            fail(f"{good_label} was refused")
-        print(f"release-notes-gate: {good_label}: pass")
-    fenced_shapes = real.replace(
-        "\n# Googlebook Anywhere v0.2.1\n",
-        "\n```markdown\n # Googlebook Anywhere v0.2.1\nGooglebook Anywhere v0.2.0\n===\n```\n\n# Googlebook Anywhere v0.2.1\n",
-        1,
-    )
-    if version_heading_problem(fenced_shapes) is not None:
-        fail("fenced version-heading examples were refused")
-    fence_after_close = "```\n# Googlebook Anywhere inside a closed fence\n```\n## Googlebook Anywhere v0.2.1\n"
-    if version_heading_problem(fence_after_close) is None:
-        fail("a version line after a closed fence was not refused (fence close must resume scanning)")
-    print("release-notes-gate: version line after a closed fence: refuse")
-    short_close = "````\n# Googlebook Anywhere still fenced for a shorter close\n```\n# Googlebook Anywhere v0.2.1\n"
-    if version_heading_problem(short_close) is not None:
-        fail("a shorter close line closed a wider backtick fence too early")
-    print("release-notes-gate: shorter close stays fenced: pass")
-    premature_close = (
-        "````\n# so far fine\n``` tempting early close\n## Googlebook Anywhere v0.2.1 inside width-4 fence\n"
-    )
-    if version_heading_problem(premature_close) is not None:
-        fail("a shorter backtick run closed a width-4 fence too early")
-    print("release-notes-gate: short close cannot close width-4 fence: pass")
-    info_backtick = "```markdown `not a fence`\n## Googlebook Anywhere v0.2.1\n"
-    if version_heading_problem(info_backtick) is None:
-        fail("a backtick fence opener with a backtick in its info string was accepted")
-    print("release-notes-gate: backtick in backtick-fence info string: refuse")
-    older_start = real.index("\n# Googlebook Anywhere v0.2.0\n")
-    assert_no_unpublished(real[older_start:], "docs/RELEASE-NOTES.md older sections")
-    print("release-notes-gate: docs/RELEASE-NOTES.md older sections have no unpublished wording: yes")
+    notes_lint_checks(real, tag)
+    round4_checks(real, HISTORY.read_text(encoding="utf-8"))
+    round5_checks(real)
+    history_unpublished_check(Path(history))
+    print("release-notes-gate: docs/RELEASE-HISTORY.md lines 2..N have no unpublished wording: yes")
     rc, _output = run_gate(command, real, tag)
     print(f"release-notes-gate: docs/RELEASE-NOTES.md today: {'refuse' if rc else 'pass'} (informational)")
     if real.splitlines()[2] == UNRELEASED_LINE and rc == 0:
@@ -2187,7 +2769,7 @@ def main():
         if _flipped_tail != _real_tail:
             fail("flipped notes changed more than lines 1 and 3 and the removed sentence")
     # The flipped notes are run through the real gate below; any unpublished wording left in them fails there.
-    expect_release_descriptions(ci, flipped, tag)
+    expect_release_descriptions(ci, flipped, tag, history)
 
     unreleased_status = with_older(
         "# Googlebook Anywhere v9.9.9\n"
@@ -2623,7 +3205,7 @@ def main():
         gate11_flipped_refuse.append(
             (
                 f"gate11 {case_name} (flipped)",
-                flipped.replace("## 新工具\n", snippet + "\n\n## 新工具\n", 1),
+                synthetic_flipped(tag, snippet),
                 needles,
             )
         )
@@ -2634,7 +3216,7 @@ def main():
         expect(
             command,
             f"gate11 {case_name} (flipped)",
-            flipped.replace("## 新工具\n", snippet + "\n\n## 新工具\n", 1),
+            synthetic_flipped(tag, snippet),
             False,
             tag=tag,
         )
@@ -2895,6 +3477,9 @@ def main():
             ("c10_noscolon (no div)", planted("這一版&#26410發布。")),
         ),
     )
+    # Round 8: the next-release simulation really ran (outside a simulation).
+    if not os.environ.get(SIM_ENV) and not notes_only and not SIM_RAN:
+        fail("the next-release simulation did not run")
     print("release-notes-gate: clean")
 
 

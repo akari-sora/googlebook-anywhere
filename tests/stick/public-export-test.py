@@ -402,6 +402,13 @@ def snapshot_export():
             fail("make-public.sh did not report a clean scan")
         if not dest.is_dir():
             fail("export directory was not published")
+        for rel in ("docs/RELEASE-NOTES.md", "docs/RELEASE-HISTORY.md"):
+            if not (dest / rel).is_file():
+                fail(f"public export is missing {rel}")
+        history = (dest / "docs/RELEASE-HISTORY.md").read_bytes()
+        if history != (REPO / "docs/RELEASE-HISTORY.md").read_bytes():
+            fail("public export changed docs/RELEASE-HISTORY.md")
+        print("public-export: export includes docs/RELEASE-NOTES.md and docs/RELEASE-HISTORY.md")
         marker = (dest / MARKER_REL).read_text(encoding="utf-8").strip()
         if marker != head:
             fail("PUBLIC-EXPORT marker is not the source commit")

@@ -9,7 +9,7 @@ usage: devprofile.py check <profile dir>                     validate (exit 0 = 
        devprofile.py firmware <profile dir>                  "<path> <from> <src> <sha256>" per firmware file
        devprofile.py kmods <profile dir>                     the extra kernel modules the profile ships, one per line
        devprofile.py json <profile dir>                      the validated profile as JSON"""
-import bz2, gzip, hashlib, json, lzma, re, shutil, struct, subprocess, sys, zlib
+import bz2, gzip, hashlib, json, lzma, re, shutil, struct, subprocess, sys, unicodedata, zlib
 from pathlib import Path
 
 try:
@@ -32,7 +32,7 @@ SCHEMA = {
                 "pci_stub_ids": LSTR, "first_stage_drop": LSTR},
     "blacklist": {"modules": LSTR, "debug_add": LSTR, "quiet_add": LSTR, "allow": LSTR},
     "firmware_sources": {"linux_firmware_tag": str, "sof_bin_url": str, "sof_bin_sha256": str},
-    "firmware": ("tables", {"path": str, "from": str, "src": str, "sha256": str}),
+    "firmware": ("tables", {"path": str, "from": str, "src": str, "sha256": str, "requested_by": str, "loaded_by": str}),
     "firmware_check": {
         "optional": ("tables", {"module": str, "firmware": str, "reason": str}),
         "alternatives": ("tables", {"module": str, "firmware": str, "files": LSTR, "reason": str}),
@@ -59,6 +59,20 @@ SAFETY_SCHEMA = {
     # "<profile-id> <module> <vendor|dev>" allowlist. A profile's [modules] lists may only use its rows.
     "modules": {"unblock": LSTR, "load": LSTR},
 }
+
+
+# [[firmware]] loaded_by: the exact module file (tree label + relative path) that a boot
+# option loads conditionally; builder/kmod/check-firmware.py requires it to declare the pin.
+LOADED_BY = re.compile(r"(?:vendor|vendor_dlkm|system_dlkm|initrd):(?!\.{1,2}/)[A-Za-z0-9_+-][A-Za-z0-9._+-]*"
+                       r"(?:/(?!\.{1,2}(?:/|$))[A-Za-z0-9._+-]+)*\.ko(?:\.(?:xz|gz|zst))?")
+LOADED_BY_FORM = "<vendor|vendor_dlkm|system_dlkm|initrd>:<relative .ko path>"
+
+
+def one_line(s):
+    """One printable line with visible text: no line breaks of any kind (U+2028, U+0085 ...),
+    no control or format characters (DEL, zero-width ...), not only whitespace."""
+    return (isinstance(s, str) and len(s.splitlines()) == 1 and s.isprintable()
+            and any(not c.isspace() and unicodedata.category(c) != "Cf" for c in s))
 
 
 class ProfileError(ValueError):
@@ -216,6 +230,16 @@ def load(profile_dir, safety_path=SAFETY):
     with open(d / "profile.toml", "rb") as f:
         p = tomllib.load(f)
     p.setdefault("firmware", [])       # [[firmware]] tables: a profile without device firmware simply has none
+    if isinstance(p["firmware"], list):
+        for i, fw in enumerate(p["firmware"]):
+            if isinstance(fw, dict):
+                if "requested_by" in fw and fw["requested_by"] == "":
+                    raise ProfileError(
+                        f"firmware[{i}].requested_by: expected 'runtime: <non-empty single-line reason>'")
+                if "loaded_by" in fw and fw["loaded_by"] == "":
+                    raise ProfileError(f"firmware[{i}].loaded_by: expected '{LOADED_BY_FORM}'")
+                fw.setdefault("requested_by", "")
+                fw.setdefault("loaded_by", "")
     p.setdefault("firmware_check", {})
     if isinstance(p["firmware_check"], dict):
         p["firmware_check"].setdefault("optional", [])
@@ -296,7 +320,7 @@ def load(profile_dir, safety_path=SAFETY):
             where = f"firmware_check.{kind}[{i}]"
             if not MODULE.fullmatch(rule["module"]):
                 raise ProfileError(f"{where}.module: expected an exact module name (use underscores)")
-            if not rule["reason"].strip() or any(ord(c) < 32 for c in rule["reason"]):
+            if not one_line(rule["reason"]):
                 raise ProfileError(f"{where}.reason: expected a non-empty, single-line reason")
             patterns = [rule["firmware"]] + rule.get("files", [])
             for pattern in patterns:
@@ -319,6 +343,15 @@ def load(profile_dir, safety_path=SAFETY):
                 raise ProfileError(f"firmware[{i}].{k}: not a plain relative path")
         if not re.fullmatch(r"[0-9a-f]{64}", fw["sha256"]):
             raise ProfileError(f"firmware[{i}].sha256: expected 64 lower-case hex digits")
+        req_by = fw["requested_by"]
+        if req_by and (not req_by.startswith("runtime: ") or not one_line(req_by)
+                       or not one_line(req_by[len("runtime: "):])):
+            raise ProfileError(f"firmware[{i}].requested_by: expected 'runtime: <non-empty single-line reason>'")
+        loaded_by = fw["loaded_by"]
+        if loaded_by and not LOADED_BY.fullmatch(loaded_by):
+            raise ProfileError(f"firmware[{i}].loaded_by: expected '{LOADED_BY_FORM}'")
+        if loaded_by and req_by:
+            raise ProfileError(f"firmware[{i}]: requested_by and loaded_by are mutually exclusive")
         if fw["path"] in paths:
             raise ProfileError(f"firmware: {fw['path']} listed twice")
         paths.add(fw["path"])
@@ -370,6 +403,24 @@ def load(profile_dir, safety_path=SAFETY):
     p["_dir"] = str(d.resolve())
     p["_safety"] = s
     return p
+
+
+def first_stage_drop(prof):
+    """The stage-1 modules (file names, name.ko) this profile keeps out of the final initrd:
+    cmdline.first_stage_drop. stage2_modules_load removes them from modules.load and
+    builder/image.py's QEMU self-test checks the first stage did not load them."""
+    return set(prof["cmdline"]["first_stage_drop"])
+
+
+def stage2_modules_load(text, prof):
+    """The initrd lib/modules/modules.load exactly as stage 2 (builder/image.py) writes it:
+    pci-stub.ko first when the profile has pci_stub_ids, then every non-empty line of the
+    stage-1 list that cmdline.first_stage_drop does not name. image.py writes this text and
+    builder/kmod/check-firmware.py builds the initrd part of its load closure from it, so
+    the reverse check models the final image's first-stage loading."""
+    drop = first_stage_drop(prof)
+    stub = ["pci-stub.ko"] if prof["cmdline"]["pci_stub_ids"] else []
+    return "\n".join(stub + [line for line in text.splitlines() if line and line not in drop]) + "\n"
 
 
 def module_specs(prof):

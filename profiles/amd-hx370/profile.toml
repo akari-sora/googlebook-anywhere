@@ -103,78 +103,104 @@ path = "amdgpu/gc_11_5_0_pfp.bin"
 from = "linux-firmware"
 src = "amdgpu/gc_11_5_0_pfp.bin"
 sha256 = "82ccf0265d841351183b011a79422799431f0c11f6d11165d64d7dfe404bda31"
+# conditional load (was requested_by): /vendor/etc/amd-hx370-graphics.sh modprobes /vendor/lib/dev-modules/amdgpu.ko only when /proc/cmdline has amdgpu.modeset=1 (default safe entry blacklists amdgpu); GC 11.5.0 PFP firmware for Strix Point IP discovery is requested by Linux v6.18 drivers/gpu/drm/amd/amdgpu/gfx_v11_0.c gfx_v11_0_init_microcode() (name prefix from amdgpu_ucode_ip_version_decode()); amdgpu statically declares this name (MODULE_FIRMWARE("amdgpu/gc_11_5_0_pfp.bin") in Linux v6.18 drivers/gpu/drm/amd/amdgpu/gfx_v11_0.c)
+loaded_by = "vendor:lib/dev-modules/amdgpu.ko"
 
 [[firmware]]
 path = "amdgpu/gc_11_5_0_me.bin"
 from = "linux-firmware"
 src = "amdgpu/gc_11_5_0_me.bin"
 sha256 = "338019a1fcdab39729e3f492ffc9f5970c2c81b12c8a4f431494ca28cfdadedf"
+# conditional load (was requested_by): /vendor/etc/amd-hx370-graphics.sh modprobes /vendor/lib/dev-modules/amdgpu.ko only when /proc/cmdline has amdgpu.modeset=1 (default safe entry blacklists amdgpu); GC 11.5.0 ME firmware for Strix Point IP discovery is requested by Linux v6.18 drivers/gpu/drm/amd/amdgpu/gfx_v11_0.c gfx_v11_0_init_microcode() (name prefix from amdgpu_ucode_ip_version_decode()); amdgpu statically declares this name (MODULE_FIRMWARE("amdgpu/gc_11_5_0_me.bin") in Linux v6.18 drivers/gpu/drm/amd/amdgpu/gfx_v11_0.c)
+loaded_by = "vendor:lib/dev-modules/amdgpu.ko"
 
 [[firmware]]
 path = "amdgpu/gc_11_5_0_mec.bin"
 from = "linux-firmware"
 src = "amdgpu/gc_11_5_0_mec.bin"
 sha256 = "5e022bae6638967d82e2b1077e3024f52bc83b3cb850aa31fba51469c7517c4c"
+# conditional load (was requested_by): /vendor/etc/amd-hx370-graphics.sh modprobes /vendor/lib/dev-modules/amdgpu.ko only when /proc/cmdline has amdgpu.modeset=1 (default safe entry blacklists amdgpu); GC 11.5.0 MEC firmware for Strix Point IP discovery is requested by Linux v6.18 drivers/gpu/drm/amd/amdgpu/gfx_v11_0.c gfx_v11_0_init_microcode() (name prefix from amdgpu_ucode_ip_version_decode()); amdgpu statically declares this name (MODULE_FIRMWARE("amdgpu/gc_11_5_0_mec.bin") in Linux v6.18 drivers/gpu/drm/amd/amdgpu/gfx_v11_0.c)
+loaded_by = "vendor:lib/dev-modules/amdgpu.ko"
 
 [[firmware]]
 path = "amdgpu/gc_11_5_0_rlc.bin"
 from = "linux-firmware"
 src = "amdgpu/gc_11_5_0_rlc.bin"
 sha256 = "0dc8b6ef5530a4a53938c8baa0d49cd458607d95233237859fa98d44feb3e985"
+# conditional load (was requested_by): /vendor/etc/amd-hx370-graphics.sh modprobes /vendor/lib/dev-modules/amdgpu.ko only when /proc/cmdline has amdgpu.modeset=1 (default safe entry blacklists amdgpu); GC 11.5.0 RLC firmware for Strix Point IP discovery is requested by Linux v6.18 drivers/gpu/drm/amd/amdgpu/gfx_v11_0.c gfx_v11_0_init_microcode() (name prefix from amdgpu_ucode_ip_version_decode()); amdgpu statically declares this name (MODULE_FIRMWARE("amdgpu/gc_11_5_0_rlc.bin") in Linux v6.18 drivers/gpu/drm/amd/amdgpu/gfx_v11_0.c)
+loaded_by = "vendor:lib/dev-modules/amdgpu.ko"
 
 [[firmware]]
 path = "amdgpu/gc_11_5_0_imu.bin"
 from = "linux-firmware"
 src = "amdgpu/gc_11_5_0_imu.bin"
 sha256 = "469add57cafead90ab1953d6039cd8e39bc50dfd78aa5fd78f019ccf66a0af41"
+# conditional load (was requested_by): /vendor/etc/amd-hx370-graphics.sh modprobes /vendor/lib/dev-modules/amdgpu.ko only when /proc/cmdline has amdgpu.modeset=1 (default safe entry blacklists amdgpu); GC 11.5.0 IMU firmware for Strix Point IP discovery is requested by Linux v6.18 drivers/gpu/drm/amd/amdgpu/imu_v11_0.c imu_v11_0_init_microcode() (name prefix from amdgpu_ucode_ip_version_decode()); amdgpu statically declares this name (MODULE_FIRMWARE("amdgpu/gc_11_5_0_imu.bin") in Linux v6.18 drivers/gpu/drm/amd/amdgpu/imu_v11_0.c)
+loaded_by = "vendor:lib/dev-modules/amdgpu.ko"
 
 [[firmware]]
 path = "amdgpu/gc_11_5_0_mes_2.bin"
 from = "linux-firmware"
 src = "amdgpu/gc_11_5_0_mes_2.bin"
 sha256 = "aed5487f0b830b036c7d8cf400f71b4be000be0922f63c24fe7bcda5583b41ca"
+# conditional load (was requested_by): /vendor/etc/amd-hx370-graphics.sh modprobes /vendor/lib/dev-modules/amdgpu.ko only when /proc/cmdline has amdgpu.modeset=1 (default safe entry blacklists amdgpu); GC 11.5.0 MES scheduler (mes_2) firmware for Strix Point IP discovery is requested by Linux v6.18 drivers/gpu/drm/amd/amdgpu/amdgpu_mes.c amdgpu_mes_init_microcode() (AMDGPU_MES_SCHED_PIPE, GC 11.x: _mes_2) (name prefix from amdgpu_ucode_ip_version_decode()); amdgpu statically declares this name (MODULE_FIRMWARE("amdgpu/gc_11_5_0_mes_2.bin") in Linux v6.18 drivers/gpu/drm/amd/amdgpu/mes_v11_0.c)
+loaded_by = "vendor:lib/dev-modules/amdgpu.ko"
 
 [[firmware]]
 path = "amdgpu/gc_11_5_0_mes1.bin"
 from = "linux-firmware"
 src = "amdgpu/gc_11_5_0_mes1.bin"
 sha256 = "c0ae823eb2f3801ba4f0115ff79711ed90a21e224a1f6b430b65ff5496f4225f"
+# conditional load (was requested_by): /vendor/etc/amd-hx370-graphics.sh modprobes /vendor/lib/dev-modules/amdgpu.ko only when /proc/cmdline has amdgpu.modeset=1 (default safe entry blacklists amdgpu); GC 11.5.0 MES KIQ (mes1) firmware for Strix Point IP discovery is requested by Linux v6.18 drivers/gpu/drm/amd/amdgpu/amdgpu_mes.c amdgpu_mes_init_microcode() (KIQ pipe, GC 11.x: mes1) (name prefix from amdgpu_ucode_ip_version_decode()); amdgpu statically declares this name (MODULE_FIRMWARE("amdgpu/gc_11_5_0_mes1.bin") in Linux v6.18 drivers/gpu/drm/amd/amdgpu/mes_v11_0.c)
+loaded_by = "vendor:lib/dev-modules/amdgpu.ko"
 
 [[firmware]]
 path = "amdgpu/psp_14_0_0_toc.bin"
 from = "linux-firmware"
 src = "amdgpu/psp_14_0_0_toc.bin"
 sha256 = "da82e510ba90b3939656ecd2092870e5eef1c1b71ad2a4b776bc9e57bae1f05f"
+# conditional load (was requested_by): /vendor/etc/amd-hx370-graphics.sh modprobes /vendor/lib/dev-modules/amdgpu.ko only when /proc/cmdline has amdgpu.modeset=1 (default safe entry blacklists amdgpu); MP0/PSP 14.0.0 TOC firmware for Strix Point IP discovery is requested by Linux v6.18 drivers/gpu/drm/amd/amdgpu/amdgpu_psp.c psp_init_toc_microcode() from psp_v13_0.c psp_v13_0_init_microcode() (name prefix from amdgpu_ucode_ip_version_decode()); amdgpu statically declares this name (MODULE_FIRMWARE("amdgpu/psp_14_0_0_toc.bin") in Linux v6.18 drivers/gpu/drm/amd/amdgpu/psp_v13_0.c)
+loaded_by = "vendor:lib/dev-modules/amdgpu.ko"
 
 [[firmware]]
 path = "amdgpu/psp_14_0_0_ta.bin"
 from = "linux-firmware"
 src = "amdgpu/psp_14_0_0_ta.bin"
 sha256 = "9ad18a7848681a6cf85d1d60011afeff828c531ca83379c9eaf8d557d358f618"
+# conditional load (was requested_by): /vendor/etc/amd-hx370-graphics.sh modprobes /vendor/lib/dev-modules/amdgpu.ko only when /proc/cmdline has amdgpu.modeset=1 (default safe entry blacklists amdgpu); MP0/PSP 14.0.0 TA firmware for Strix Point IP discovery is requested by Linux v6.18 drivers/gpu/drm/amd/amdgpu/amdgpu_psp.c psp_init_ta_microcode() from psp_v13_0.c psp_v13_0_init_microcode() (name prefix from amdgpu_ucode_ip_version_decode()); amdgpu statically declares this name (MODULE_FIRMWARE("amdgpu/psp_14_0_0_ta.bin") in Linux v6.18 drivers/gpu/drm/amd/amdgpu/psp_v13_0.c)
+loaded_by = "vendor:lib/dev-modules/amdgpu.ko"
 
 [[firmware]]
 path = "amdgpu/dcn_3_5_dmcub.bin"
 from = "linux-firmware"
 src = "amdgpu/dcn_3_5_dmcub.bin"
 sha256 = "d59800dbd65cb94fcfc0de0c47f463323b3abc260b3dbb7d9003b756024aaf13"
+# conditional load (was requested_by): /vendor/etc/amd-hx370-graphics.sh modprobes /vendor/lib/dev-modules/amdgpu.ko only when /proc/cmdline has amdgpu.modeset=1 (default safe entry blacklists amdgpu); the DCN version switch in amdgpu_dm selects DCN 3.5.0 DMCUB firmware from Strix Point IP discovery; amdgpu statically declares this name (MODULE_FIRMWARE, Linux v6.18 drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm.c)
+loaded_by = "vendor:lib/dev-modules/amdgpu.ko"
 
 [[firmware]]
 path = "amdgpu/sdma_6_1_0.bin"
 from = "linux-firmware"
 src = "amdgpu/sdma_6_1_0.bin"
 sha256 = "85f9f3714de68eee74cdf4852d709bc36a5c73a00e943b707bc2ce10d6b7bab4"
+# conditional load (was requested_by): /vendor/etc/amd-hx370-graphics.sh modprobes /vendor/lib/dev-modules/amdgpu.ko only when /proc/cmdline has amdgpu.modeset=1 (default safe entry blacklists amdgpu); SDMA 6.1.0 firmware for Strix Point IP discovery is requested by Linux v6.18 drivers/gpu/drm/amd/amdgpu/amdgpu_sdma.c amdgpu_sdma_init_microcode() from sdma_v6_0.c (name prefix from amdgpu_ucode_ip_version_decode()); amdgpu statically declares this name (MODULE_FIRMWARE("amdgpu/sdma_6_1_0.bin") in Linux v6.18 drivers/gpu/drm/amd/amdgpu/sdma_v6_0.c)
+loaded_by = "vendor:lib/dev-modules/amdgpu.ko"
 
 [[firmware]]
 path = "amdgpu/vcn_4_0_5.bin"
 from = "linux-firmware"
 src = "amdgpu/vcn_4_0_5.bin"
 sha256 = "d0d5fdd3299af0dcf7982ad94be65ab9bc12eef61e8bdbf7c0a844e8b3233d27"
+# conditional load (was requested_by): /vendor/etc/amd-hx370-graphics.sh modprobes /vendor/lib/dev-modules/amdgpu.ko only when /proc/cmdline has amdgpu.modeset=1 (default safe entry blacklists amdgpu); VCN 4.0.5 firmware for Strix Point IP discovery is requested by Linux v6.18 drivers/gpu/drm/amd/amdgpu/amdgpu_vcn.c amdgpu_vcn_early_init() (FIRMWARE_VCN4_0_5) (name prefix from amdgpu_ucode_ip_version_decode()); amdgpu statically declares this name (MODULE_FIRMWARE("amdgpu/vcn_4_0_5.bin") in Linux v6.18 drivers/gpu/drm/amd/amdgpu/amdgpu_vcn.c)
+loaded_by = "vendor:lib/dev-modules/amdgpu.ko"
 
 [[firmware]]
 path = "amdgpu/vpe_6_1_0.bin"
 from = "linux-firmware"
 src = "amdgpu/vpe_6_1_0.bin"
 sha256 = "10a900e43e8633bc1ebe03d2d88f9b3e2f96a43c1961b190023fa1d26423a41a"
+# conditional load (was requested_by): /vendor/etc/amd-hx370-graphics.sh modprobes /vendor/lib/dev-modules/amdgpu.ko only when /proc/cmdline has amdgpu.modeset=1 (default safe entry blacklists amdgpu); VPE 6.1.0 firmware for Strix Point IP discovery is requested by Linux v6.18 drivers/gpu/drm/amd/amdgpu/amdgpu_vpe.c amdgpu_vpe_init_microcode() (name prefix from amdgpu_ucode_ip_version_decode()); amdgpu statically declares this name (MODULE_FIRMWARE("amdgpu/vpe_6_1_0.bin") in Linux v6.18 drivers/gpu/drm/amd/amdgpu/vpe_v6_1.c)
+loaded_by = "vendor:lib/dev-modules/amdgpu.ko"
 
 # AX210 Wi-Fi (PCI 8086:2725 rev 1A, subsystem 8086:0024). The lapis iwlwifi module
 # requests iwlwifi-ty-a0-gf-a0-89.ucode and iwlwifi-ty-a0-gf-a0.pnvm (API 89, the same
@@ -205,12 +231,14 @@ path = "intel/ibt-0041-0041.sfi"
 from = "linux-firmware"
 src = "intel/ibt-0041-0041.sfi"
 sha256 = "2d891022ded1d2d8b208cc5b7632f3098c761ae099024de971e4158dd5681a9c"
+requested_by = "runtime: btintel (Linux v6.18 drivers/bluetooth/btintel.c btintel_get_fw_name_tlv() format; the file-end MODULE_FIRMWARE list) formats intel/ibt-%04x-%04x.sfi at runtime from AX210 cnvi_top/cnvr_top over HCI; MODULE_FIRMWARE only lists ibt-11-5 and ibt-12-16"
 
 [[firmware]]
 path = "intel/ibt-0041-0041.ddc"
 from = "linux-firmware"
 src = "intel/ibt-0041-0041.ddc"
 sha256 = "fe272982577efdc289cfe3e8bedafca607c0b7d6c9df1aab1880e22ef930d077"
+requested_by = "runtime: btintel (Linux v6.18 drivers/bluetooth/btintel.c btintel_get_fw_name_tlv() format; the file-end MODULE_FIRMWARE list) formats intel/ibt-%04x-%04x.ddc at runtime from AX210 cnvi_top/cnvr_top over HCI; MODULE_FIRMWARE only lists ibt-11-5 and ibt-12-16"
 
 [audio]
 card = ""

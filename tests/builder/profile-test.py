@@ -478,6 +478,40 @@ attempt("a firmware path with ..", sub('path = "i915/adlp_dmc.bin"', 'path = "..
 attempt("a short firmware SHA-256", sub('sha256 = "3516de2e', 'sha256 = "3516'), "64 lower-case hex")
 attempt("a duplicate firmware path", sub('path = "i915/adlp_guc_70.bin"', 'path = "i915/adlp_dmc.bin"'), "listed twice")
 attempt("an unknown firmware source", sub('from = "sof-bin"', 'from = "random"'), "linux-firmware or sof-bin")
+attempt("an empty firmware requested_by",
+        sub('path = "i915/adlp_dmc.bin"\n', 'path = "i915/adlp_dmc.bin"\nrequested_by = ""\n'),
+        "requested_by: expected 'runtime: <non-empty single-line reason>'")
+attempt("a firmware requested_by with a wrong prefix",
+        sub('path = "i915/adlp_dmc.bin"\n', 'path = "i915/adlp_dmc.bin"\nrequested_by = "static: xe"\n'),
+        "requested_by: expected 'runtime: <non-empty single-line reason>'")
+attempt("a firmware requested_by with an empty runtime reason",
+        sub('path = "i915/adlp_dmc.bin"\n', 'path = "i915/adlp_dmc.bin"\nrequested_by = "runtime:   "\n'),
+        "requested_by: expected 'runtime: <non-empty single-line reason>'")
+attempt("a multiline firmware requested_by",
+        sub('path = "i915/adlp_dmc.bin"\n', 'path = "i915/adlp_dmc.bin"\nrequested_by = "runtime: a\\nb"\n'),
+        "requested_by: expected 'runtime: <non-empty single-line reason>'")
+attempt("a firmware requested_by with a U+2028 line separator",
+        sub('path = "i915/adlp_dmc.bin"\n', 'path = "i915/adlp_dmc.bin"\nrequested_by = "runtime: a\\u2028b"\n'),
+        "requested_by: expected 'runtime: <non-empty single-line reason>'")
+attempt("a firmware requested_by of only zero-width text",
+        sub('path = "i915/adlp_dmc.bin"\n', 'path = "i915/adlp_dmc.bin"\nrequested_by = "runtime: \\u200b"\n'),
+        "requested_by: expected 'runtime: <non-empty single-line reason>'")
+attempt("an empty firmware loaded_by",
+        sub('path = "i915/adlp_dmc.bin"\n', 'path = "i915/adlp_dmc.bin"\nloaded_by = ""\n'),
+        "loaded_by: expected '<vendor|vendor_dlkm|system_dlkm|initrd>:<relative .ko path>'")
+attempt("a firmware loaded_by that is only a module name",
+        sub('path = "i915/adlp_dmc.bin"\n', 'path = "i915/adlp_dmc.bin"\nloaded_by = "xe"\n'),
+        "loaded_by: expected '<vendor|vendor_dlkm|system_dlkm|initrd>:<relative .ko path>'")
+attempt("a firmware loaded_by with ..",
+        sub('path = "i915/adlp_dmc.bin"\n', 'path = "i915/adlp_dmc.bin"\nloaded_by = "vendor:lib/../x.ko"\n'),
+        "loaded_by: expected '<vendor|vendor_dlkm|system_dlkm|initrd>:<relative .ko path>'")
+attempt("a firmware pin with both requested_by and loaded_by",
+        sub('path = "i915/adlp_dmc.bin"\n', 'path = "i915/adlp_dmc.bin"\nrequested_by = "runtime: x"\n'
+            'loaded_by = "vendor_dlkm:lib/modules/xe.ko"\n'),
+        "requested_by and loaded_by are mutually exclusive")
+attempt("a non-string firmware requested_by",
+        sub('path = "i915/adlp_dmc.bin"\n', 'path = "i915/adlp_dmc.bin"\nrequested_by = 1\n'),
+        "expected str")
 attempt("an adb property in build_prop_set", sub('[["vendor.hwc.drm.enable_color_pipeline", "true", "false"],',
                                                  '[["ro.adb.secure", "1", "0"],'), "not an adb/debuggable property")
 attempt("a malformed pci-stub id", sub('"8086:51a8"', '"8086:51A8"'), "vvvv:dddd")
@@ -557,6 +591,25 @@ def ax210_firmware_pinned(entries):
 
 check("amd-hx370 AX210 Wi-Fi and Bluetooth firmware (path, src, 64-hex sha256)",
       ax210_firmware_pinned(amd["firmware"]) and len(amd["firmware"]) == 17)
+check("kano firmware pins have requested_by only on the 6 runtime-named Bluetooth and SOF files",
+      [f["path"] for f in kano["firmware"] if not f["requested_by"]] == [
+          "i915/adlp_dmc.bin", "i915/adlp_guc_70.bin", "i915/tgl_huc.bin",
+          "iwlwifi-so-a0-gf-a0-89.ucode", "iwlwifi-so-a0-gf-a0.pnvm",
+      ] and [f["path"] for f in kano["firmware"] if f["requested_by"].startswith("runtime: ")] == [
+          "intel/ibt-0040-0041.sfi", "intel/ibt-0040-0041.ddc",
+          "intel/sof/community/sof-adl.ri", "intel/sof-tplg/sof-adl-max98373-nau8825.tplg",
+          "intel/sof/community/sof-rpl.ri", "intel/sof-tplg/sof-rpl-max98373-nau8825.tplg",
+      ])
+check("amd-hx370 firmware pins: loaded_by vendor:lib/dev-modules/amdgpu.ko on the 13 conditionally loaded amdgpu blobs, "
+      "requested_by only on the 2 AX210 Bluetooth files",
+      [f["path"] for f in amd["firmware"] if not f["requested_by"] and not f["loaded_by"]] == [
+          "iwlwifi-ty-a0-gf-a0-89.ucode", "iwlwifi-ty-a0-gf-a0.pnvm",
+      ] and [f["path"] for f in amd["firmware"] if f["requested_by"].startswith("runtime: ")] == [
+          "intel/ibt-0041-0041.sfi", "intel/ibt-0041-0041.ddc",
+      ] and [f["path"] for f in amd["firmware"] if f["loaded_by"] == "vendor:lib/dev-modules/amdgpu.ko"] == [
+          f["path"] for f in amd["firmware"] if f["path"].startswith("amdgpu/")
+      ] and len([f for f in amd["firmware"] if f["loaded_by"]]) == 13)
+check("kano firmware pins have no loaded_by", not any(f["loaded_by"] for f in kano["firmware"]))
 for drop_path in AX210_FW:
     dropped = [f for f in amd["firmware"] if f["path"] != drop_path]
     check(f"dropping {drop_path} fails the AX210 firmware pin",

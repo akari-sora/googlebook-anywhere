@@ -38,6 +38,11 @@ MENU = [
 ]
 
 
+# Round 6: the minimal heading lint, stated in one sentence, and its known gap.
+ZH_LINT_RULE = '第 2 行以後，從第 0 欄開始、以 1–6 個 `#` 加一個空白或 tab 再接 `Googlebook Anywhere v<數字>` 的行（任何版本，包括目前這一版）一律拒絕，程式碼區塊裡也一樣；要在範例裡保留這種行，就把它縮排 4 格，或把整個程式碼區塊放進清單項目或 `>` 引用（lint 不看那些地方；只把那一行放進清單或引用會變成真的標題）。其他都不檢查。'
+EN_LINT_RULE = 'A line 2..N that starts at column 0 with 1-6 `#`, a space or tab, and `Googlebook Anywhere v<digit>` (any version, the current one too) is refused, also inside a code fence; to keep such a line in an example, indent it by 4 spaces, or put the whole fenced code block inside a list item or a `>` quote, which the lint does not look at (that line alone in a list or quote renders as a real heading). Nothing else is checked.'
+EN_LINT_GAP = 'Known lint gap: indented, quoted, listed, setext, emphasized, linked, code-span or table forms of an older heading all pass, and so do a heading without the space or the version, 7 or more `#`, a lowercase name, and other spacing of the name'
+
 def fail(message):
     print(f"docs-story: {message}", file=sys.stderr)
     sys.exit(1)
@@ -143,19 +148,50 @@ def main():
             fail(f"README parity lost tools/minigbm/NOTICES.txt in {rname} release-package list")
     if (REPO / "docs/RELEASE-PROCESS.md").exists():
         fail("docs/RELEASE-PROCESS.md must be folded into README.md and README.en.md")
-    if "只發布該版本的段落" not in root or "指向同一個 tag 的完整 `docs/RELEASE-NOTES.md` 歷史絕對連結" not in root:
+    if "把整個 `docs/RELEASE-NOTES.md` 原樣當成發行說明發布（不切段）" not in root or "指向同一個 tag 的 `docs/RELEASE-HISTORY.md` 完整版本紀錄絕對連結" not in root:
         fail("README.md release rules lost the folded RELEASE-PROCESS sentence")
     if (
-        "publishes only that version’s section (preserving headings inside fenced code blocks)" not in en
-        or "appends an absolute link to the full `docs/RELEASE-NOTES.md` history at the same tag" not in en
+        "publishes the whole `docs/RELEASE-NOTES.md` verbatim as the release description (nothing is cut)" not in en
+        or "an absolute link to the full release history `docs/RELEASE-HISTORY.md` at the same tag" not in en
     ):
         fail("README.en.md release rules lost the folded RELEASE-PROCESS sentence")
-    if "只能出現在頂格" not in root:
-        fail("README.md lost the version-heading rule that the version string `Googlebook Anywhere v…` may appear only in a top-level `# Googlebook Anywhere v…` heading line")
-    if "may appear only in a top-level" not in en:
-        fail("README.en.md lost the version-heading rule that the version string `Googlebook Anywhere v…` may appear only in a top-level `# Googlebook Anywhere v…` heading line")
-    if "都只記錄不攔截（report-only），所以 `PASS` 不代表這些韌體釘選已被這個檢查核對" not in read(RELEASE):
-        fail("docs/RELEASE-NOTES.md lost the phrase saying firmware-declaring drivers are report-only, so a PASS does not attest the firmware pins")
+    if "這個檔案只放目前這一版" not in root or "把上一版的整段原樣移到該檔標題下方的最前面" not in root:
+        fail("README.md lost the rule that docs/RELEASE-NOTES.md holds only the current version and the previous section moves to the top of docs/RELEASE-HISTORY.md")
+    if "The file holds only the current version" not in en or "move the previous current section unchanged to the top of that file" not in en:
+        fail("README.en.md lost the rule that docs/RELEASE-NOTES.md holds only the current version and the previous section moves to the top of docs/RELEASE-HISTORY.md")
+    for rname, rtext in (("README.md", root), ("README.en.md", en)):
+        if "| [docs/RELEASE-HISTORY.md](docs/RELEASE-HISTORY.md)" not in rtext:
+            fail(f"{rname} lost the table entry for docs/RELEASE-HISTORY.md")
+    if not read(REPO / "docs/RELEASE-HISTORY.md").startswith("# Googlebook Anywhere release history\n"):
+        fail("docs/RELEASE-HISTORY.md must start with its title line")
+    history_path = REPO / "docs/RELEASE-HISTORY.md"
+    if "只刪掉該段第 3 行的 `<!-- release-status: ... -->` 狀態註解" not in root:
+        fail("README.md lost the rule that a moved section drops its status line")
+    if "dropping only that section's line 3, the `<!-- release-status: ... -->` status comment" not in en:
+        fail("README.en.md lost the rule that a moved section drops its status line")
+    if "the `<!-- release-status: ... -->` comment, which is dropped" not in read(REPO / "tools/release/README.md"):
+        fail("tools/release/README.md lost the rule that a moved section drops its status line")
+    # L5 (round 4): the layout after the move, the final-newline rule, the lint's best-effort
+    # status and the structural guarantee are documented in all three files.
+    for rname, rtext, phrases in (
+        ("README.md", root, ("第 1 行標題、第 2 行空行、接著搬進來的整段", "以恰好一個換行結尾", "盡力而為的撰寫輔助，不是 Markdown 解析器", "真正的保證是結構上的",
+                             ZH_LINT_RULE, '已知漏洞：縮排、放在 `>` 引用或清單裡、setext、粗體／連結／程式碼標記或表格形式的舊版標題都會通過，`#` 後沒空白、沒有版號、7 個以上 `#`、小寫名稱或名稱裡其他空白也會通過')),
+        ("README.en.md", en, ("line 1 the title, line 2 empty, the moved section", "end with exactly one newline", "best-effort authoring aid, not a Markdown parser", "The guarantee is structural",
+                              EN_LINT_RULE, EN_LINT_GAP)),
+        ("tools/release/README.md", read(REPO / "tools/release/README.md"), ("line 1 the title, line 2 empty, the moved section", "end with exactly one newline", "best-effort authoring aid, not a Markdown parser", "The guarantee is structural",
+                                                                         EN_LINT_RULE, EN_LINT_GAP)),
+    ):
+        for phrase in phrases:
+            if phrase not in rtext:
+                fail(f"{rname} lost the release-notes rule {phrase!r}")
+    # N6: the download line names the current notes and the history file, no fixed version.
+    for rname, rtext in (("README.md", root), ("README.en.md", en)):
+        line = next((l for l in rtext.splitlines() if "/-/releases)" in l and "docs/RELEASE-NOTES.md" in l), None)
+        if line is None or "(docs/RELEASE-HISTORY.md)" not in line or re.search(r"\bv[0-9]+\.[0-9]+", line):
+            fail(f"{rname} release line must link docs/RELEASE-NOTES.md and docs/RELEASE-HISTORY.md without a fixed version: {line}")
+    # The report-only sentence may sit in the current notes or, after a release, in the history.
+    if "都只記錄不攔截（report-only），所以 `PASS` 不代表這些韌體釘選已被這個檢查核對" not in read(RELEASE) + read(history_path):
+        fail("docs/RELEASE-NOTES.md and docs/RELEASE-HISTORY.md lost the phrase saying firmware-declaring drivers are report-only, so a PASS does not attest the firmware pins")
     for path in (
         REPO / "docs/COMPATIBILITY.md",
         REPO / "docs/COMPATIBILITY.en.md",

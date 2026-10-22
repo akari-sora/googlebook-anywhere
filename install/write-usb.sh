@@ -55,6 +55,7 @@ done
 if [ $# -ne 2 ]; then echo "$USAGE"; exit 2; fi
 [ "$NOFALLBACK" = 0 ] || [ "$KEEP" = 1 ] || { echo "--without-fallback goes with --keep-data"; exit 2; }
 [ "$GROW" = grow ] || [ "$KEEP" = 0 ] || { echo "--no-grow is for a fresh write; --keep-data never changes the GPT"; exit 2; }
+if [ "$KEEP" = 1 ]; then GROW=nogrow; fi
 case ${BASH_SOURCE[0]} in */*) HERE=${BASH_SOURCE[0]%/*} ;; *) HERE=. ;; esac
 ENGINE=$HERE/gbos-update.py
 IMG=$1 ARG=$2

@@ -106,32 +106,9 @@ release:
   needs: [package]
   script:
     - test "$(head -n 1 docs/RELEASE-NOTES.md)" = "# Googlebook Anywhere $CI_COMMIT_TAG" || { echo "docs/RELEASE-NOTES.md line 1 expected '# Googlebook Anywhere $CI_COMMIT_TAG'"; exit 1; }
-    # Keep the current section intact, including heading examples inside Markdown fences.
-    - |
-      LC_ALL=C awk '
-        {
-          line = $0
-          sub(/^(   |  | )/, "", line)
-          if (fence != "") {
-            if (substr(line, 1, 1) == fence) {
-              match(line, /^(`+|~+)/)
-              if (RLENGTH >= width && substr(line, RLENGTH + 1) ~ /^[ \t]*$/) fence = ""
-            }
-          } else if (line ~ /^```/ || line ~ /^~~~/) {
-            match(line, /^(`+|~+)/)
-            marker = substr(line, 1, 1)
-            if (marker == "~" || substr(line, RLENGTH + 1) !~ /`/) {
-              fence = marker
-              width = RLENGTH
-            }
-          } else if (NR > 1 && /^# Googlebook Anywhere /) exit
-          print
-        }
-        END {
-          print ""
-          print "[Full release history](" ENVIRON["CI_PROJECT_URL"] "/-/blob/" ENVIRON["CI_COMMIT_TAG"] "/docs/RELEASE-NOTES.md)"
-        }
-      ' docs/RELEASE-NOTES.md > release-description.md
+    # docs/RELEASE-NOTES.md holds only this version (older ones are in docs/RELEASE-HISTORY.md): publish it verbatim.
+    - cat docs/RELEASE-NOTES.md > release-description.md
+    - printf '\n[Full release history](%s/-/blob/%s/docs/RELEASE-HISTORY.md)\n' "$CI_PROJECT_URL" "$CI_COMMIT_TAG" >> release-description.md
     - echo "release $CI_COMMIT_TAG"
   release:
     tag_name: $CI_COMMIT_TAG

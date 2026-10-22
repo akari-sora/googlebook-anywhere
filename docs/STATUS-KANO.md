@@ -1,5 +1,7 @@
 # KANO 硬體狀態（Acer Chromebook Spin 714，CP714-1WN／CP714-2WN，brya／kano）
 
+2026-10-22 軟體驗收更新：v0.2.3 的 CI、韌體檢查與突變測試結果見 [軟體驗收紀錄](VERIFICATION-v0.2.3.md)。本輪沒有新增 KANO 實機開機或硬體測試；下方仍保留原實機紀錄的日期與範圍。
+
 驗證日期 2026-10-12。**目前唯一在實機上驗證過的是一台 Alder Lake-P K0 工程樣機**（CPU Core i7-1260P，CPUID `06-9a-02`，iGPU PCI ID `8086:46a6`，ChromeOS CBI SKU `131073`；`131073` 是 CBI SKU，不是 CPU 型號），Googlebook 裝在內建 NVMe（SAMSUNG MZVLQ128HCHQ）。
 下方功能表中的每一項都是在該台實機上量到的結果，不是推論；唯一的例外寫明在該列（休眠／喚醒的鍵盤喚醒問題，目前是依核心原始碼推得）。驗證方式見最右欄；用到的工具在 `tools/harness/`。
 

@@ -44,6 +44,8 @@ expect "build.sh refuses an invalid device profile" 2 "missing key image_name" -
 [ ! -e "$T/o4" ] && ok "build.sh wrote nothing for the invalid profile" || bad "build.sh created GBOS_OUT for an invalid profile"
 expect "device profile loader (tests/builder/profile-test.py)" 0 "profile tests: [0-9]+ passed, 0 failed" -- python3 "$ROOT/tests/builder/profile-test.py"
 expect "shipped module firmware (tests/builder/firmware-test.py)" 0 "firmware tests: [0-9]+ passed, 0 failed, 0 skipped" -- python3 "$ROOT/tests/builder/firmware-test.py"
+# every name a builder Python script reads is bound (symtable; py_compile does not catch a removed definition)
+expect "builder scripts read no unbound names (tests/builder/undefined-names-test.py)" 0 "undefined-name tests: [0-9]+ passed, 0 failed" -- python3 "$ROOT/tests/builder/undefined-names-test.py"
 # tools/release/png-ok.py: the only binary files the public export and the release archive accept (docs/images/*.png)
 expect "png-ok accepts the screenshots and refuses hidden payloads (tests/builder/png-ok-test.py)" 0 "png-ok tests: [0-9]+ passed, 0 failed" -- python3 "$ROOT/tests/builder/png-ok-test.py"
 # the release archive builds from this checkout (git only: the release archive itself has no .git)

@@ -50,6 +50,21 @@ PY
     (cd "$(dirname "$1")" && python3 -c 'import hashlib, sys; print(hashlib.sha256(open(sys.argv[1], "rb").read()).hexdigest() + "  " + sys.argv[1])' \
         "$(basename "$1")" > "$(basename "$1").sha256")
 }
+mkgrowimg() {  # mkgrowimg <file>: a KANO-shaped image with userdata before another partition
+    python3 - "$1" "$ROOT/tests/stick" << 'PY'
+import sys
+sys.path.insert(0, sys.argv[2])
+import gptlib
+n = 65536
+with open(sys.argv[1], "wb") as f:
+    f.truncate(n * 512)
+    gptlib.write_gpt(f, n, [
+        dict(num=1, name="userdata", type="0fc63daf-8483-4772-8e79-3d69d8477de4", first=40960, last=61439, attrs=1 << 55),
+        dict(num=2, name="EFI-SYSTEM", type="c12a7328-f81f-11d2-ba4b-00a0c93ec93b", first=2048, last=40959),
+        dict(num=10, name="ota_recovery_b", type="0fc63daf-8483-4772-8e79-3d69d8477de4", first=61440, last=65400)])
+PY
+    (cd "$(dirname "$1")" && sha256sum "$(basename "$1")" > "$(basename "$1").sha256")
+}
 
 # --- 1. the embedded writer
 W="$T/write-usb.py"
@@ -60,6 +75,7 @@ else
     bad "the embedded writer does not extract between its markers"; finish
 fi
 mkimg "$T/x.img" 2048 || { bad "cannot make the test image"; finish; }
+mkgrowimg "$T/kg.img" || { bad "cannot make the grow test image"; finish; }
 SHA=$(cut -c1-64 "$T/x.img.sha256")
 wexpect() {  # wexpect <name> <exit code> <regex> <writer args...>
     local name=$1 code=$2 re=$3 out rc; shift 3
@@ -91,6 +107,13 @@ if out=$(python3 "$ROOT/tests/install/gpt-test.py" "$W" "$T/gpt" 2>&1); then ok 
 else bad "GPT step on plain files (gpt-test.py)"; fi
 printf '%s\n' "$out" | sed 's/^/    /'
 if grep -q '^SKIP' <<< "$out"; then skp "gpt-test.py: comparison with sgdisk -e (sgdisk is not installed)"; fi
+rc=0
+out=$(bash "$ROOT/install/write-usb.sh" --check-only --keep-data --no-grow "$T/x.img" /dev/null 2>&1) || rc=$?
+if [ "$rc" = 2 ] && grep -q -- "--no-grow is for a fresh write" <<< "$out"; then
+    ok "explicit --no-grow with --keep-data is still refused"
+else
+    bad "explicit --no-grow with --keep-data was not refused (rc=$rc): $(tail -n 2 <<< "$out")"
+fi
 
 if [ "$(uname -s)" != Linux ]; then skp "write-usb.sh guard tests (Linux only)"; finish; fi
 
@@ -215,14 +238,22 @@ pretend_cases() {  # every case on the pretend disk; with DRY=1 each one is only
     expect "sysfs test hook is refused without --check-only" 2 "only with --check-only" -- "$T/x.img" "$spare"
     expect "accepts a USB whole disk (check only)" 0 "CHECKS OK" -- "${C[@]}" "$spare"
     has "check-only runs the after-prompt re-check" "== re-checking"
+    expect "default check-only plans to grow userdata" 0 "CHECKS OK" -- --check-only "$T/kg.img" "$spare"
+    has "default check-only reports the grow plan" "userdata: .* -> .*first 16 MiB zeroed"
+    expect "--no-grow check-only accepts the image" 0 "CHECKS OK" -- --check-only --no-grow "$T/kg.img" "$spare"
+    has "--no-grow check-only reports unchanged userdata" "userdata: left at the image's size"
     if ! command -v lz4 > /dev/null || ! command -v minfo > /dev/null; then
-        skp "--keep-data check only (needs lz4 and mtools)"
+        expect "--keep-data check only reaches its dependency check" 2 "--keep-data needs" \
+            -- --check-only --keep-data "$T/kg.img" "$spare"
     elif [ "$(id -u)" != 0 ]; then
-        expect "--keep-data: the same checks pass (check only)" 0 "CHECKS OK" -- --check-only --keep-data "$T/x.img" "$spare"
+        expect "--keep-data: the same checks pass (check only)" 0 "CHECKS OK" -- --check-only --keep-data "$T/kg.img" "$spare"
         has "--keep-data as a user says it did not read the disk" "gbos-update.py inspect needs root"
     else
-        expect "--keep-data refuses a disk without Googlebook on it" 2 "holds no Googlebook that can be updated" -- --check-only --keep-data "$T/x.img" "$spare"
+        expect "--keep-data refuses a disk without Googlebook on it" 2 "holds no Googlebook that can be updated" \
+            -- --check-only --keep-data "$T/kg.img" "$spare"
     fi
+    has "--keep-data preflight reports unchanged userdata" "userdata: left at the image's size"
+    lacks "--keep-data preflight does not claim a future grow" "userdata: .* -> |first 16 MiB zeroed|Android formats /data"
     if [ "$(id -u)" != 0 ]; then
         has "check-only as a user says it skipped the root-only probe" "exclusive-open probe .* skipped"
     fi
@@ -334,20 +365,7 @@ PY
 then ok "the device holds the image with a valid GPT whose backup is at its end (checked with tests/stick/gptlib.py)"
 else bad "the device content or GPT is not what the writer reported"; fi
 
-# grow (write-usb.sh's default): a KANO-shaped image (userdata in the middle, ota_recovery_b after it) on a 128 MiB loop
-python3 - "$T/kg.img" "$ROOT/tests/stick" << 'PY' || { bad "cannot make the grow test image"; finish; }
-import sys
-sys.path.insert(0, sys.argv[2])
-import gptlib
-n = 65536
-with open(sys.argv[1], "wb") as f:
-    f.truncate(n * 512)
-    gptlib.write_gpt(f, n, [
-        dict(num=1, name="userdata", type="0fc63daf-8483-4772-8e79-3d69d8477de4", first=40960, last=61439, attrs=1 << 55),
-        dict(num=2, name="EFI-SYSTEM", type="c12a7328-f81f-11d2-ba4b-00a0c93ec93b", first=2048, last=40959),
-        dict(num=10, name="ota_recovery_b", type="0fc63daf-8483-4772-8e79-3d69d8477de4", first=61440, last=65400)])
-PY
-(cd "$T" && sha256sum kg.img > kg.img.sha256)
+# grow (write-usb.sh's default): the KANO-shaped image (userdata in the middle, ota_recovery_b after it) on a 128 MiB loop
 head -c $((128 << 20)) /dev/urandom > "$T/kg-disk"
 LOOP=$(losetup --find --show "$T/kg-disk" 2>/dev/null) || { LOOP=''; skp "grow on a loop device (no loop device available here)"; finish; }
 lmm=$(majmin_of "$LOOP"); lsys=$(readlink -f "/sys/dev/block/$lmm"); lbytes=$(( $(cat "/sys/block/${LOOP##*/}/size") * 512 ))
