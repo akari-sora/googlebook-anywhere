@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Update Googlebook to this checkout's release and keep your data (Linux or WSL, as a normal user; the final write
 # asks for sudo):
-#   install/update.sh --work DIR [--disk /dev/disk/by-id/usb-...] [--without-fallback] [install.sh options]
+#   install/update.sh --work DIR [--disk /dev/disk/by-id/usb-...] [--without-fallback] [--no-update-check] [install.sh options]
 # DIR must be the work directory that built what is installed: its AVB key (DIR/keys/vbmeta.pem, or DIR/base/keys for
 # work directories from v0.1.0) signs the update, and an installed system takes updates only with its own key.
 #   1. install/install.sh --work DIR --update ...: builds the new image; an older base or build is moved to *.prev;
@@ -9,6 +9,8 @@
 #      release goes into the stick's other slot, /data stays, the running version stays on the boot menu as
 #      "(previous version)" (see docs/UPGRADE.md). Without --disk it prints that command.
 # The internal disk is updated from the installer stick instead (install/stick/README.md, "Update").
+# First it prints a notice when Google has a newer lapis build or this project a newer release than this checkout
+# (install/check-updates.py --hint; never stops the update). --no-update-check or GBOS_NO_UPDATE_CHECK=1 skips it.
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 die() { echo "update.sh: $*" >&2; exit 2; }
@@ -19,6 +21,7 @@ while [ $# -gt 0 ]; do
         --disk) [ $# -ge 2 ] || die "--disk needs a device"; DISK=$2; shift 2 ;;
         --without-fallback) NOFALLBACK=(--without-fallback); shift ;;
         --update) shift ;;
+        --no-update-check) export GBOS_NO_UPDATE_CHECK=1; shift ;;
         -h|--help) sed -n '2,13p' "$0"; exit 0 ;;
         *) PASS+=("$1"); shift ;;
     esac
@@ -28,6 +31,9 @@ done
 [ -f "$WORK/keys/vbmeta.pem" ] || [ -f "$WORK/base/keys/vbmeta.pem" ] || printf '%s\n' "${PASS[@]}" | grep -qx -- --key \
     || die "no AVB key in $WORK (keys/ or base/keys/): an update must be signed with the key that built the installed system (--key)"
 [ "$(id -u)" -ne 0 ] || die "run as a normal user; the write asks for sudo"
+# non-blocking notice; install.sh skips its own check after this one (GBOS_UPDATE_CHECKED)
+python3 "$ROOT/install/check-updates.py" --hint || true
+export GBOS_UPDATE_CHECKED=1
 bash "$ROOT/install/install.sh" "${PASS[@]}" --update
 NAME=${GBOS_IMAGE_NAME:-$(python3 "$ROOT/builder/lib/devprofile.py" get "${GBOS_PROFILE:-$ROOT/profiles/kano}" model.image_name)} \
     || die "the device profile ${GBOS_PROFILE:-$ROOT/profiles/kano} is not valid"

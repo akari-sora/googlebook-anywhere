@@ -2,18 +2,24 @@
 
 Googlebook（lapis）映像本來是給另一台機器用的，裡面帶著那台機器的韌體與更新程式。KANO 的韌體一旦被寫壞就會變磚，
 所以第一原則是：**從 Android 這一側，任何東西都不能寫入 AP SPI flash、EC、Cr50、觸控／PD／retimer 韌體或 EFI 變數。**
+這裡的「禁止寫 EC」是禁止未稽核的控制，以及禁止寫非揮發性韌體或設定。受限的執行期例外不推翻這條：
+`GET_NEXT_EVENT` 會消費 EC RAM 裡的事件；`HOST_SLEEP_EVENT` 會改休眠追蹤與計時器；`RWSIG_ACTION(CONTINUE)` 是切換執行映像的請求，不是燒錄。
+這些例外不是寫 flash、CBI、電池或充電設定的許可，所以和既有的 EC 功能變體不矛盾。
 啟用任何硬體之前，先證明沒有更新程式碰得到它。下面寫清楚每一層擋住什麼、沒擋住什麼。
 
 ## 多層防護
 
 1. **移除 vendor 分割區裡已知的更新程式與燒錄工具**：fwupd（含 LVFS 設定與離線 cab）、flashrom、libflashrom、futility、
    futility-executor、ectool、crossystem、`firmware/ap-ec-fw.zip`。build 時刪除，刪除清單（`removed.txt`）逐項比對。
-   範圍只有 vendor：system、system_ext、product 與其他 APEX 保持 Google 原樣，沒有逐一掃描。真正的兜底是下一層的核心封鎖。
+   這份韌體工具移除清單的範圍只有 vendor；未對 system、system_ext、product 與其他 APEX 做完整韌體寫入工具稽核。啟用 `patch_ifma` 時，另會精確修改 system、system_ext 與指定 APEX 的 IFMA 目標並掃描殘留編碼（見 HOW-IT-WORKS.md）；這不是韌體寫入能力稽核。真正的兜底是下一層的核心封鎖。
 2. **核心模組封鎖（`module_blacklist=`）**：TPM（tpm、tpm_tis*、tpm_tis_i2c_cr50）、EC 傳輸與核心（cros_ec、cros_ec_lpcs、
    cros_ec_dev、cros_ec_chardev、cros_ec_spi/i2c/ishtp、cros_ec_sysfs、cros_ec_vbc、cros_ec_debugfs …，共 30 多個）、
    SPI flash（spi_intel、spi_intel_pci、mtd、spi_nor、spidev）、gsmi、chromeos_acpi、nvram、i2c_dev、at24、thunderbolt。
-   只放行 `cros_ec_proto`（純函式庫）給 ACPI 鍵盤背光驅動用；沒有任何 EC 裝置會被註冊，所以送不出 EC 指令。
-   這是預設映像。開發者選項 `GBOS_EC`（預設關閉）會放行一組經過稽核的 EC 驅動，見下面「EC 功能變體」。
+   只放行 `cros_ec_proto`（純函式庫）給 ACPI 鍵盤背光驅動用。預設 KANO 映像仍封鎖 EC transport/core，沒有可送 Linux EC host command 的已註冊 cros_ec 通道，所以送不出 EC 指令。
+   這是預設映像。實驗選項 `GBOS_EC=drain`（只能單獨這個值，不能和功能並列）只解除 `cros_ec` 與 `cros_ec_lpcs`，並使用本來就放行的 `cros_ec_proto`。
+   `cros_ec_dev`、`cros_ec_keyb`、`cros_ec_chardev`、`cros_ec_sysfs`、`cros_ec_debugfs` 以及其他 consumers／transports 維持封鎖。
+   drain 會建立 transport/core 裝置並消費 MKBP 佇列，所以「沒有 EC 裝置、送不出 EC 指令」的保證不適用於它。它不是預設，也還沒有實機驗收。
+   另一個開發者選項 `GBOS_EC`（`sensors`、`typec`、`buttons`，預設關閉）會放行一組經過稽核的 EC 驅動，見下面「EC 功能變體」。
    原映像的 `spi-intel.writeable=1` 也拿掉了。清單在機型設定（`profiles/kano/profile.toml`）；全專案一定要封鎖的模組與參數在
    `profiles/_safety.toml`（`blacklist.required` 就是上面這整份 57 個模組，每個機型都一樣），機型設定只能加、不能減（`builder/lib/devprofile.py` 拒絕），`builder/image.py` 再對每個開機選項逐一檢查，並確認 ESP 上只有 quiet 與 serial-debug 兩個選項
    （base ESP 原本那個沒有封鎖的 `lapis.conf` 會被刪掉）。
@@ -25,9 +31,13 @@ Googlebook（lapis）映像本來是給另一台機器用的，裡面帶著那�
    `GBOS_LOADER_EDITOR=yes` 打開。
 7. **開發用看守程式**（`tools/harness/kano-gbos-watch*.py`）：序列埠出現 NVMe、SPI、EC、TPM、gsmi、fwupd、rollforward
    等字串就透過 EC 斷電。它只是補充偵測：只在 serial-debug 開機選項下有序列埠輸出可看，看不到紀錄時會回報「無法觀測」，
-   不保證在任何情況下都能及時攔下。它拿 KANO 機型設定的整份 `module_blacklist` 核對這次開機的參數，不知道 `GBOS_EC`：
-   EC 變體開機時，被放行的 `cros_ec*` 會被當成「少了防護參數」而直接斷電（fail-closed）。用 EC 變體時不要開看守程式。
-8. **自建核心 `.config`、`bzImage` 內嵌 `IKCFG` 與 `System.map` 安全檢查**（`builder/lib/devprofile.py check-kconfig`）：只在 `GBOS_DEV_KERNEL_DIR`（例如 `profiles/amd-hx370`）時執行。這個閘門要抓的是開發者自己的核心設定裡的失誤（驅動被編成 built-in，或內建 cmdline 蓋掉 bootloader 的參數）。刻意改寫二進位來騙過閘門的人本來就控制這台機器，不在範圍裡。含糊的映像仍然拒絕，因為失誤也藏在同樣的地方：超過一個說得通的 payload 或 IKCFG、HdrS 指名的 payload 不是 `scripts/extract-ikconfig`（kernel/common `3938c8d97142`：先找原始 `IKCFG_ST`+gzip，再依序試 gzip、xz、bzip2、lzma、lzo、lz4 legacy、zstd）會採用的那一份，或 `.symtab` 與執行期 kallsyms 對要查的符號不一致。執行期 kallsyms 優先。解得出的格式是 gzip、LZ4 legacy、xz、lzma-alone、zstd、bzip2 與未壓縮 ELF；`CONFIG_KERNEL_LZO` 與認不得的 magic 一律拒絕。掃描路徑對 xz、lzma 在出錯時把已解出的明文留到尾端（先以 4096 byte 取，沒解完就把尾段改成每次 1 byte，最多少錯誤當下那 1 byte），IKCFG 是否算命中比照 `dump_config`（`IKCFG_ST` 後面是一個 zcat 結束碼不是 1 的 gzip，不要求 `IKCFG_ED`），所以 IKCFG 在 member 明文尾端時和 `unxz`／`unlzma` 一樣算候選；bzip2 仍用 4096／64 byte 分段。誠實 member 解到結尾就用第一輪的完整輸出。`dump_config` 的模擬則和腳本一樣，gzip CRC 錯誤（zcat 結束碼 1）不算命中。切片必須是單一 member，尾端最多 4 byte 的未壓縮長度。解壓後若有兩對 `IKCFG_ST`／`IKCFG_ED` 也拒絕。
+   不保證在任何情況下都能及時攔下。預設政策仍拿 KANO 機型設定的整份 `module_blacklist` 核對，不知道 `GBOS_EC` 的功能變體：
+   那些映像少了被放行的 `cros_ec*` 時會被當成少了防護參數而斷電（fail-closed）。`GBOS_EC=drain` 要另外指定 `--ec-policy drain`。
+   這個政策的必要模組是（profile 基線去掉 `cros_ec` 與 `cros_ec_lpcs`）再加上 `builder/image.py` 的 `EC_EXTRA_BLOCK`（從該檔解析，不另抄一份）。少了其中任何一項就斷電。EC 危險正則沒有拿掉。`Loaded kernel module` 若是被禁止的 EC 模組（功能 consumers、其他 transport、`EC_EXTRA_BLOCK` 的每一項；檔名的 `-` 與 `_` 視為同一個名字）也斷電。
+   允許的兩種例外只是 LPC 傳輸的 probe／registered，以及核心自己建立、但 MFD 驅動仍被封鎖時那個未綁定的平台裝置 `cros-ec-dev`。
+   `cros_ec_dev` 模組、keyb、chardev、sysfs、debugfs，以及「ChromeOS EC device at」和 `/dev/cros_ec` 仍然斷電。
+   未修改的看守程式不能拿來配 drain 映像。看守程式不是 host-command 的允許清單，也不是安全證明。
+8. **自建核心 `.config`、`bzImage` 內嵌 `IKCFG` 與 `System.map` 安全檢查**（`builder/lib/devprofile.py check-kconfig`）：只在 `GBOS_DEV_KERNEL_DIR`（例如 `profiles/amd-hx370`）時執行。這個閘門要抓的是開發者自己的核心設定裡的失誤（驅動被編成 built-in，或內建 cmdline 蓋掉 bootloader 的參數）。刻意改寫二進位來騙過閘門的人本來就控制這台機器，不在範圍裡。含糊的映像仍然拒絕，因為失誤也藏在同樣的地方：超過一個說得通的 payload 或 IKCFG、HdrS 指名的 payload 不是 `scripts/extract-ikconfig`（kernel/common `3938c8d97142`：先找原始 `IKCFG_ST`+gzip，再依序試 gzip、xz、bzip2、lzma、lzo、lz4 legacy、zstd）會採用的那一份，或 `.symtab` 與執行期 kallsyms 對要查的符號不一致。執行期 kallsyms 優先。解得出的格式是 gzip、LZ4 legacy、xz、lzma-alone、zstd、bzip2、LZO（`CONFIG_KERNEL_LZO`，以 `lzop -dc` 解碼，沒有 `lzop` 時拒絕）與未壓縮 ELF；永遠不能 pin 的格式（LZO、legacy LZ4）優先於「payload 範圍超出檔尾且解不出任何內容」這條：這兩種格式即使超出檔尾而解不出內容，也停止建置、不能 pin；認不得的 magic 一律拒絕。掃描路徑對 xz、lzma 在出錯時把已解出的明文留到尾端（先以 4096 byte 取，沒解完就把尾段改成每次 1 byte，最多少錯誤當下那 1 byte），IKCFG 是否算命中比照 `dump_config`（`IKCFG_ST` 後面是一個 zcat 結束碼不是 1 的 gzip，不要求 `IKCFG_ED`），所以 IKCFG 在 member 明文尾端時和 `unxz`／`unlzma` 一樣算候選；bzip2 仍用 4096／64 byte 分段。誠實 member 解到結尾就用第一輪的完整輸出。`dump_config` 的模擬則和腳本一樣，gzip CRC 錯誤（zcat 結束碼 1）不算命中。切片必須是單一 member，尾端最多 4 byte 的未壓縮長度。解壓後若有兩對 `IKCFG_ST`／`IKCFG_ED` 也拒絕。
    - **已知限度（合成的壓縮尾，不在威脅模型裡）**：上面這段是在抓開發者自己 `.config` 的失誤，不是在證明閘門跟一份刻意拼出來的核心逐 byte 相同。下面幾種合成形狀不拿來當那個主張：gzip 明文尾端沒有 `IKCFG_ED`（`dump_config` 只在 `IKCFG_ST` 後面接到一個 zcat 結束碼不是 1 的 gzip member 時算命中；少掉的若不止那個結束標記，不在此列）；bzip2 的壓縮尾（`recover_tail` 關著，仍是 4096／64 byte 分段，不會像 xz／lzma 把出錯前的明文再逐 byte 補回來）；xz 的 `"none"` 夾具（IKCFG 前面沒有較早的明文，第一輪 4096 byte 排空是空的）；以及「最多少 1 byte」這句話（只描述 xz／lzma 第二輪裡，錯誤發生當下正在讀的那 1 byte；bzip2 不適用，`unxz`／`unlzma` 仍可能把那 1 byte 寫出來）。這些是合成夾具，不是可以開機的核心。
    - 要求 `CONFIG_KALLSYMS=y`（否則 `initcall_blacklist=` 無效）以及 `CONFIG_MODULES=y`、`CONFIG_MODULE_UNLOAD=y`、`CONFIG_MODVERSIONS=y`、`CONFIG_IKCONFIG=y`、`CONFIG_IKCONFIG_PROC=y`；
    - 拒絕 `CONFIG_CMDLINE_OVERRIDE=y`／`CONFIG_CMDLINE_FORCE=y` 以及 `CONFIG_BOOT_CONFIG_EMBED=y`／`CONFIG_BOOT_CONFIG_FORCE=y`（避免丟棄或覆寫 ESP 開機參數與 initrd bootconfig），並檢查 `CONFIG_CMDLINE` 內不得含有 `--`（`kernel/params.c` 會在 `--` 停止解析後續的開機參數）、禁用前綴（同時將參數鍵名的 `-` 與 `_` 正規化比對，攔截 `spi_intel.writeable=1`、`pci_stub.ids=` 等別名）、`stock_drop`／`quiet_drop` 項目或與 safety/profile tail 衝突的鍵；
@@ -47,9 +57,10 @@ Googlebook（lapis）映像本來是給另一台機器用的，裡面帶著那�
 
 `GBOS_EC=sensors,typec,buttons`（可以只選其中幾項；只稽核過 KANO，其他機型的設定會被拒絕）是給想要自動旋轉、USB-C 的 USB3／DisplayPort、側邊音量鍵的人用的。
 它會改寫上面第 2 層的保證：從「沒有任何 EC 裝置被註冊，送不出 EC 指令」，變成
-「**只有下面這組經過稽核的核心驅動會送 EC 指令，其中沒有任何指令會寫 EC 或周邊的 flash、CBI、I²C，或讓 EC 重開**」。
+「**只有下面這組經過稽核的核心驅動會送 EC 指令。就這組指令而言，沒有寫 EC 或周邊的 flash、CBI、I²C，也沒有讓 EC 重開**」。
+這不是「完全不改變任何 EC 狀態」：`GET_NEXT_EVENT`、`HOST_SLEEP_EVENT`、`RWSIG_ACTION(CONTINUE)` 的分類見指令表。
 這組包括放行的模組，以及每個選項本來就放行、在變體下也會走 EC 的 `cros_kbd_led_backlight`（見稽核表）。
-它們送出的寫入類指令只改 EC 的 RAM 狀態（EC 重開就恢復）。
+它們送出的寫入類指令只改 EC 的 RAM 狀態（EC 重開就恢復）。`GBOS_EC=drain` 不是這三種功能，見下面那一節。
 
 **放行的模組**（其餘全部維持封鎖）：
 
@@ -66,35 +77,78 @@ Googlebook（lapis）映像本來是給另一台機器用的，裡面帶著那�
 `cros_typec_switch`、`cros_ec_ucsi`、`cros_ec_spi`、`cros_ec_i2c`、`cros_ec_ishtp`、`cros_ec_usb`，以及 TPM、SPI flash（`spi_intel`、`spi_intel_pci`、`mtd`、`spi_nor`、`spidev`）、`thunderbolt`
 （USB4 retimer 的 NVM 更新路徑）、gsmi、nvram、`chromeos_acpi`。變體另外封鎖這份 lapis 沒有、但將來的 vendor_dlkm 可能加進來的
 `gpio_cros_ec`、`cros_ec_hwmon`、`cros_ec_wdt`、`rtc_cros_ec`、`cros_ec_uart`、`cros_ec_rpmsg`。
-`cros_ec_dev` 仍然會建立 chardev、sysfs、debugfs 等子裝置，但對應的驅動被封鎖，所以 **`/dev/cros_ec`、`/dev/cros_fp`、
-`/dev/cros_ish` 永遠不存在**。vendor 裡會寫 CBI、改防寫、做 I²C passthru、切電池的 `ec-executor` 等程式只走這些 chardev，
-所以仍然一個指令都送不出去。
+功能變體裡 `cros_ec_dev` 仍然會建立 chardev、sysfs、debugfs 等子裝置，但對應的驅動被封鎖，所以 **`/dev/cros_ec`、`/dev/cros_fp`、
+`/dev/cros_ish` 不存在**。vendor 裡會寫 CBI、改防寫、做 I²C passthru、切電池的 `ec-executor` 等程式只走這些 chardev，
+所以從這些節點仍然一個指令都送不出去。
 
-**稽核：放行的驅動會送的 EC 指令**（來源：kernel/common `3938c8d97142`，即 lapis 核心的 commit；檔名:行號）
+### 實驗選項 `GBOS_EC=drain`（不是預設，尚未實機驗收）
+
+`drain` 不能和 `sensors`、`typec`、`buttons` 並列。它只解除 `cros_ec` 與 `cros_ec_lpcs`，並使用本來就放行的 `cros_ec_proto`。
+`cros_ec_dev`、`cros_ec_keyb`、`cros_ec_chardev`、`cros_ec_sysfs`、`cros_ec_debugfs` 以及其他 consumers／transports 維持封鎖，六個 `EC_EXTRA_BLOCK` 照加。
+不把 `cros_ec_dev` 放進全域 `EC_NEVER`，因為上面三種功能變體需要它。drain 不載入 `cros_ec_dev`，所以 MFD 的那些子裝置不建立；transport/core 自己的普通 sysfs 節點可以存在。raw EC chardev、EC 指令屬性、EC debugfs 不可以。SELinux 維持 enforcing，不要為這些介面加 allow。
+
+drain 會建立 transport/core 裝置並消費 MKBP 佇列，所以預設映像「沒有 EC 裝置、送不出 EC 指令」的保證不適用。
+`GET_NEXT_EVENT` 是消費性讀取。`HOST_SLEEP_EVENT` 會改休眠追蹤與計時器。`RWSIG_ACTION(CONTINUE)` 是切換執行映像的請求。
+對公開原始碼的稽核：這條路徑沒有 flash、CBI、電池或充電的寫入指令；休眠失敗的復原可以重設 AP，進行中的寫入會丟掉。
+
+啟用之前要先確認實際的模組原始碼與相依、EC 與 AML 版本，並在可丟棄資料的 USB 測試環境（不要用機器主人的內建碟）核對硬體 S0ix、真實電源鍵，以及長時間黑畫面。
+
+這份 checkout 沒有出貨的 vendor_dlkm `modules.dep`。公開原始碼裡 consumer 依賴 core，不是反過來，所以沒有把 `cros_ec_lpcs` 加進 early-boot modprobe；既有的 GOOG0004 uevent 路徑負責載入。QEMU 沒有 EC，停在 `EC ID not detected` 不能當成 drain 或 `HOST_SLEEP` 通過。
+
+指令表依實際可達路徑分開：最小 drain 的正常路徑、錯誤路徑、legacy 路徑，以及功能 consumers。函式庫裡出現某個指令名稱，只代表函式庫認得它。`GET_FEATURES`、`READ_MEMMAP`、`MOTION_SENSE_CMD(DUMP)`、`PCHG_COUNT` 要等 consumer 或 MFD，列在功能 consumers，最小 drain 不送。`MKBP_STATE` 只列在 legacy 路徑：副作用未驗證；MKBP 不支援（沒有 `GET_NEXT_EVENT`）時拒絕啟用 drain。
+
+**稽核來源**：kernel/common `3938c8d97142`（lapis 核心的 commit；檔名:行號）。
+
+**最小 drain，正常路徑**（`cros_ec`、`cros_ec_lpcs`，以及已放行的 `cros_ec_proto`；`GET_NEXT_EVENT` 有支援）
+
+| 時機 | 指令 | 性質 |
+|---|---|---|
+| 每次進入 core register，協商前 | `RWSIG_ACTION(CONTINUE)`（`cros_ec_proto.c:306`） | 狀態改變請求，可要求 EC 立刻進 RW，不是 flash 寫入。成功時最多 8 次；`INVALID_COMMAND`（不支援，或已經在 RW）就停；連續的傳輸錯誤也停。brya 快照 B 是 EFS2，`CONFIG_RWSIG` 沒開，所以預期 `INVALID_COMMAND`，但靜態分析不能證明這台機器一定這樣回 |
+| probe 能力協商；`INTERFACE_READY` 也可能重跑 | `GET_PROTOCOL_INFO` | 只讀 protocol／buffer 能力。主 EC 成功後還可能查 PD passthrough offset；那次查詢不載入 Type-C consumer，也不寫 PD 韌體 |
+| probe／能力重查 | `GET_CMD_VERSIONS`（分別查 `GET_NEXT_EVENT`、`HOST_SLEEP_EVENT`） | 只讀版本遮罩 |
+| probe／能力重查 | `HOST_EVENT_GET_WAKE_MASK` | 只讀。不支援時只設定 Linux 端預設值，不改送 SET_MASK |
+| register 後，以及休眠／喚醒 | `HOST_SLEEP_EVENT`（`cros_ec.c:183`） | 狀態改變：清理或重同步 EC 的 sleep lifecycle。計時器與 AP reset 見下面「休眠」 |
+| 初始 drain、每次 MKBP notify、resume drain | `GET_NEXT_EVENT` | 消費性讀取，不是只讀 snapshot。讀出並消費 EC RAM 的事件，直到沒有更多事件；失敗不保證已經排空 |
+| `cros_ec_lpcs` | 只做傳輸；收到 EC panic 通知時關機（`cros_ec_lpc.c:458`） | 正常 shutdown／remove 不新增 EC host command。PANIC notify 讓 AP 做保護性關機後直接返回 |
+| 已取回的 MKBP payload | 由 payload 解碼普通 host event | 不另送讀 host-event 的指令。`EC_HOST_EVENT_INTERFACE_READY` 重跑 protocol／版本／wake-mask 查詢，不再跑 RWSIG，也不再跑 register 的 sleep-clear |
+
+**最小 drain，錯誤路徑**（正常 probe 成功時不送這些指令）
+
+| 條件 | 指令 | 性質 |
+|---|---|---|
+| 主 EC protocol query 失敗 | `HELLO` v0 | 只讀握手，走 legacy protocol fallback |
+| `GET_NEXT_EVENT` 回 `INVALID_VERSION` | `GET_CMD_VERSIONS(GET_NEXT_EVENT)`，取得非零 mask 後重試 `GET_NEXT_EVENT` | 查版本是只讀。重試仍是消費性讀取。查詢失敗或零 mask 不會把原本的支援狀態降成零 |
+| 任一適用指令回 `EC_RES_IN_PROGRESS` | `GET_COMMS_STATUS` | 只讀進度。這是錯誤與非同步完成分支 |
+
+**最小 drain，legacy 路徑**（MKBP 不支援時拒絕啟用 drain）
+
+| 條件 | 指令 | 性質 |
+|---|---|---|
+| 沒有 `GET_NEXT_EVENT` 支援，卻有可觸發的 IRQ | `MKBP_STATE` v0（`cros_ec_proto.c:787–850`、`cros_ec.c:110–151,246–257`） | 未驗證副作用。Linux 用它讀鍵盤矩陣，它不是按鈕 drain 的替代品。舊 EC handler 在這條指令上的消費副作用不能只靠這個 caller 證明，所以這裡不給無副作用的只讀保證。正常的 supported-MKBP ACPI notify、初始 drain 與 resume drain 都有支援守衛，不送 `MKBP_STATE`。候選機的 MKBP 不支援時拒絕啟用 drain，這條分支不能當成 drain 成功。brya 快照 B 已註冊 `GET_NEXT_EVENT` v0–v3；靜態分析不能把 `MKBP_STATE` 算成這台 KANO 已證明會送出的指令。CREC 的 `_CRS` 有沒有 IRQ 要看這台機器的 AML |
+
+**功能 consumers**（drain 不放行這些模組。這些列不是最小 drain 的可達路徑）
 
 | 模組 | 指令 | 性質 |
 |---|---|---|
-| `cros_ec` | `HOST_SLEEP_EVENT`（`cros_ec.c:183`，休眠／喚醒時）、`RWSIG_ACTION(CONTINUE)`（`cros_ec_proto.c:306`，註冊時一次） | 休眠通知，見下面「休眠」；RWSIG 在 brya 的 EFS2 EC 上回 `INVALID_COMMAND` |
-| `cros_ec_proto`（已放行的函式庫） | `HELLO`、`GET_PROTOCOL_INFO`、`GET_CMD_VERSIONS`、`GET_FEATURES`、`GET_NEXT_EVENT`、`HOST_EVENT_GET_WAKE_MASK`、`MKBP_STATE`、`READ_MEMMAP`、`GET_COMMS_STATUS`、`MOTION_SENSE_CMD(DUMP)` | 只讀 |
-| `cros_ec_lpcs` | 只做傳輸；收到 EC panic 通知時關機（`cros_ec_lpc.c:458`） | — |
-| `cros_ec_dev` | `PCHG_COUNT`（`cros_ec_dev.c:317`） | 只讀 |
+| `cros_ec_proto`（函式庫認得；最小 drain 不送） | `GET_FEATURES`、`READ_MEMMAP`、`MOTION_SENSE_CMD(DUMP)` | 要等 consumer。LPC probe 直接讀 EC memmap ID，那是 I/O read，不是 `EC_CMD_READ_MEMMAP` |
+| `cros_ec_dev` | `PCHG_COUNT`（`cros_ec_dev.c:317`） | 只讀。drain 不載入這個模組 |
 | `cros_ec_sensorhub` | `MOTIONSENSE`：`INFO`、`FIFO_INFO`、`FIFO_READ`、`FIFO_INT_ENABLE`（`cros_ec_sensorhub_ring.c:126`） | 讀，或改 EC RAM 的 FIFO 中斷設定 |
 | `cros_ec_sensors_core`、`cros_ec_sensors`、`cros_ec_lid_angle` | `MOTIONSENSE`：`DATA`、`EC_RATE`、`SENSOR_ODR`、`SENSOR_RANGE`、`SENSOR_OFFSET`、`SENSOR_SCALE`、`PERFORM_CALIB`、`FIFO_FLUSH`、`LID_ANGLE` | 改取樣率、量程、校正值，存在 EC RAM，不碰 flash |
 | `cros_ec_typec` | `TYPEC_STATUS`、`TYPEC_DISCOVERY`、`USB_PD_PORTS`、`USB_PD_MUX_INFO`、`USB_PD_MUX_ACK`、`TYPEC_CONTROL`（`ENTER_MODE`、`EXIT_MODES`、`CLEAR_EVENTS`、`SEND_VDM_REQ`）、`USB_PD_CONTROL`（使用者寫 typec 的 `data_role`／`power_role` 時做角色交換）、`TYPEC_VDM_RESPONSE`（`cros_typec_vdm.c:32,70`，讀對接裝置回的 VDM） | PD 的執行期動作：進出 DP 模式、角色交換、送 DP 的 VDM 給對接的裝置；沒有韌體更新 |
 | `cros_usbpd_notify` | `PD_HOST_EVENT_STATUS`（`cros_usbpd_notify.c:77`） | 只讀 |
 | `cros_ec_keyb` | `MKBP_INFO`（`cros_ec_keyb.c:368`） | 只讀 |
-| `cros_kbd_led_backlight`（每個選項都放行，給鍵盤背光用） | `PWM_GET_KEYBOARD_BACKLIGHT`、`PWM_SET_KEYBOARD_BACKLIGHT`（`cros_kbd_led_backlight.c:146,164`）。只在變體下：EC 回報 `EC_FEATURE_PWM_KEYB` 時，`cros_ec_dev` 會建立 `cros-keyboard-leds` 子裝置（`cros_ec_dev.c:106,150-152`），這個驅動也綁上它 | 讀、改 EC RAM 裡的背光 PWM，不碰 flash。這個子裝置沒辦法單獨封鎖；預設映像沒有 EC 裝置，背光只走 ACPI GOOG0002。同一個 LED 名稱會註冊兩次（第二個自動改名），idc 用的是 GOOG0002 那條路徑；變體下沒有在實機驗證過 |
+| `cros_kbd_led_backlight`（每個選項都放行，給鍵盤背光用） | `PWM_GET_KEYBOARD_BACKLIGHT`、`PWM_SET_KEYBOARD_BACKLIGHT`（`cros_kbd_led_backlight.c:146,164`）。EC 回報 `EC_FEATURE_PWM_KEYB` 時，`cros_ec_dev` 會建立 `cros-keyboard-leds` 子裝置（`cros_ec_dev.c:106,150-152`），這個驅動也綁上它 | 讀、改 EC RAM 裡的背光 PWM，不碰 flash。這個子裝置沒辦法單獨封鎖。drain 不載入 `cros_ec_dev`，所以不建立這顆 cell，也不新增這兩條 EC PWM 指令；背光仍走 ACPI GOOG0002。預設映像沒有 EC 裝置。同一個 LED 名稱會註冊兩次（第二個自動改名），idc 用的是 GOOG0002 那條路徑；變體下沒有在實機驗證過 |
 
-沒有任何放行的驅動會送 `FLASH_*`、`REBOOT_EC`、`I2C_PASSTHRU`、`SET_CROS_BOARD_INFO`、`VBNV_CONTEXT`、`BATTERY_CUT_OFF`、
-`CHARGE_CONTROL`、`USB_PD_FW_UPDATE`、`EXTERNAL_POWER_LIMIT` 或 `PWM_SET_FAN_DUTY`。vendor_dlkm 的這些 `.ko` 是另一棵樹編的
+就這張表裡會被放行的驅動所送的指令而言，沒有 `FLASH_*`、`REBOOT_EC`、`I2C_PASSTHRU`、`SET_CROS_BOARD_INFO`、`VBNV_CONTEXT`、`BATTERY_CUT_OFF`、
+`CHARGE_CONTROL`、`USB_PD_FW_UPDATE`、`EXTERNAL_POWER_LIMIT` 或 `PWM_SET_FAN_DUTY`。這不是「完全不寫任何 EC 狀態」：`GET_NEXT_EVENT` 消費佇列，`HOST_SLEEP_EVENT` 改休眠追蹤與計時器，`RWSIG_ACTION(CONTINUE)` 是切換執行映像的請求。vendor_dlkm 的這些 `.ko` 是另一棵樹編的
 （scmversion `ga3bbc4527b7b`，不公開），稽核依據的是同一個核心版本的公開原始碼；這些模組的字串裡沒有原始碼以外的 EC 功能
 （`cros-ec-proto.ko` 裡的整張指令名稱表是 tracepoint 用的）。換 vendor_dlkm 或 lapis 版本時要重新稽核。
+研究引用的 Linux master `2a08195e4db5` 在 `IN_PROGRESS` 完成路徑還可能送 `RESEND_RESPONSE`；lapis 這份 `3938c8d97142` 的表沒有這條。它不改變上面對 MKBP 消費的分類。
 
-**休眠（最重要的使用風險）**：載入 `cros_ec_lpcs` 後，核心每次休眠都會告訴 EC「進入 S0ix」。EC 等 10 秒；如果 SoC 沒有真的進入
-S0ix（SLP_S0# 沒拉起），EC 會把 AP 叫醒；AP 醒來後 10 秒內沒有回報「已喚醒」，EC 就會強制重設 AP（`power/host_sleep.c`）。
-AP 正常醒來時只會多一次喚醒，核心記一行 `EC detected sleep transition timeout`；只有 AP 卡住時才會被重設。
-所以 **這個變體要在「目前的映像量到 S0ix」之後才使用**，並且先從隨身碟測試，不要直接裝到內建碟。核心沒有參數可以關掉這個偵測
-（`suspend_timeout_ms` 只在被封鎖的 `cros_ec_debugfs` 裡）。
+**休眠（最重要的使用風險）**：載入 `cros_ec_lpcs` 之後，核心在休眠時送 `HOST_SLEEP_EVENT`。第一次轉換逾時的預設是 10 秒，到時送 `HANG_DETECT`，並再設一顆預設 10 秒的硬計時器；沒被取消的話可以重設 AP。持續失敗可能強制關機。這是資料遺失，和變磚不是同一件事。
+任何 chipset 的 suspend／resume／reset／shutdown hook 都可以取消那顆硬計時器；S0ix resume 通知也會取消轉換計時器。「Android 已經恢復」不能證明計時器是安全的。`PM: suspend entry (s2idle)` 不能證明硬體真的進了 S0ix。
+`suspend_timeout_ms` 只在被封鎖的 `cros_ec_debugfs` 裡，不是預設的修法。
+所以 **drain 和功能變體都要在量到硬體 S0ix 之後才考慮啟用**，並且先在可丟棄資料的 USB 上測，不要直接裝到內建碟。這次變更沒有做那項實機驗收。
 
 **沒有在 build 時驗證的部分**：`sensors` 為了自動旋轉，就地改了 vendor 的 framework RRO（`config_supportAutoRotation`）。
 PackageManager 是否仍啟用這個 overlay，build 與 QEMU 都沒有檢查；在實機上用 `cmd overlay list` 確認。如果它被停用，同一個
@@ -123,7 +177,7 @@ overlay 裡的自動亮度、power_profile 等設定也會一起消失。
   拿掉封鎖；將來要放行 FPMCU 的傳輸，必須先處理這個 APEX 的更新程式。
 - **system 分割區的 `gscutil.rc`**：原映像開機時會跑 `perform-os-startup`（GSC／Cr50 韌體更新）。system 分割區維持原樣，
   這條路徑只靠 TPM 模組（`tpm`、`tpm_tis*`、`tpm_tis_i2c_cr50`）被封鎖而失敗；放行 TPM 之前必須先處理它。
-- **system 分割區的 OS 更新**（update_engine）維持原樣。它更新的是 Android 分割區，不是韌體；套用 Google 的 OTA 會蓋掉這裡的修改，結果未測試。
+- **system 分割區的 OS 更新**（update_engine）：vendor 的 `etc/init/gbos-no-ota.rc`（每個 profile 都有，不在 `profiles/kano`）用 `/system/etc/init/update_engine.rc` 啟用它的同一個觸發條件 `ro.boot.slot_suffix=*`，由 init 執行 `stop update_engine`；system 的 rc 先解析，所以這個 action 在 enable 之後執行，停止服務（rc 檔裡只有 `stop update_engine`，沒有重寫該 service；能否阻止它之後被再次啟用尚未在實機驗證）。vendor rc 不能用 `init.svc.update_engine` 當觸發條件（init 以 unexported property 拒絕），也沒有重寫那個 service（init 拒絕跨 treble boundary 的覆寫）。已驗證：QEMU 開機中 vendor action 有執行，`update_engine` 從未啟動。未在實機驗證：它在裝置上完全不會執行、設定精靈之後會走完、GMS 的反應。Google 的 payload 仍用沒被改過的 `/system/etc/security/otacerts.zip` 驗簽；推測（未實機驗證）這個映像套用不完：增量包核對的來源區塊在被修改過的 vendor（啟用 IFMA 修補時還有 system、system_ext），完整包要經由被封鎖的 boot-control／crossystem 切換 slot。開機選單不會跟著 Google boot-control 的 slot 切換；Google OTA 和專案的更新工具 `install/gbos-update.py` 會爭用 inactive slot。Play 商店更新 app 不經過 update_engine。
 
 ## 資料安全取捨（日常使用前要知道）
 

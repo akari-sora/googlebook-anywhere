@@ -15,6 +15,23 @@
 
 證據來源的寫法：`REPORT.md:行號` 指研究報告 `research/REPORT.md`（只在 private 研究 repo 裡；公開版沒有 `research/`）。「產物」指 2026-10-12 對 `work/img/` 與 `downloads/` 既有檔案做的量測，量測程式在 `../research/base-analysis/`。
 
+## lapis 16658739（CL3B.260622.276.R4）
+
+`GBOS_LAPIS_BUILD=16658739` 選取 `builds/16658739.sh` 的逐位元組釘選；未設定時仍使用 16452207。
+新釘選的 recovery ZIP 是 7728864700 bytes；索引的 `filesize` 19069493760 是解壓後映像的大小。
+stock AVB rollback index 是 1369，重簽時保留它。kernel 與 vendor boot cmdline 和 16452207 相同，
+所以沿用既有的 kernel／module／cmdline 雜湊；vendor、system_ext、system 與 APEX 身分由新 build 的獨立釘選選取。
+
+新 base 的參考工具是 Ubuntu dosfstools 4.2-1.1build1、GNU mtools 4.0.49 與本腳本原有的 pinned otatools。
+GNU mtools 原始檔：`https://ftp.gnu.org/gnu/mtools/mtools-4.0.49.tar.gz`，
+SHA-256 `10cd1111da87bf2400a380c1639a6cba8bfb937a24f9c51f5f88d393ae5f6f76`。
+16658739 的 FAT 格式化另加 `mkfs.fat --invariant`，固定 Ubuntu 4.2 未依 `SOURCE_DATE_EPOCH` 固定的 volume-label 時間戳，
+同時保留原 volume serial。實際格式化階段的回歸測試會跨時鐘執行兩次並比對全部位元組。
+Microdroid 的磁碟、kernel 包裝與 AVB metadata 改變，因此 IFMA 使用 `builder/ifma/builds/16658739.manifest.json`。
+其中只有四個巢狀容器 SHA 欄位更新；guest ELF、所有候選指令位置、理由、17 個 host 修補目標與舊 build manifest 均不變。
+所有中間產物與原 AVB key 的最終映像都必須通過嚴格雜湊檢查；`--allow-drift` 只用於維護者量測新 build。
+以下歷史重建說明與表格的 16452207 數值保留作為該 build 的參考。
+
 ## 檔案
 
 | 檔案 | 用途 |

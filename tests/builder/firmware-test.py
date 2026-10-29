@@ -1409,9 +1409,13 @@ class FirmwareTests(unittest.TestCase):
         self.base_vendor.rmdir()
         self.fails("missing original vendor module tree")
 
-    def vendor_gate(self):
+    def vendor_gate(self, *, patch_ifma=False):
         script = (ROOT / "builder/vendor.sh").read_text()
         block = script.split('echo "check module firmware"\n', 1)[1].split('echo "replace ESP initrd"', 1)[0]
+        if patch_ifma:
+            start = script.index('PATCH_IFMA=$(python3 ')
+            stop = script.index('echo "re-sign vbmeta"', start)
+            block = script[start:stop] + block
         # Replace only EROFS extraction. The real checker, profile loader, trees,
         # initrd and shell set -e are used; a removed checker lets PUBLISHED run.
         setup = "set -euo pipefail\n"
@@ -1421,7 +1425,9 @@ class FirmwareTests(unittest.TestCase):
             setup += f"{key}={shlex.quote(str(value))}\n"
         setup += '''
 python3() {
-    if [[ "$1" = */lp-dump.py ]]; then
+    if [[ "$1" = -c && "$2" = *ifma.rebuild_system_partition* ]]; then
+        echo SYNTHETIC_SYSTEM_REBUILD
+    elif [[ "$1" = */lp-dump.py ]]; then
         [ "$2" = "$IMG" ] && [ "$3" = "$TMP" ]
         printf '%s\\n' "$4" >> "$TMP/partitions"
     else
@@ -1433,6 +1439,22 @@ ot() { [ "$1" = fsck.erofs ] && [ -d "${2#--extract=}" ]; }
         return subprocess.run(["bash", "-c", setup + block + '\necho PUBLISHED\n'],
                               capture_output=True, text=True,
                               env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"})
+
+    def test_ifma_cleanup_keeps_both_vendor_trees_until_firmware_check(self):
+        self.assertTrue(devprofile.load(self.profile)["cpu_compat"]["patch_ifma"])
+        self.required_ko(self.system, "lib/modules/audio.ko", "ifma-wiring.bin")
+        self.fw("ifma-wiring.bin")
+        proc = self.vendor_gate(patch_ifma=True)
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertIn("SYNTHETIC_SYSTEM_REBUILD", proc.stdout)
+        self.assertIn("firmware check: PASS", proc.stdout)
+        self.assertTrue(self.base_vendor.is_dir())
+        self.assertTrue(self.vendor.is_dir())
+        self.assertTrue(json.loads((self.out / "firmware-report.json").read_text())["ok"])
+
+    def test_missing_final_vendor_tree_fails_closed(self):
+        shutil.rmtree(self.vendor)
+        self.fails("missing final vendor firmware directory")
 
     def test_vendor_wiring_runs_gate_before_publish(self):
         self.required_ko(self.system, "lib/modules/audio.ko", "wiring.bin")

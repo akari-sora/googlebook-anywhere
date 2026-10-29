@@ -284,6 +284,9 @@ build_prop_set = [["vendor.hwc.drm.enable_color_pipeline", "true", "false"],
 kbd_backlight_leds = ""
 power_button = "stock"
 
+[cpu_compat]
+patch_ifma = true
+
 [hooks]
 vendor = "vendor.py"
 

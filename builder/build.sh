@@ -8,6 +8,8 @@
 # profile's model.image_name, googlebook-kano.img for KANO), GBOS_QEMU, GBOS_QEMU_LIB,
 # GBOS_OVMF_CODE, GBOS_OVMF_VARS, GBOS_QEMU_SECONDS (200), GBOS_ALLOW_FIRMWARE_DRIFT=1, GBOS_SKIP_SPACE_CHECK=1,
 # GBOS_SKIP_SELFTEST=1 (no KVM, e.g. Docker on macOS: the image is built but NOT booted in QEMU).
+# APK/APEX validation requires zipalign with -P support: GBOS_ZIPALIGN, otherwise
+# <GBOS_OTATOOLS>/bin/zipalign or PATH. Minimal retained otatools may need Android Build Tools 35+.
 # GBOS_KMOD_AC=<ac.ko from builder/kmod/build-ac.sh>: required when the profile lists kmods = ["ac"] (KANO does: the ACPI
 # AC adapter driver, so Android shows the charger); install/install.sh builds it.
 # GBOS_KMOD_WAKEFILTER=<gbos_wakefilter.ko from builder/kmod/build-gbos_wakefilter.sh>: required when the profile lists
@@ -24,7 +26,8 @@
 # from tools/minigbm/build-libminigbm-gralloc.sh). Its sha256 must match gralloc.sha256. Profiles without the table
 # (kano, generic-x86) do not read that file.
 # GBOS_EC: opt-in ChromeOS EC features, a comma list of sensors (accelerometers -> auto-rotate), typec (USB-C
-# USB3/DisplayPort), buttons (side volume keys). Empty (default): the EC stays unreachable. See docs/SAFETY.md.
+# USB3/DisplayPort), buttons (side volume keys), or exactly drain (experimental: transport/core only).
+# Empty (default): the EC stays unreachable. drain,sensors and any duplicate or empty item are refused. See docs/SAFETY.md.
 # GBOS_TEST_AUTOOFF (developer-only; install/install.sh refuses it): empty = off. Otherwise seconds 60..7200.
 # A TEST image powers off only when /vendor/etc/kano-autooff.nonce and /data/kano-autooff.nonce are the same
 # 33 bytes (32 lowercase hex + LF). The session copies <out>/image/autooff.nonce onto the stick userdata
@@ -32,6 +35,18 @@
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 die() { echo "build.sh: $*" >&2; exit 2; }
+# Empty, exactly "drain", or sensors|typec|buttons with no duplicates and no empty items.
+# drain is exclusive: drain,sensors and buttons,drain do not match.
+gbos_ec_ok() {
+    local ec="$1" n u
+    if [ -z "$ec" ] || [ "$ec" = "drain" ]; then
+        return 0
+    fi
+    [[ "$ec" =~ ^(sensors|typec|buttons)(,(sensors|typec|buttons))*$ ]] || return 1
+    n=$(printf '%s\n' "$ec" | tr ',' '\n' | grep -c .)
+    u=$(printf '%s\n' "$ec" | tr ',' '\n' | sort -u | grep -c .)
+    [ "$n" = "$u" ]
+}
 export GBOS_PROFILE="${GBOS_PROFILE:-$HERE/../profiles/kano}"
 : "${GBOS_BASE:?}" "${GBOS_INITRD:?}" "${GBOS_OUT:?}" "${GBOS_OTATOOLS:?}" "${GBOS_AVB_KEY:?}"
 [ -n "${GBOS_INPUTS:-}" ] || { [ -n "${GBOS_FIRMWARE:-}" ] && [ -n "${GBOS_AUDIO_SRC:-}" ]; } \
@@ -46,9 +61,17 @@ export GBOS_OVMF_VARS="${GBOS_OVMF_VARS:-/usr/share/edk2/x64/OVMF_VARS.4m.fd}"
 
 echo "== preflight"
 [[ "$GBOS_IMAGE_NAME" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*\.img$ ]] || die "GBOS_IMAGE_NAME must be a plain file name ending in .img"
-[[ "${GBOS_EC:-}" =~ ^((sensors|typec|buttons)(,(sensors|typec|buttons))*)?$ ]] \
-    || die "GBOS_EC must be empty or a comma list of sensors, typec, buttons"
-[ -z "${GBOS_EC:-}" ] || echo "NOTE: GBOS_EC=$GBOS_EC: this image lets audited EC drivers talk to the EC (docs/SAFETY.md)"
+gbos_ec_ok "${GBOS_EC:-}" \
+    || die "GBOS_EC must be empty, drain, or a comma list of sensors, typec, buttons"
+if [ -n "${GBOS_EC:-}" ]; then
+    gbos_ec_model=$(python3 "$HERE/lib/devprofile.py" get "$GBOS_PROFILE" model.id)
+    [ "$gbos_ec_model" = kano ] || die "GBOS_EC is audited for the KANO only"
+    if [ "$GBOS_EC" = drain ]; then
+        echo "NOTE: GBOS_EC=drain: exclusive experimental KANO-only value (docs/SAFETY.md)"
+    else
+        echo "NOTE: GBOS_EC=$GBOS_EC: this image lets audited EC drivers talk to the EC (docs/SAFETY.md)"
+    fi
+fi
 # Empty = off. A non-empty value must be an integer 60..7200 (canonical decimal, no leading zeros).
 # Check the text before any arithmetic: bash wraps 2^64+60 to 60, and 10#0060 becomes 60.
 if [ -n "${GBOS_TEST_AUTOOFF:-}" ]; then
@@ -143,6 +166,12 @@ sys.exit(0 if p.get("gralloc") else 3)
     fi
 fi
 for c in python3 mcopy mtype mdir zstd sha256sum cp readlink cmp; do command -v "$c" >/dev/null || die "missing command: $c"; done
+PATCH_IFMA=$(python3 "$HERE/lib/devprofile.py" get "$GBOS_PROFILE" cpu_compat.patch_ifma)
+APEX_KEY_INFO=""
+if [ "$PATCH_IFMA" = true ]; then
+    command -v openssl >/dev/null || die "missing command: openssl (cpu_compat.patch_ifma = true)"
+    export GBOS_APEX_KEYS_DIR="${GBOS_APEX_KEYS_DIR:-$(dirname "$GBOS_AVB_KEY")/apex-keys}"
+fi
 if [ "${GBOS_SKIP_SELFTEST:-}" = 1 ]; then
     echo "WARNING: GBOS_SKIP_SELFTEST=1: the image will NOT be booted in QEMU before you write it"
 else
@@ -160,6 +189,11 @@ if [ "${GBOS_SKIP_SPACE_CHECK:-}" != 1 ]; then
 fi
 avail=$(awk '/^MemAvailable:/ {print $2}' /proc/meminfo)
 [ "${GBOS_SKIP_SELFTEST:-}" = 1 ] || [ "$avail" -ge $((9 * 1024 * 1024)) ] || echo "warning: under 9 GB of free memory; the QEMU self-test gives the guest 8 GB"
+if [ "$PATCH_IFMA" = true ]; then
+    APEX_KEY_INFO=$(python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import ifma; ifma.ensure_apex_keys()' "$HERE/lib")
+    printf '%s\n' "$APEX_KEY_INFO"
+    printf '%s\n' "$APEX_KEY_INFO" > "$GBOS_OUT/build-info.txt"
+fi
 
 if [ "$STACK" = gop-swiftshader ] && [ -z "${GBOS_GENERIC_KO:-}" ]; then
     echo "== gbos_efifb.ko against the base image's own kernel headers and export CRCs"
@@ -180,11 +214,21 @@ if ! bash "$HERE/vendor.sh" > "$GBOS_OUT/vendor.log" 2>&1; then
     tail -n 30 "$GBOS_OUT/vendor.log"; echo "stage 1 failed"; exit 1
 fi
 grep -q "^vendor tree ok$" "$GBOS_OUT/vendor.log" || { tail -n 30 "$GBOS_OUT/vendor.log"; echo "stage 1 ended without 'vendor tree ok'"; exit 1; }
+# Record only residuals actually accepted by the completed vendor/system scan.
+if [ "$PATCH_IFMA" = true ]; then
+    awk '/^ifma residual accepted: / && !seen[$0]++' "$GBOS_OUT/vendor.log" | tee -a "$GBOS_OUT/build-info.txt"
+fi
 grep -E '^(firmware check:|firmware report-only:|OPTIONAL firmware:|UNUSED firmware rule:)' "$GBOS_OUT/vendor.log"
+
+echo "== verify APK/APEX alignment in every shipped partition"
+python3 "$HERE/lib/container_alignment.py" --image "$GBOS_OUT/vendor/stage-vendor.img" \
+    --otatools "$GBOS_OTATOOLS" > "$GBOS_OUT/container-alignment.log" 2>&1 \
+    || { cat "$GBOS_OUT/container-alignment.log"; die "APK/APEX alignment gate failed"; }
+cat "$GBOS_OUT/container-alignment.log"
 
 echo "== stage 2: image + QEMU self-tests (about 8 minutes; log: $GBOS_OUT/image.log)"
 if ! python3 "$HERE/image.py" > "$GBOS_OUT/image.log" 2>&1; then
-    grep -E '^(PASS|FAIL) ' "$GBOS_OUT/image.log" || true
+    grep -E '^(PASS|FAIL|NOT_RUN) ' "$GBOS_OUT/image.log" || true
     tail -n 20 "$GBOS_OUT/image.log"; echo "stage 2 failed"; exit 1
 fi
-grep -E '^(PASS|FAIL|SKIP) |sha256 [0-9a-f]{64}$|^IMAGE OK' "$GBOS_OUT/image.log"
+grep -E '^(PASS|FAIL|SKIP|NOT_RUN) |sha256 [0-9a-f]{64}$|^IMAGE OK' "$GBOS_OUT/image.log"

@@ -141,6 +141,38 @@ done
 out=$(PATH="$T/nopath" "$(command -v bash)" "$R" --out "$T/noadb" --date 20261014 2>&1); rc=$?
 [ "$rc" = 2 ] && printf '%s\n' "$out" | grep -q 'adb not found' && [ ! -e "$T/noadb" ] && ok "adb not found" || bad "adb not found (rc=$rc out=$out)"
 
+# Exact current Google build values are accepted; near matches and fixture identifiers stay private.
+for variant in display numeric near; do
+    mkdir -p "$T/build-$variant-fixture"
+    cp -a "$FIX/kano/." "$T/build-$variant-fixture/"
+    python3 - "$T/build-$variant-fixture/getprop.txt" "$variant" << 'PYFIX'
+import sys
+from pathlib import Path
+p = Path(sys.argv[1])
+variant = sys.argv[2]
+values = {"display": ("CL3B.260622.276.R4", "16658739"),
+          "numeric": ("", "16658739"),
+          "near": ("CL3B.260622.276.R4-SYNTHSERIAL001", "unknown-build")}
+display, build = values[variant]
+s = p.read_text()
+s = s.replace("[ro.build.display.id]: [CL3B.260622.271.R1]", f"[ro.build.display.id]: [{display}]")
+s = s.replace("[ro.build.id]: [CL3B.260622.271.R1]", f"[ro.build.id]: [{build}]")
+p.write_text(s)
+PYFIX
+    case "$variant" in
+        display) expected='| 建置版本 | CL3B.260622.276.R4 |' ;;
+        numeric) expected='| 建置版本 | 16658739 |' ;;
+        near) expected='| 建置版本 | 未知 |' ;;
+    esac
+    if bash "$R" --fixture "$T/build-$variant-fixture" --out "$T/build-$variant-out" --date 20261014 > /dev/null \
+        && grep -F -q "$expected" "$T/build-$variant-out/summary.md" \
+        && ! grep -R -F -q 'SYNTHSERIAL001' "$T/build-$variant-out"; then
+        ok "current build $variant: exact allowlist and identifier protection"
+    else
+        bad "current build $variant: exact allowlist and identifier protection"
+    fi
+done
+
 # fake adb records every argument. The script may pass only "shell" plus one allowlisted command.
 cat > "$T/adb" << 'EOF'
 #!/bin/sh

@@ -18,8 +18,8 @@
 
 同步後的本機檢查：安裝 stub 測試 104 passed／0 failed／0 skipped，GPT 暫存檔測試全部通過；Mac 缺少 `sgdisk`，其比較檢查跳過，Linux 裝置檢查交由遠端驗證。獨立審查另修正 `--keep-data` 預檢誤用 grow 計畫，加入預設 grow、`--no-grow` 與 `--keep-data` 的 CLI 計畫斷言；保留明確拒絕 `--no-grow --keep-data` 的規則。
 
-本次驗證沒有建立新的 Googlebook 映像，也沒有重新執行 KANO 實機開機。先前來源 `7a7810c` 的 QEMU 35 PASS／0 FAIL／0 SKIP、測試金鑰映像與雜湊仍在 [發行說明](RELEASE-NOTES.md) 中，不能當成本輪新實機證據。
+本次驗證沒有建立新的 Googlebook 映像，也沒有重新執行 KANO 實機開機。先前來源 `7a7810c` 的 QEMU 35 PASS／0 FAIL／0 SKIP、測試金鑰映像與雜湊仍在 [v0.2.3 發行紀錄](RELEASE-HISTORY.md) 中，不能當成本輪新實機證據。
 
 發行產物是安裝與建置腳本封存包及 SHA-256，沒有磁碟映像、韌體映像、Google 檔案或簽章私鑰。公開版本由 `tools/release/make-public.sh` 排除研究筆記與個人設定後掃描；tag pipeline 仍須通過測試、封裝及 release job，才會出現可下載產物。
 
-硬體支援與尚未驗證項目見 [KANO 硬體狀態](STATUS-KANO.md)。韌體反向檢查仍是 advisory，`PASS` 的保證與模型限制見 [發行說明](RELEASE-NOTES.md) 和 [運作方式](HOW-IT-WORKS.md)。
+硬體支援與尚未驗證項目見 [KANO 硬體狀態](STATUS-KANO.md)。韌體反向檢查仍是 advisory，`PASS` 的保證與模型限制見 [v0.2.3 發行紀錄](RELEASE-HISTORY.md) 和 [運作方式](HOW-IT-WORKS.md)。

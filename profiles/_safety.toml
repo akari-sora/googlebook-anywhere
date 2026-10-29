@@ -21,8 +21,9 @@ forbidden_prefixes = ["module_blacklist=", "initcall_blacklist=", "efi=", "efi_p
 # peripheral driver (I2C tunnel, chargers, Type-C, sensors, keyboard, lightbar, LEDs, CEC, Wilco), SPI flash (controller,
 # MTD, SPI NOR, spidev), Google SMI (GSMI writes firmware variables), chromeos_acpi, NVRAM, i2c-dev, AT24 EEPROMs,
 # Thunderbolt (DMA, USB4 retimer NVM), the touch controllers' QuickI2C/QuickSPI hosts (touch firmware), HPS and the hammer
-# keyboard. Blocking a module a machine does not have costs nothing. A GBOS_EC image (KANO only) releases exactly
-# builder/image.py's EC_CORE and the chosen features' drivers; everything in EC_NEVER stays in every entry.
+# keyboard. Blocking a module a machine does not have costs nothing. A GBOS_EC feature image (KANO only) releases exactly
+# builder/image.py's EC_CORE and the chosen features' drivers. GBOS_EC=drain is exclusive and releases only cros_ec and
+# cros_ec_lpcs, not cros_ec_dev. Everything in EC_NEVER stays in every entry. The required list below is not shortened.
 # UART (cros_ec_uart) and RPMSG (cros_ec_rpmsg) are not in this pinned v0.1 list; the dev-kernel gate
 # refuses CONFIG_CROS_EC_UART / CONFIG_CROS_EC_RPMSG as =y and as =m unless the profile blacklist names them, and
 # EC variants append both via builder/image.py EC_EXTRA_BLOCK.

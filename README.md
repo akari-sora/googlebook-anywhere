@@ -1,12 +1,12 @@
 # Googlebook Anywhere
 
-**中文** | [English](README.en.md)
+**中文** | [English](https://gitlab.com/aa22396584/googlebook-anywhere/-/blob/main/README.en.md)
 
 把 Google 官方的 **Googlebook OS**（lapis，Android 17 桌面版）裝到原本不支援它的 x86-64 電腦上。第一個目標機型是
 **Acer Chromebook Spin 714（KANO 主機板）**。
 
 - 下載與版本說明：[GitLab Releases](https://gitlab.com/aa22396584/googlebook-anywhere/-/releases)（目前版本見 [docs/RELEASE-NOTES.md](docs/RELEASE-NOTES.md)，較早版本見 [docs/RELEASE-HISTORY.md](docs/RELEASE-HISTORY.md)）
-- 軟體驗收：[v0.2.3，2026-10-22](docs/VERIFICATION-v0.2.3.md)；實機驗證範圍仍見 [KANO 硬體狀態](docs/STATUS-KANO.md)。
+- 驗收紀錄：[v0.3.0](docs/VERIFICATION-v0.3.0.md)（含 10-29 KANO keep-data 更新與有限待機證據）；先前的 [v0.2.3](docs/VERIFICATION-v0.2.3.md) 與 [KANO 硬體狀態](docs/STATUS-KANO.md) 保留原驗證範圍。
 - 原始碼與 issue：[gitlab.com/aa22396584/googlebook-anywhere](https://gitlab.com/aa22396584/googlebook-anywhere)（正本）。GitHub 上的 [akari-sora/googlebook-anywhere](https://github.com/akari-sora/googlebook-anywhere) 是唯讀鏡像，issue 與下載請到 GitLab。
 
 > 這不是 Google 的官方專案。repo 裡沒有任何 Google 的檔案：腳本從 Google 下載官方 recovery 映像，用固定的 SHA-256 核對後，
@@ -66,13 +66,13 @@
 「充電中」圖示：v0.2 起映像帶 ACPI 充電器驅動（`ac.ko`，只讀 ACPI，不送 EC 指令），KANO 實機上接充電器時 Android 顯示充電中（2026-10-13）。
 待機：v0.1 闔上蓋子或關螢幕後幾十秒內會自己亮起（每次暗中喚醒都帶一個電源鍵的 `KEY_WAKEUP`）；v0.2 起映像帶
 `gbos_wakefilter.ko`，電源鍵沒有喚醒系統時就丟掉它。KANO 實機上闔蓋 300 秒期間暗中喚醒 10 次，螢幕都沒亮；螢幕關閉時按電源鍵會亮、開蓋會亮螢幕。
-**已知問題**：螢幕關著時按鍵盤可能叫不醒螢幕（喚醒那一下按鍵送到 Android 之前，模組已經把 `KEY_WAKEUP` 丟掉了）。這是已知問題，v0.2.1 沒有修，請用電源鍵或開合上蓋。
+**已知問題**：螢幕關著時按鍵盤可能叫不醒螢幕（喚醒那一下按鍵送到 Android 之前，模組已經把 `KEY_WAKEUP` 丟掉了）。這是較早映像的已知問題，v0.2.1 沒有修。10-29 選用 16658739＋實驗性 drain 的 KANO 已通過 keep-data 更新與限定範圍的資料保留比對，timeout 入睡約 33 分鐘沒有自行亮屏，之後鍵盤喚醒成功；該候選的 S0ix、電源鍵、闔蓋／開蓋、音訊與成功更新後退回未驗證，詳見 [驗收紀錄](docs/VERIFICATION-v0.3.0.md)。
 
 **實機驗證僅在一台 KANO（`8086:46a6` Alder Lake-P K0 工程樣機）上完成**：`profiles/kano` 的 12 個內顯 ID 裡，7 個對到零售 KANO SKU，5 個（`46a3`、`46b2`、`a721`、`a7ac`、`a7ad`）是平台候選（ADL-P/RPL-U 巨集成員），KANO 對照未確認，見 [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md)。零售對照寫在 STATUS-KANO 與 COMPATIBILITY（Acer 零售型號與 coreboot 的 KANO 清單）。涵蓋 12 代 CP714-1WN 的 ADL-P/U 與 13 代 CP714-2WN／Zydron 的 RPL-U，含單通道變體；是 `adl_p_desc` 的子集（不用 `*`）以及 ADL／RPL SOF 韌體，但除 `46a6` 工程樣機外的量產 SKU 均尚未實機測試（各 SKU 狀態與待測項目見 [docs/STATUS-KANO.md](docs/STATUS-KANO.md)、[docs/FIRMWARE.md](docs/FIRMWARE.md)）。v0.2 起另有實驗性的 `profiles/generic-x86`，給 GPU 在 Googlebook 核心裡沒有驅動的
 x86-64 UEFI 電腦（例如 AMD；CPU 要 Intel 第 12 代或 AMD Zen 5 及更新，更舊的預期開不了機，見 [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md)「CPU 最低需求」）：用韌體的畫面輸出（GOP framebuffer）加 CPU 繪圖（SwiftShader），在 QEMU（`-cpu host`）開到設定精靈，沒有
 GPU 加速，尚未在任何實體 PC 上測試，見下面「其他 x86-64 電腦（實驗性）」。新機型的適配見 [docs/NEW-DEVICE.md](docs/NEW-DEVICE.md)。
-開起來的機器請用「回報你的機器」產生 `summary.md`，貼到 [`.gitlab/issue_templates/new-machine.md`](.gitlab/issue_templates/new-machine.md)
-或 [`.gitlab/issue_templates/bug.md`](.gitlab/issue_templates/bug.md)。
+開起來的機器請用「回報你的機器」產生 `summary.md`，貼到 [`.gitlab/issue_templates/new-machine.md`](https://gitlab.com/aa22396584/googlebook-anywhere/-/blob/main/.gitlab/issue_templates/new-machine.md)
+或 [`.gitlab/issue_templates/bug.md`](https://gitlab.com/aa22396584/googlebook-anywhere/-/blob/main/.gitlab/issue_templates/bug.md)。
 
 </details>
 
@@ -103,13 +103,16 @@ Google 的映像不能轉散布，所以每個人都要從官方 zip 自己建�
 
 `install.sh` 不需要 root，依序：
 
-1. 從 Google 下載官方 recovery zip，核對 SHA-256。只接受已驗證的 lapis build `16452207`（`CL3B.260622.271.R1`）。
+1. 從 Google 下載官方 recovery zip，核對 SHA-256。預設是 lapis build `16452207`（`CL3B.260622.271.R1`）；也可選已釘選的 `16658739`（`CL3B.260622.276.R4`），見 [升級](docs/UPGRADE.md)。
 2. `base/build-base.sh` 重建基礎映像（中間產物，不能直接開機），換上軟體 KeyMint／Gatekeeper，並用**你自己新產生的 AVB 金鑰**
    （`~/gbos-work/base/keys/vbmeta.pem`）重簽。otatools 與兩個 APEX 從 ci.android.com 的公開建置取得。
 3. `builder/fetch-inputs.sh` 從 linux-firmware、sof-bin 與 ChromiumOS board-overlays 取得 KANO 的韌體與音效設定。
    KANO 的 ACPI 充電器驅動 `ac.ko` 由 `builder/kmod/build-ac.sh` 從固定版本的核心原始碼與工具鏈建置（另外下載約 2.5 GB，建完會刪掉約 9 GB 的暫存），
    同一棵核心樹接著建 `gbos_wakefilter.ko`（`builder/kmod/build-gbos_wakefilter.sh`）。
 4. `builder/build.sh` 產生 KANO 映像，接著在 QEMU 裡開機自我測試（Android 開機檢查、從映像自己的 ESP 開機的整條開機鏈）。
+   KANO 的 QEMU 沒有 GPU，完整 framework 開機與 system_server 不反覆重啟兩項記為 `NOT_RUN`，不阻擋映像完成；
+   `image.log`、`build-info.txt` 與建置摘要都會記下原因。其餘檢查及所有分割區的 APK/APEX alignment gate 仍必須通過。
+   這不能代替實機的完整 Android 開機驗收；有 GOP 顯示裝置的 QEMU 設定仍強制執行這兩項。見 [建置流程](docs/HOW-IT-WORKS.md#建置流程)。
    `docker-install.sh` 在沒有 KVM 的主機上（例如 macOS）、或加了 `--no-selftest` 時會略過這一步，並在映像旁留下 `.not-self-tested`
    標記。**這樣的映像沒有經過 QEMU 開機驗證**，只做了建置時的檢查。
 
@@ -134,7 +137,7 @@ Google 的映像不能轉散布，所以每個人都要從官方 zip 自己建�
 插到 KANO 開機，預設選項是 **Googlebook KANO quiet**。慢速隨身碟首次開機要幾分鐘，也可能跳出「沒有回應」的對話框（選「等待」）。
 這個檔沒有維護系統，不能拿來裝內建碟。要裝到內建 NVMe，做下面第 4 步。
 
-之後的新版本用 `install/update.sh --work ~/gbos-work --disk /dev/disk/by-id/usb-<你的隨身碟>` 更新，`/data` 保留，舊版本留在開機選單上（「(previous version)」）。**保留 `~/gbos-work/keys/`**：更新必須用同一把 AVB 金鑰。見 [docs/UPGRADE.md](docs/UPGRADE.md)。
+之後的新版本用 `install/update.sh --work ~/gbos-work --disk /dev/disk/by-id/usb-<你的隨身碟>` 更新，`/data` 保留，舊版本留在開機選單上（「(previous version)」）。**保留 `~/gbos-work/keys/`**：AVB 金鑰旁的 `apex-keys/` 目錄是簽章身分的一部分；請和 AVB 金鑰放在一起、一起備份，每次更新都用同一對建置。若 `GBOS_AVB_KEY` 指到暫存目錄裡的複本，預設 keyset 目錄會跟著變、每次建置都會產生全新的 APEX keyset；請把 `GBOS_APEX_KEYS_DIR` 指到固定的持久目錄。`out/build-info.txt` 記下兩個 APEX 指紋（payload 公鑰 SPKI 與 container 憑證的 SHA-256），更新前後比對、必須相同。見 [docs/UPGRADE.md](docs/UPGRADE.md)。在建置用的電腦上跑 `install/check-updates.py`（或加 `--json`）就知道有沒有新版本：唯讀，只讀兩份小的公開 JSON（Google 的 recovery 索引 `production_recovery.json`，看有沒有比選定的 `GBOS_LAPIS_BUILD`（預設 16452207）更新的 `lapis-user` build；這個專案的 GitLab releases 列表，看有沒有比這份 checkout 的 `docs/RELEASE-NOTES.md` 更新的 `vX.Y.Z` tag），10 秒逾時、普通 User-Agent、不帶 cookie 或 token，絕不下載映像。Google 有新 build 要等這個專案加上 `base/builds/` 的釘選才能建置。網路不通時印 `could not check`，結束碼仍是 0。`update.sh`（建置前）與 `install.sh` 的最後摘要只在有新版本時印一行 `NOTE (...)`；`--no-update-check` 或 `GBOS_NO_UPDATE_CHECK=1` 關閉，設了 `CI` 時不印。見 UPGRADE.md「怎麼知道有新版本」。
 
 ### 4. 裝到 KANO 的內建碟（安裝碟）
 
@@ -218,8 +221,8 @@ install/gbos-report.sh --probe gbos-probe --out gbos-report
 
 「已綁定」只在已知的真實 GPU 驅動（i915、xe、amdgpu、nouveau 等）綁上、而且該卡有讀到時才會出現。「沒有原生 GPU 驅動」只在每一張 DRM 卡都讀到、而且沒有一張是那些驅動時才會出現。DRM 清單是空的，或只有 SwiftShader、還沒讀到任何卡，寫「未知」，不寫「沒有原生 GPU 驅動」。清單沒擷取到也是未知，而且不能合併，兩份報告都不從 sysfs 或 uevent 建卡列；成功讀到的空清單，以及沒有 PCI id 的平台裝置，仍可合併。只有成功擷取的清單點名的 card，其 sysfs 與 uevent 才算。缺檔、ENOENT、拒絕讀取，或其他非零結束，都不是成功擷取。沒被點名的卡的檔案略過；清單裡沒有 card（空清單，或只有 renderD）時顯示是未知，不寫驅動結論，仍可合併。缺檔不是空匯流排。`ro.hardware.vulkan=pastel` 是這個專案附的 SwiftShader（`vulkan.pastel.so`），報告寫 SwiftShader，不寫套件檔名。有任何一張沒讀到就寫「未知」。機型是 DMI 廠商列舉，不是產品名稱，也不用 `ro.product.model`。板名是 DMI 板廠列舉；板名是空的也不改拿 `ro.product.board`。probe 的 UEFI／Secure Boot、草稿 profile，以及其他 live Linux 事實，只有在廠商列舉、CPU 的 family、model、stepping 三個數字，以及 PCI 匯流排上讀到的全部裝置 id（含重複，不只 GPU）都一致時才寫進報告。沒有 PCI DRM 驅動的平台裝置（例如 `gbos_efifb`）只要匯流排有讀完，仍可合併。CPU 的型號名稱不參與比對。GPU 或 PCI 有任何一筆沒讀到，probe 沒有 `pci` 鍵、清單是 null、或整份匯流排沒讀到，或 CPU 三個數字不齊，就省略並註明不是同一台。讀過而且是空的 PCI 清單才是空匯流排；缺檔、缺鍵、或只留下成功的 `.rc` 都不是。每次收集都會先清掉舊的擷取檔和 `.rc`。
 
-開 GitLab issue 時選模板：新機器用 [`.gitlab/issue_templates/new-machine.md`](.gitlab/issue_templates/new-machine.md)
-（機型、CPU／GPU、韌體、哪些能用、哪些不能。機型名稱和 BIOS 版本要自己打，報告裡沒有），壞掉的地方用 [`.gitlab/issue_templates/bug.md`](.gitlab/issue_templates/bug.md)。
+開 GitLab issue 時選模板：新機器用 [`.gitlab/issue_templates/new-machine.md`](https://gitlab.com/aa22396584/googlebook-anywhere/-/blob/main/.gitlab/issue_templates/new-machine.md)
+（機型、CPU／GPU、韌體、哪些能用、哪些不能。機型名稱和 BIOS 版本要自己打，報告裡沒有），壞掉的地方用 [`.gitlab/issue_templates/bug.md`](https://gitlab.com/aa22396584/googlebook-anywhere/-/blob/main/.gitlab/issue_templates/bug.md)。
 把 `summary.md` 貼進去或當附件。
 
 ## 文件
@@ -270,6 +273,7 @@ install/gbos-report.sh --probe gbos-probe --out gbos-report
   沒登記的金鑰會被拒（`unauthorized`），見 SAFETY.md「資料安全取捨」。
 - `GBOS_DEFAULT_ENTRY=lapis-debug.conf`：預設改成 serial-debug（序列埠 console + logcat 鏡像）。
 - `GBOS_LOADER_EDITOR=yes`：開機選單可以編輯核心參數（harness 的 `kano-boot.sh` 附加參數時需要）。
+- `GBOS_EC=drain`：僅限 KANO、實驗性且須單獨使用，只放行 EC 傳輸模組；休眠失敗恢復可能重設 AP，造成資料遺失。10-29 已觀察到約 33 分鐘沒有自行亮屏及鍵盤喚醒，S0ix／電源鍵／上蓋仍未驗證，見 [KANO 硬體狀態](docs/STATUS-KANO.md)。
 - `GBOS_EC=sensors,typec,buttons`（可只選幾項）：放行一組經過稽核的 EC 驅動，換來自動旋轉、USB-C 的 USB3／DP、側邊音量鍵。安全保證會跟著改變，而且要先確認休眠能進入 S0ix，見 [docs/SAFETY.md](docs/SAFETY.md)「EC 功能變體」。尚未在實機驗證。
 
 `install.sh` 會記下這些設定與 `base/`、`builder/`、機型設定的內容摘要（包括還沒 commit 的檔案）；設定或原始碼一變，就會停下來而不是沿用舊的 base 或映像。舊版 `install.sh` 建的工作目錄要先刪掉一次 `base/` 與 `build/`。

@@ -89,7 +89,7 @@ K="$WORK/ksrc"
 [ "$(sha "$WORK/gki.config")" = "$CONFIG_SHA" ] || { echo "config extracted from the GKI bzImage is not the pinned one ($(sha "$WORK/gki.config"))"; exit 1; }
 
 export PATH="$WORK/clang/bin:$WORK/rust/bin:$WORK/bin:$PATH" LIBCLANG_PATH="$WORK/clang/lib"
-# LOCALVERSION gives the GKI's "-android17-5" (the kernel compares only the vermagic after the release when CRCs are present)
+# LOCALVERSION gives "-android17-5"; the selected MODVERSIONS GKI skips the release only with an allocated __versions.
 M=(nice -n 19 make -C "$K" -s ARCH=x86_64 LLVM=1 HOSTCC=clang HOSTLD=ld.lld "RUSTC=$WORK/rust/bin/rustc" "BINDGEN=$WORK/bin/bindgen"
    LOCALVERSION=-android17-5 "-j$(nproc)" KBUILD_BUILD_TIMESTAMP=0 KBUILD_BUILD_USER=gbos KBUILD_BUILD_HOST=gbos)
 cp "$WORK/gki.config" "$K/.config"

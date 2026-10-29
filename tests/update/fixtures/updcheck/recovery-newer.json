@@ -1,0 +1,38 @@
+[
+ {
+  "channel": "STABLE",
+  "device": "lapis",
+  "file": "recovery.zip",
+  "filesize": 19069493760,
+  "manufacturer": "Asus",
+  "md5": "38873eac8ff5b060baf229b7bcf7ec05",
+  "model": "ASUS Googlebook 14",
+  "name": "ASUS Googlebook 14",
+  "url": "https://dl.google.com/device/recovery/lapis-user/16471258/recovery.zip",
+  "zipfilesize": 1,
+  "buildexploreruri": "",
+  "buildidentifier": "16471258_CL3B.260622.273.R1",
+  "target": "lapis-user",
+  "branch": "arsp-26Q3-desktop-release",
+  "dateupdated": "2026-10-05",
+  "previousVersionGeneration": 1788908184965351
+ },
+ {
+  "channel": "STABLE",
+  "device": "mica",
+  "file": "recovery.zip",
+  "filesize": 19230966272,
+  "manufacturer": "Dell",
+  "md5": "2b75ca43b008bf0f2a72a717dd5642f1",
+  "model": "XPS Googlebook",
+  "name": "XPS Googlebook",
+  "url": "https://dl.google.com/device/recovery/mica-user/16471258/recovery.zip",
+  "zipfilesize": 1,
+  "buildexploreruri": "",
+  "buildidentifier": "16471258_CL3B.260622.273.R1",
+  "target": "mica-user",
+  "branch": "arsp-26Q3-desktop-release",
+  "dateupdated": "2026-10-05",
+  "previousVersionGeneration": 1791211069242011
+ }
+]

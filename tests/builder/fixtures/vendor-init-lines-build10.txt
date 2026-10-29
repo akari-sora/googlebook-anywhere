@@ -1,0 +1,60 @@
+init: processing action (vendor.thermal.link_ready=1) from (/vendor/etc/init/init.lapis.rc:14)
+init: processing action (vendor.thermal.link_ready=1) from (/vendor/etc/init/init.fatcat.rc:31)
+init: processing action (vendor.thermal.link_ready=1) from (/vendor/etc/init/init.device-x86.rc:10)
+init: processing action (vendor.thermal.link_ready=1) from (/vendor/etc/init/android.hardware.thermal-service.pixel.rc:1)
+init: processing action (vendor.desktop.snapshot_collector.ueventmond.start=true) from (/vendor/etc/init/ueventmond-service.rc:11)
+init: processing action (ro.prefetch_boot.enabled=true && post-fs-data) from (/vendor/etc/init/init.common.rc:69)
+init: processing action (ro.prefetch_boot.enabled=true && init) from (/vendor/etc/init/init.common.rc:65)
+init: processing action (ro.prefetch_boot.enabled=true && early-init) from (/vendor/etc/init/init.common.rc:62)
+init: processing action (ro.boot.slot_suffix=*) from (/vendor/etc/init/gbos-no-ota.rc:7)
+init: processing action (post-fs-data) from (/vendor/etc/init/vpd.rc:2)
+init: processing action (post-fs-data) from (/vendor/etc/init/vboot.rc:2)
+init: processing action (post-fs-data) from (/vendor/etc/init/storage_metrics_service.rc:15)
+init: processing action (post-fs-data) from (/vendor/etc/init/kano-bootfix.rc:10)
+init: processing action (post-fs-data) from (/vendor/etc/init/init.common.rc:45)
+init: processing action (post-fs-data) from (/vendor/etc/init/hostapd.android.rc:9)
+init: processing action (post-fs-data) from (/vendor/etc/init/fwtool.rc:2)
+init: processing action (post-fs-data) from (/vendor/etc/init/dms-service.rc:5)
+init: processing action (post-fs-data) from (/vendor/etc/init/android.hardware.power-service.pixel-libperfmgr.rc:40)
+init: processing action (post-fs) from (/vendor/etc/init/init.get_variant.rc:15)
+init: processing action (late-fs) from (/vendor/etc/init/init.common.rc:42)
+init: processing action (late-fs) from (/vendor/etc/init/android.hardware.power-service.pixel-libperfmgr.rc:7)
+init: processing action (init.svc.adbd=stopped) from (/vendor/etc/init/adb-usb-bridge-service.rc:12)
+init: processing action (init) from (/vendor/etc/init/sys_tuner.rc:9)
+init: processing action (init) from (/vendor/etc/init/snapshot_collector.rc:32)
+init: processing action (init) from (/vendor/etc/init/init.set_pnp_config.rc:10)
+init: processing action (init) from (/vendor/etc/init/init.lapis.rc:1)
+init: processing action (init) from (/vendor/etc/init/init.insmod.rc:5)
+init: processing action (init) from (/vendor/etc/init/init.fatcat.rc:1)
+init: processing action (init) from (/vendor/etc/init/init.device-x86.rc:66)
+init: processing action (init) from (/vendor/etc/init/init.device-x86.rc:1)
+init: processing action (init) from (/vendor/etc/init/init.common.rc:3)
+init: processing action (init) from (/vendor/etc/init/hw/init.android-desktop.rc:15)
+init: processing action (fs) from (/vendor/etc/init/init.common.rc:39)
+init: processing action (enable-thermal-hal) from (/vendor/etc/init/android.hardware.thermal-service.pixel.rc:6)
+init: processing action (early-init) from (/vendor/etc/init/trusty_vm_cid.rc:1)
+init: processing action (early-init) from (/vendor/etc/init/init.insmod.rc:2)
+init: processing action (early-init) from (/vendor/etc/init/init.get_variant.rc:10)
+init: processing action (early-boot) from (/vendor/etc/init/kano-hw.rc:2)
+init: processing action (early-boot) from (/vendor/etc/init/hw/init.android-desktop.rc:3)
+init: processing action (debug.maint.ready=1) from (/vendor/etc/init/maint-kmsg.rc:11)
+init: processing action (boot) from (/vendor/etc/init/ueventmond-service.rc:3)
+init: processing action (boot) from (/vendor/etc/init/pixel-thermal-symlinks.rc:1)
+init: processing action (boot) from (/vendor/etc/init/kano-services.rc:2)
+init: processing action (boot) from (/vendor/etc/init/init.set_power_symlinks.rc:9)
+init: processing action (boot) from (/vendor/etc/init/init.common.rc:57)
+init: processing action (boot) from (/vendor/etc/init/init.adbd-killer.rc:1)
+init: processing action (boot) from (/vendor/etc/init/android.hardware.camera.provider-usb-service.android-desktop.rc:10)
+init: Parsing file /vendor/etc/init/vpd.rc...
+init: Parsing file /vendor/etc/init/vpd-executor.rc...
+init: Parsing file /vendor/etc/init/vendor.google.desktop.oemlock-service.rc...
+init: Parsing file /vendor/etc/init/vendor.dolby.media.c2-default-service-dax-desktop.rc...
+init: Parsing file /vendor/etc/init/vboot.rc...
+init: Parsing file /vendor/etc/init/ueventmond-service.rc...
+init: Parsing file /vendor/etc/init/trusty_vm_cid.rc...
+init: Parsing file /vendor/etc/init/touchpad-inhibitor-service.rc...
+init: Parsing file /vendor/etc/init/thermal-profile-setter-service.rc...
+init: Parsing file /vendor/etc/init/sys_tuner.rc...
+init: Parsing file /vendor/etc/init/suspend_notification_service.rc...
+init: Parsing file /vendor/etc/init/suspend_diagnostics.rc...
+init: Parsing file /vendor/etc/init/storage_metrics_service.rc...

@@ -250,6 +250,9 @@ def module_list():
     if not found:
         fail("entry template has no module_blacklist")
     mods = found.group(1).split(",")
+    if not {"gpio_cros_ec", "cros_ec_hwmon", "cros_ec_wdt", "rtc_cros_ec",
+            "cros_ec_uart", "cros_ec_rpmsg"} <= set(mods):
+        fail("entry template lacks the drain image's extra EC blocks")
     if "nvme" in mods or "nvme_core" in mods:
         fail("entry template blacklists nvme; the installer could not load it")
     return mods

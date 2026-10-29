@@ -287,9 +287,23 @@ def arsc_values(b):
     return vals
 
 
+def ec_vendor_features(raw):
+    """Features that change the vendor tree. drain is exclusive and changes nothing, so the caller skips the hook."""
+    if not raw or raw == "drain":
+        return []
+    if "drain" in raw.split(","):
+        raise SystemExit("GBOS_EC=drain is exclusive")
+    return [f for f in raw.split(",") if f]
+
+
 def ec(ctx, features):
     """GBOS_EC on the KANO: sensors = the LPC EC's IIO sensors labelled for SELinux and lapis' auto-rotation overlay value
-    flipped to true; buttons = a keylayout that maps only the volume keys of cros_ec_buttons (the power key stays ACPI)."""
+    flipped to true; buttons = a keylayout that maps only the volume keys of cros_ec_buttons (the power key stays ACPI).
+    drain releases only the transport/core modules in the boot entries and changes no vendor file."""
+    if features == ["drain"]:
+        return
+    if "drain" in features:
+        raise SystemExit("GBOS_EC=drain is exclusive")
     import struct, zipfile, zlib
     tree, vmap = ctx.tree, ctx.vmap
     if "sensors" in features:
@@ -406,7 +420,11 @@ def camera_expected(overlay, old):
 
 
 def ec_expected(features):
-    """(new paths, changed paths) the ec() hook adds to the vendor tree."""
+    """(new paths, changed paths) the ec() hook adds to the vendor tree. drain adds nothing."""
+    if features == ["drain"]:
+        return [], []
+    if "drain" in features:
+        raise SystemExit("GBOS_EC=drain is exclusive")
     new, changed = [], []
     if "sensors" in features:
         changed.append("overlay/framework-res__lapis__auto_generated_rro_vendor.apk")

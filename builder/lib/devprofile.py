@@ -9,7 +9,7 @@ usage: devprofile.py check <profile dir>                     validate (exit 0 = 
        devprofile.py firmware <profile dir>                  "<path> <from> <src> <sha256>" per firmware file
        devprofile.py kmods <profile dir>                     the extra kernel modules the profile ships, one per line
        devprofile.py json <profile dir>                      the validated profile as JSON"""
-import bz2, gzip, hashlib, json, lzma, re, shutil, struct, subprocess, sys, unicodedata, zlib
+import bz2, gzip, hashlib, json, lzma, os, re, shutil, signal, struct, subprocess, sys, threading, time, unicodedata, zlib
 from pathlib import Path
 
 try:
@@ -41,12 +41,35 @@ SCHEMA = {
     "wifi": {"modprobe": LSTR},
     # optional: setdefault in load(). unblock/load are module names, checked against _safety.toml [modules].
     "modules": {"unblock": LSTR, "load": LSTR},
-    "display": {"stack": str, "hwc_backend": str, "build_prop_set": ("list", ("list", str))},
+    # display.density: optional (setdefault 0 in load() = unset, the stock ro.sf.lcd_density stays); see DENSITY_RANGE
+    "display": {"stack": str, "hwc_backend": str, "build_prop_set": ("list", ("list", str)), "density": int},
     "input": {"kbd_backlight_leds": str, "power_button": str},
     "hooks": {"vendor": str},
     "kmods": LSTR,
     "camera": {"libcamera": bool},
+    "cpu_compat": {"patch_ifma": bool},
 }
+# display.density bounds (dpi): DisplayMetrics.DENSITY_LOW (120) to DENSITY_XXHIGH (480). 0 = unset.
+DENSITY_RANGE = (120, 480)
+DENSITY_PROP = "ro.sf.lcd_density"
+
+
+def set_lcd_density(text, density):
+    """vendor build.prop text with ro.sf.lcd_density set to density (0 = unchanged). The stock line must be there once:
+    every non-comment assignment whose key (split at the first =, whitespace stripped) is ro.sf.lcd_density counts, so
+    ' ro.sf.lcd_density=..' or 'ro.sf.lcd_density =..' is a second assignment, not another key."""
+    if density == 0:
+        return text
+    lines = text.split("\n")
+    keyed = [i for i, l in enumerate(lines)
+             if "=" in l and not l.lstrip().startswith("#") and l.split("=", 1)[0].strip() == DENSITY_PROP]
+    hits = [i for i in keyed if lines[i].startswith(DENSITY_PROP + "=")]
+    if len(keyed) != 1 or len(hits) != 1:
+        raise SystemExit(f"display.density: {DENSITY_PROP} not exactly once in vendor build.prop ({len(keyed)})")
+    lines[hits[0]] = f"{DENSITY_PROP}={density}"
+    return "\n".join(lines)
+
+
 # extra kernel modules the builder can build from pinned sources (builder/kmod/build-<name>.sh) and ship in vendor
 KMODS = {"ac": "ACPI AC adapter (ACPI0003): Android sees the charger; reads _PSR only, no EC host command",
          "gbos_efifb": "the UEFI GOP framebuffer as a DRM device (display.stack = gop-swiftshader), from the base's kheaders",
@@ -77,6 +100,118 @@ def one_line(s):
 
 class ProfileError(ValueError):
     pass
+
+
+class UndecodablePayloadError(ProfileError):
+    """The bzImage payload was NEVER decoded: no HdrS header or the declared
+    slice is out of bounds, the payload magic is unknown, or no decoder for
+    a zstd / LZ4-frame payload is installed. A legacy-LZ4 payload (Linux
+    unlz4() rules, _unlz4) and an LZO payload (lzop) never raise this. This
+    is the only bzImage failure the IFMA scanner may treat as pinnable; every other ProfileError from the payload
+    path is scanned (DecodedPayloadError) and refused."""
+
+
+class DecodedPayloadError(ProfileError):
+    """A bzImage payload WAS decoded, then refused (trailing bytes, bytes after
+    the ELF span, ambiguity). `.decoded` carries the decoded bytes so the IFMA
+    scanner scans them before refusing; it is still a ProfileError."""
+
+    def __init__(self, message, decoded):
+        super().__init__(message)
+        self.decoded = decoded
+
+
+# Decoder bounds, the same as the IFMA scanner's _decode_compressed_cli_stream
+# (STREAM_DECOMPRESSOR_TIMEOUT 30 s + 1 s per 4 MiB of input). The output cap
+# is far above any real vmlinux (tens of MiB) and the test fixtures.
+DECODER_TIMEOUT_SECONDS = 30
+DECODER_TIMEOUT_BYTES_PER_SEC = 4 * 1024 * 1024
+DECODER_OUTPUT_CAP = 512 * 1024 * 1024
+
+
+class DecoderLimitError(DecodedPayloadError):
+    """A bzImage payload decoder timed out or exceeded DECODER_OUTPUT_CAP.
+    `.decoded` is what it produced (possibly empty); the IFMA scanner scans
+    it and refuses unpinnably."""
+
+
+def _decoder_timeout(input_bytes: int) -> float:
+    return DECODER_TIMEOUT_SECONDS + max(0, int(input_bytes)) / DECODER_TIMEOUT_BYTES_PER_SEC
+
+
+def _check_output_cap(out, what: str) -> None:
+    cap = DECODER_OUTPUT_CAP
+    if len(out) > cap:
+        raise DecoderLimitError(f"{what}: decoded output exceeds {cap} bytes", bytes(out[:cap]))
+
+
+def _run_bounded(args: list, data: bytes) -> subprocess.CompletedProcess:
+    """subprocess.run(args, input=data, capture_output=True) with the scanner's
+    timeout and DECODER_OUTPUT_CAP. Raises DecoderLimitError carrying the
+    output read so far when either bound is hit; stderr is discarded."""
+    cap = DECODER_OUTPUT_CAP
+    timeout = _decoder_timeout(len(data))
+    deadline = time.monotonic() + timeout
+    proc = subprocess.Popen(
+        args, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+    out = bytearray()
+    over = []
+
+    def kill():
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except OSError:
+            pass
+
+    def feed():
+        try:
+            proc.stdin.write(data)
+        except OSError:
+            pass
+        finally:
+            try:
+                proc.stdin.close()
+            except OSError:
+                pass
+
+    def drain():
+        while True:
+            piece = proc.stdout.read(1 << 16)
+            if not piece:
+                return
+            if len(out) + len(piece) > cap:
+                out.extend(piece[:cap - len(out)])
+                over.append(True)
+                kill()
+                return
+            out.extend(piece)
+
+    writer = threading.Thread(target=feed, daemon=True)
+    reader = threading.Thread(target=drain, daemon=True)
+    writer.start()
+    reader.start()
+    reader.join(timeout)
+    timed_out = reader.is_alive()
+    if timed_out:
+        kill()
+        reader.join(5)
+    writer.join(5)
+    try:
+        rc = proc.wait(timeout=max(0.0, deadline - time.monotonic()))
+    except subprocess.TimeoutExpired:
+        # stdout closed but the child keeps running: same deadline.
+        kill()
+        proc.wait(5)
+        timed_out = True
+        rc = None
+    proc.stdout.close()
+    if over:
+        raise DecoderLimitError(f"{args[0]}: decoded output exceeds {cap} bytes", bytes(out))
+    if timed_out:
+        raise DecoderLimitError(f"{args[0]}: decoder timed out after {timeout:.0f}s", bytes(out))
+    return subprocess.CompletedProcess(args, rc, bytes(out), b"")
 
 
 def _typed(value, spec, where):
@@ -244,8 +379,11 @@ def load(profile_dir, safety_path=SAFETY):
     if isinstance(p["firmware_check"], dict):
         p["firmware_check"].setdefault("optional", [])
         p["firmware_check"].setdefault("alternatives", [])
+    if isinstance(p.get("display"), dict):
+        p["display"].setdefault("density", 0)   # display.density: 0 = unset, the stock ro.sf.lcd_density stays
     p.setdefault("kmods", [])          # extra kernel modules (KMODS): none unless the profile lists them
     p.setdefault("camera", {"libcamera": False})   # the libcamera camera HAL overlay (hooks.vendor camera()): off
+    p.setdefault("cpu_compat", {"patch_ifma": False})  # build-time 12-byte AVX-IFMA -> AVX2 patch (builder/lib/ifma.py): off unless enabled
     if "modules" not in p:
         p["modules"] = {"unblock": [], "load": []}
     elif isinstance(p.get("modules"), dict):
@@ -380,6 +518,12 @@ def load(profile_dir, safety_path=SAFETY):
     for i, kv in enumerate(disp["build_prop_set"]):
         if len(kv) != 3 or not re.fullmatch(r"[A-Za-z0-9_.]+", kv[0]) or kv[0].startswith(("ro.adb.", "service.adb.", "persist.adb.", "ro.debuggable")):
             raise ProfileError(f"display.build_prop_set[{i}]: expected [property, old value, new value] (not an adb/debuggable property)")
+    dens = disp["density"]
+    if dens != 0 and not DENSITY_RANGE[0] <= dens <= DENSITY_RANGE[1]:
+        raise ProfileError(f"display.density: expected 0 (unset) or an integer from {DENSITY_RANGE[0]} to {DENSITY_RANGE[1]}")
+    for kv in disp["build_prop_set"]:
+        if kv[0] in (DENSITY_PROP, "qemu.sf.lcd_density"):
+            raise ProfileError("display.build_prop_set: set the density with display.density, not " + kv[0])
     inp = p["input"]
     if inp["kbd_backlight_leds"] and not re.fullmatch(r"/sys/devices/[A-Za-z0-9:._/-]+/leds", inp["kbd_backlight_leds"]):
         raise ProfileError("input.kbd_backlight_leds: expected empty or /sys/devices/.../leds")
@@ -976,7 +1120,8 @@ def parse_kconfig(text: str) -> dict[str, str]:
 
 
 def _lz4_decompress_block(src: bytes) -> bytes:
-    """Decompress a single LZ4 raw block (used by LZ4 legacy frame format \\x02!L\\x18)."""
+    """Decompress a single LZ4 raw block (used by LZ4 legacy frame format \\x02!L\\x18).
+    A failure raises _ChunkDecodeError (a ValueError) carrying the bytes decoded so far."""
     out = bytearray()
     i = 0
     n = len(src)
@@ -987,29 +1132,29 @@ def _lz4_decompress_block(src: bytes) -> bytes:
         if lit_len == 15:
             while True:
                 if i >= n:
-                    raise ValueError("truncated literal length")
+                    raise _ChunkDecodeError("truncated literal length", bytes(out))
                 b = src[i]
                 i += 1
                 lit_len += b
                 if b != 255:
                     break
         if i + lit_len > n:
-            raise ValueError("truncated literals")
+            raise _ChunkDecodeError("truncated literals", bytes(out))
         out.extend(src[i:i + lit_len])
         i += lit_len
         if i >= n:
             break
         if i + 2 > n:
-            raise ValueError("truncated match offset")
+            raise _ChunkDecodeError("truncated match offset", bytes(out))
         offset = src[i] | (src[i + 1] << 8)
         i += 2
         if offset == 0 or offset > len(out):
-            raise ValueError("invalid match offset")
+            raise _ChunkDecodeError("invalid match offset", bytes(out))
         match_len = (token & 0x0F) + 4
         if match_len == 19:
             while True:
                 if i >= n:
-                    raise ValueError("truncated match length")
+                    raise _ChunkDecodeError("truncated match length", bytes(out))
                 b = src[i]
                 i += 1
                 match_len += b
@@ -1024,37 +1169,123 @@ def _lz4_decompress_block(src: bytes) -> bytes:
     return bytes(out)
 
 
-def _lz4_decompress_legacy(buf: bytes) -> bytes:
-    """Decompress an LZ4 legacy stream (magic 0x184C2102 followed by <u32 block_size><block>...) in pure Python."""
-    if not buf.startswith(b"\x02!L\x18"):
-        raise ValueError("missing LZ4 legacy magic")
+# Linux lib/decompress_unlz4.c (legacy `lz4 -l` stream, x86 boot decompressor).
+LZ4_LEGACY_MAGIC = b"\x02!L\x18"
+LZ4_LEGACY_MAGIC_INT = 0x184C2102
+LZ4_LEGACY_CHUNK_OUTPUT = 8 * 1024 * 1024  # LZ4_DEFAULT_UNCOMPRESSED_CHUNK_SIZE
+LZ4_LEGACY_COMPRESS_BOUND = LZ4_LEGACY_CHUNK_OUTPUT + LZ4_LEGACY_CHUNK_OUTPUT // 255 + 16
+
+
+class _ChunkDecodeError(ValueError):
+    """One legacy-LZ4 chunk failed; `.partial` is what the decoder wrote."""
+
+    def __init__(self, message, partial=b""):
+        super().__init__(message)
+        self.partial = partial
+
+
+def _unlz4(buf: bytes, block_decoder=None, spans: list | None = None) -> tuple[bytes, str | None]:
+    """The one legacy-LZ4 model, following Linux unlz4() (non-fill path).
+
+    Returns (decoded bytes, None) on success or (bytes decoded before the
+    failure, error) otherwise. After the magic, per chunk:
+      - fewer than 8 bytes left -> end, success. unlz4() ends when fewer than
+        4 bytes are left, and under PREBOOT __decompress passes in_len - 4,
+        so the 4-byte size trailer (cmd_lz4_with_size) plus 0-3 bytes is
+        not part of the stream;
+      - chunk size == magic 0x184C2102 -> continue (same stream);
+      - chunk size 0 -> end, success (the rest is ignored);
+      - otherwise the chunk is decoded. Under PREBOOT unlz4() decodes with
+        LZ4_decompress_fast(dest_len), so the size field is not the input
+        bound there; here a size over LZ4_compressBound(8 MiB), a size past
+        the end, or a block that does not decode within its size is a
+        failure. A failure is never "never decoded": callers scan what
+        decoded and refuse unpinnably. 0 chunks decoded is a failure.
+    The scanner's _decode_legacy_lz4_stream (scan-ifma.py) uses the same
+    continue/end rules for initramfs members. `spans` collects the
+    (start, end) of every chunk handed to the block decoder.
+    """
+    decode = block_decoder or _lz4_decompress_block
+    if not buf.startswith(LZ4_LEGACY_MAGIC):
+        return b"", "missing LZ4 legacy magic"
     pos = 4
-    chunks = []
-    while pos + 4 <= len(buf):
-        if pos + 4 == len(buf):
-            break  # 4-byte uncompressed size trailer appended by Linux cmd_lz4_with_size
+    chunks: list[bytes] = []
+    total = 0
+    error = None
+    while len(buf) - pos >= 8:
         bsz = int.from_bytes(buf[pos:pos + 4], "little")
-        if bsz == 0 or bsz == 0x184C2102 or bsz > 8 * 1024 * 1024 or pos + 4 + bsz > len(buf):
-            raise ValueError("invalid or truncated LZ4 legacy block size")
-        chunks.append(_lz4_decompress_block(buf[pos + 4:pos + 4 + bsz]))
-        pos += 4 + bsz
-    if not chunks or len(buf) - pos not in (0, 4):
-        raise ValueError("no valid LZ4 legacy blocks decoded")
-    return b"".join(chunks)
+        if bsz == LZ4_LEGACY_MAGIC_INT:
+            pos += 4
+            continue
+        if bsz == 0:
+            break
+        pos += 4
+        if bsz > LZ4_LEGACY_COMPRESS_BOUND or bsz > len(buf) - pos:
+            # unlz4() under PREBOOT would still run LZ4_decompress_fast here;
+            # salvage what the bytes that are present decode to, so it is
+            # scanned, and fail.
+            try:
+                chunks.append(_lz4_decompress_block(buf[pos:pos + min(bsz, LZ4_LEGACY_COMPRESS_BOUND)]))
+            except ValueError as exc:
+                if getattr(exc, "partial", b""):
+                    chunks.append(exc.partial)
+            if bsz > LZ4_LEGACY_COMPRESS_BOUND:
+                error = f"LZ4 legacy chunk size {bsz} over LZ4_compressBound(8 MiB)"
+            else:
+                error = f"LZ4 legacy chunk size {bsz} past the end of the payload"
+            break
+        if spans is not None:
+            spans.append((pos, pos + bsz))
+        try:
+            piece = decode(buf[pos:pos + bsz])
+        except DecodedPayloadError as exc:
+            # A bounded decoder hit its timeout or output cap.
+            raise type(exc)(str(exc), b"".join(chunks) + exc.decoded) from exc
+        except Exception as exc:
+            partial = getattr(exc, "partial", b"")
+            if partial:
+                chunks.append(partial)
+            error = f"LZ4 legacy chunk does not decode ({exc})"
+            break
+        chunks.append(piece)
+        total += len(piece)
+        if total > DECODER_OUTPUT_CAP:
+            _check_output_cap(b"".join(chunks), "LZ4 legacy")
+        pos += bsz
+    out = b"".join(chunks)
+    if error is None and not chunks:
+        error = "no LZ4 legacy chunk decoded"
+    return out, error
 
 
-def _hdrs_payload_bounds(raw: bytes, bzimage: Path) -> tuple[int, int]:
-    """Return (start, plen) for the HdrS-declared payload slice."""
+def _lz4_decompress_legacy(buf: bytes) -> bytes:
+    """Decompress an LZ4 legacy stream in pure Python with the unlz4() model (_unlz4)."""
+    out, error = _unlz4(buf)
+    if error is not None:
+        raise ValueError(error)
+    return out
+
+
+def _lz4_legacy_good_prefix(buf: bytes) -> bytes:
+    """Output of the legacy LZ4 chunks that decode before the first failure (_unlz4)."""
+    return _unlz4(buf)[0]
+
+
+def _hdrs_payload_bounds(raw: bytes, bzimage: Path, allow_past_eof: bool = False) -> tuple[int, int]:
+    """Return (start, plen) for the HdrS-declared payload slice. With
+    allow_past_eof a slice that starts inside the file but ends past EOF is
+    returned as is (the caller decodes raw[start:])."""
     if len(raw) < 0x250 or raw[0x202:0x206] != b"HdrS":
-        raise ProfileError(
+        raise UndecodablePayloadError(
             f"{bzimage}: unsupported or undecodable bzImage payload format (missing x86 HdrS setup header)"
         )
     setup_sects = raw[0x1f1] or 4
     poff = int.from_bytes(raw[0x248:0x24c], "little")
     plen = int.from_bytes(raw[0x24c:0x250], "little")
     start = (setup_sects + 1) * 512 + poff
-    if plen <= 0 or start < 512 or start + plen > len(raw):
-        raise ProfileError(
+    past_eof_ok = allow_past_eof and start < len(raw)
+    if plen <= 0 or start < 512 or (start + plen > len(raw) and not past_eof_ok):
+        raise UndecodablePayloadError(
             f"{bzimage}: invalid HdrS payload slice (offset={poff}, len={plen}, file_size={len(raw)})"
         )
     return start, plen
@@ -1128,9 +1359,11 @@ def _gzip_lenient(data: bytes) -> bytes | None:
         while i < len(blob):
             out += dec.decompress(blob[i:i + step])
             i += step
+            _check_output_cap(out, "gzip")
             if dec.eof:
                 break
         out += dec.flush()
+        _check_output_cap(out, "gzip")
     except zlib.error:
         pass
     return bytes(out) if out else None
@@ -1149,7 +1382,7 @@ def _drain_decompressor(
     """
     out = bytearray()
     pos = 0
-    limit = 512 * 1024 * 1024
+    limit = DECODER_OUTPUT_CAP
     eof = False
     raised = False
     cur_max = max_out
@@ -1277,10 +1510,26 @@ def _zstd_first_frame_size(buf: bytes) -> int | None:
 def _zstd_cli_decode(frame: bytes) -> bytes | None:
     if not frame or not shutil.which("zstd"):
         return None
-    proc = subprocess.run(["zstd", "-dc"], input=frame, capture_output=True)
+    proc = _run_bounded(["zstd", "-dc"], frame)
     if proc.returncode == 0 and proc.stdout:
         return proc.stdout
     return None
+
+
+def _zstd_cli_keep(frame: bytes) -> bytes | None:
+    """Bytes `zstd -dc` writes for a frame it rejects. A content-checksum
+    mismatch writes nothing on a small frame, so retry with --no-check."""
+    if not frame or not shutil.which("zstd") or "zstd" in _hidden_decompressors:
+        return None
+    best = b""
+    for args in (["zstd", "-dc"], ["zstd", "-dc", "--no-check"]):
+        try:
+            proc = _run_bounded(args, frame)
+        except OSError:
+            continue
+        if len(proc.stdout) > len(best):
+            best = proc.stdout
+    return best or None
 
 
 def _gzip_member_ok(data: bytes) -> bool:
@@ -1400,7 +1649,7 @@ def _decompress_scanned_member(kind: str, buf: bytes) -> bytes | None:
         if kind == "lz4frame":
             if not _tool_ready("lz4frame"):
                 return None
-            proc = subprocess.run(["lz4", "-dc"], input=buf, capture_output=True)
+            proc = _run_bounded(["lz4", "-dc"], buf)
             if proc.stdout and (proc.returncode == 0 or _has_decoded_ikcfg(proc.stdout)):
                 return proc.stdout
             return None
@@ -1425,7 +1674,7 @@ def _decompress_scanned_member(kind: str, buf: bytes) -> bytes | None:
         if kind == "lzo":
             if not _tool_ready("lzo"):
                 return None
-            proc = subprocess.run(["lzop", "-dc"], input=buf, capture_output=True)
+            proc = _run_bounded(["lzop", "-dc"], buf)
             if proc.stdout and (proc.returncode in (0, 2) or _has_decoded_ikcfg(proc.stdout)):
                 return proc.stdout
             return None
@@ -1651,84 +1900,150 @@ def _decompress_declared_payload(bzimage: Path, force_pure_python_lz4: bool = Fa
     kbuild formats: gzip, LZ4 legacy (`lz4 -l`), xz, lzma-alone, zstd, bzip2, uncompressed ELF
     (arch/x86/boot/compressed/Makefile gzip :136, bzip2 :138, lzma :140, xzkern :142,
     lz4 :146, zstd :148). An LZ4 frame is not an extract-ikconfig magic and is not a kbuild
-    output. CONFIG_KERNEL_LZO (Makefile :154, lzo recipes :143-144) is not decoded and is refused.
+    output. CONFIG_KERNEL_LZO (Makefile :154, lzo recipes :143-144) is decoded with `lzop -dc`;
+    without a usable lzop it is refused unpinnably.
     The declared slice must be one member plus an optional 4-byte uncompressed-size trailer."""
     if raw is None:
         raw = bzimage.read_bytes()
-    start, plen = _hdrs_payload_bounds(raw, bzimage)
+    start, plen = _hdrs_payload_bounds(raw, bzimage, allow_past_eof=True)
+    if start + plen > len(raw):
+        # The x86 decompressor uses the build-time z_input_len, not the HdrS
+        # payload_length, so such a kernel can boot: decode raw[start:]. Any
+        # decoded byte is scanned and refused; only nothing decodable stays
+        # "never decoded".
+        fixed = bytearray(raw)
+        fixed[0x24c:0x250] = (len(raw) - start).to_bytes(4, "little")
+        what = f"HdrS payload_length {plen} runs {start + plen - len(raw)} bytes past end of file"
+        try:
+            out = _decompress_declared_payload(bzimage, force_pure_python_lz4, raw=bytes(fixed))
+        except DecodedPayloadError as exc:
+            raise type(exc)(f"{bzimage}: {what}; {exc}", exc.decoded) from exc
+        except UndecodablePayloadError as exc:
+            raise UndecodablePayloadError(
+                f"{bzimage}: invalid HdrS payload slice ({what}; nothing decodable: {exc})"
+            ) from exc
+        except Exception as exc:
+            # A never-pinnable format (LZO without lzop, legacy LZ4 with
+            # nothing decoded) stays never pinnable past EOF.
+            raise ProfileError(f"{bzimage}: {what}; {exc}") from exc
+        raise DecodedPayloadError(f"{bzimage}: {what}; raw[start:] decodes", out)
     payload = raw[start:start + plen]
 
-    # 1. LZ4 legacy frame (\x02!L\x18, arch/x86/boot/compressed/Makefile:146)
-    if payload.startswith(b"\x02!L\x18"):
-        pos = 4
-        n_blocks = 0
-        while pos + 4 <= len(payload):
-            if pos + 4 == len(payload):
-                break  # 4-byte uncompressed size trailer from cmd_lz4_with_size
-            bsz = int.from_bytes(payload[pos:pos + 4], "little")
-            if bsz == 0 or bsz == 0x184C2102 or bsz > 8 * 1024 * 1024 or pos + 4 + bsz > len(payload):
-                raise ProfileError(f"{bzimage}: corrupt or truncated LZ4 legacy payload block")
-            pos += 4 + bsz
-            n_blocks += 1
-        if n_blocks == 0 or len(payload) - pos not in (0, 4):
-            raise ProfileError(f"{bzimage}: corrupt or truncated LZ4 legacy payload")
-        lz4_stream = payload[:pos]
+    # 1. LZ4 legacy frame (\x02!L\x18, arch/x86/boot/compressed/Makefile:146).
+    # Linux unlz4() rules (_unlz4). Never pinnable: any failure scans what
+    # decoded (DecodedPayloadError) or, with nothing decoded, is a plain
+    # (unpinnable) ProfileError.
+    if payload.startswith(LZ4_LEGACY_MAGIC):
+        # The lz4 CLI is only a fast path: it decodes the chunks the model
+        # walked (re-packed without the end markers), and its output is
+        # used when it exits 0 and carries a decodable IKCFG. Otherwise the
+        # pure-Python model decides.
+        cli_out = b""
+        cli_rc = None
         if shutil.which("lz4") and not force_pure_python_lz4:
-            r = subprocess.run(["lz4", "-dc"], input=lz4_stream, capture_output=True)
+            spans: list = []
+            _, walk_error = _unlz4(payload, lambda block: b"", spans)
+            if walk_error is None:
+                stream = LZ4_LEGACY_MAGIC + b"".join(
+                    (e - s_).to_bytes(4, "little") + payload[s_:e] for s_, e in spans
+                )
+            else:
+                stream = payload
+            r = _run_bounded(["lz4", "-dc"], stream)
+            cli_out, cli_rc = r.stdout, r.returncode
             i_st = r.stdout.find(b"IKCFG_ST\x1f\x8b")
             i_ed = r.stdout.find(b"IKCFG_ED", i_st + 10) if i_st >= 0 else -1
-            if r.returncode == 0 and i_st >= 0 and i_ed > i_st:
+            if walk_error is None and r.returncode == 0 and i_st >= 0 and i_ed > i_st:
                 try:
                     if _decode_ikcfg_blob(r.stdout, bzimage) is not None:
                         return r.stdout
                 except ProfileError:
                     pass
-        try:
-            return _lz4_decompress_legacy(lz4_stream)
-        except ValueError as e:
-            raise ProfileError(f"{bzimage}: corrupt LZ4 legacy payload ({e})") from e
+        out, error = _unlz4(payload)
+        if error is None:
+            return out
+        kept = max(out, cli_out, key=len)
+        if kept:
+            raise DecodedPayloadError(
+                f"{bzimage}: corrupt LZ4 legacy payload ({error}; lz4 CLI exit {cli_rc})", kept,
+            )
+        raise ProfileError(
+            f"{bzimage}: corrupt LZ4 legacy payload ({error}; lz4 CLI exit {cli_rc}); never pinnable"
+        )
 
     # 2. LZ4 standard frame (\x04"M\x18)
     if payload.startswith(b'\x04"M\x18'):
         if not shutil.which("lz4") or force_pure_python_lz4:
-            raise ProfileError(f"{bzimage}: cannot decode LZ4 frame payload without lz4 CLI")
+            raise UndecodablePayloadError(f"{bzimage}: cannot decode LZ4 frame payload without lz4 CLI")
+        kept = b""
         for candidate in (payload, payload[:-4] if len(payload) > 8 else payload):
-            r = subprocess.run(["lz4", "-dc"], input=candidate, capture_output=True)
+            r = _run_bounded(["lz4", "-dc"], candidate)
             if r.returncode == 0 and r.stdout:
                 return r.stdout
+            if len(r.stdout) > len(kept):
+                kept = r.stdout
+        if kept:
+            # lz4 wrote the payload (or part of it) before failing.
+            raise DecodedPayloadError(f"{bzimage}: corrupt LZ4 frame payload", kept)
         raise ProfileError(f"{bzimage}: corrupt LZ4 frame payload")
 
     # 3. gzip (\x1f\x8b, arch/x86/boot/compressed/Makefile:136)
     if payload.startswith(b"\x1f\x8b"):
+        # Linux lib/decompress_inflate.c __gunzip: parse the header, raw
+        # inflate (-MAX_WBITS), skip the 8-byte trailer without checking
+        # CRC32/ISIZE. A bad CRC32/ISIZE boots, so it decodes and is scanned.
+        hdr_end = _gzip_header_end(payload)
+        if hdr_end is None:
+            raise ProfileError(f"{bzimage}: corrupt gzip payload (bad gzip header)")
         try:
-            d = zlib.decompressobj(16 + zlib.MAX_WBITS)
-            out = d.decompress(payload) + d.flush()
+            d = zlib.decompressobj(-zlib.MAX_WBITS)
+            out = d.decompress(payload[hdr_end:], DECODER_OUTPUT_CAP + 1)
+            _check_output_cap(out, f"{bzimage}: gzip payload")
+            out += d.flush()
+        except DecoderLimitError:
+            raise
         except Exception as e:
+            kept = _gzip_lenient(payload)
+            if kept:
+                raise DecodedPayloadError(f"{bzimage}: corrupt gzip payload ({e})", kept) from e
             raise ProfileError(f"{bzimage}: corrupt gzip payload ({e})") from e
-        if not d.eof or len(d.unused_data) not in (0, 4):
-            raise ProfileError(f"{bzimage}: corrupt or trailing-garbage gzip payload")
+        # unused_data = 8-byte trailer (CRC32, ISIZE) + optional 4-byte size.
+        if not d.eof or len(d.unused_data) not in (8, 12):
+            raise DecodedPayloadError(f"{bzimage}: corrupt or trailing-garbage gzip payload", out)
         return out
 
     # 4. xz (\xfd7zXZ\x00, arch/x86/boot/compressed/Makefile:142 xzkern)
     if payload.startswith(b"\xfd7zXZ\x00"):
         try:
             d = lzma.LZMADecompressor(format=lzma.FORMAT_XZ)
-            out = d.decompress(payload)
+            out = d.decompress(payload, DECODER_OUTPUT_CAP + 1)
+            _check_output_cap(out, f"{bzimage}: xz payload")
+        except DecoderLimitError:
+            raise
         except Exception as e:
+            kept = _lenient_stream(lambda: lzma.LZMADecompressor(format=lzma.FORMAT_XZ), payload, recover_tail=True)
+            if kept:
+                raise DecodedPayloadError(f"{bzimage}: corrupt xz payload ({e})", kept) from e
             raise ProfileError(f"{bzimage}: corrupt xz payload ({e})") from e
         if not d.eof or len(d.unused_data) not in (0, 4):
-            raise ProfileError(f"{bzimage}: corrupt or trailing-garbage xz payload")
+            raise DecodedPayloadError(f"{bzimage}: corrupt or trailing-garbage xz payload", out)
         return out
 
     # 5. lzma alone (\x5d\x00\x00, arch/x86/boot/compressed/Makefile:140)
     if payload.startswith(b"\x5d\x00\x00"):
         try:
             d = lzma.LZMADecompressor(format=lzma.FORMAT_ALONE)
-            out = d.decompress(payload)
+            out = d.decompress(payload, DECODER_OUTPUT_CAP + 1)
+            _check_output_cap(out, f"{bzimage}: lzma payload")
+        except DecoderLimitError:
+            raise
         except Exception as e:
+            kept = _lenient_stream(lambda: lzma.LZMADecompressor(format=lzma.FORMAT_ALONE), payload, recover_tail=True)
+            if kept:
+                raise DecodedPayloadError(f"{bzimage}: corrupt lzma payload ({e})", kept) from e
             raise ProfileError(f"{bzimage}: corrupt lzma payload ({e})") from e
         if not d.eof or len(d.unused_data) not in (0, 4):
-            raise ProfileError(f"{bzimage}: corrupt or trailing-garbage lzma payload")
+            raise DecodedPayloadError(f"{bzimage}: corrupt or trailing-garbage lzma payload", out)
         return out
 
     # 6. zstd (\x28\xb5\x2f\xfd, arch/x86/boot/compressed/Makefile:148)
@@ -1736,34 +2051,54 @@ def _decompress_declared_payload(bzimage: Path, force_pure_python_lz4: bool = Fa
         if _zstd is not None:
             try:
                 d = _zstd.ZstdDecompressor()
-                out = d.decompress(payload)
+                out = d.decompress(payload, DECODER_OUTPUT_CAP + 1)
+                _check_output_cap(out, f"{bzimage}: zstd payload")
+            except DecoderLimitError:
+                raise
             except Exception as e:
+                kept = _lenient_stream(_zstd.ZstdDecompressor, payload, recover_tail=True) or _zstd_cli_keep(payload)
+                if kept:
+                    raise DecodedPayloadError(f"{bzimage}: corrupt zstd payload ({e})", kept) from e
                 raise ProfileError(f"{bzimage}: corrupt zstd payload ({e})") from e
             if not d.eof or len(d.unused_data) not in (0, 4):
-                raise ProfileError(f"{bzimage}: corrupt or trailing-garbage zstd payload")
+                raise DecodedPayloadError(f"{bzimage}: corrupt or trailing-garbage zstd payload", out)
             return out
         if shutil.which("zstd") and "zstd" not in _hidden_decompressors:
             # zstd -dc returns 0 for concatenated frames, so a successful CLI
             # decode of the whole slice does not prove there is one member.
             # Accept only the first frame, or that frame plus the 4-byte size
             # trailer cmd_zstd_with_size appends (Makefile:148).
+            # Decode the first frame first (Linux decompress_unzstd.c also
+            # cuts the first frame and ignores junk after it), then refuse
+            # junk after it with the decoded bytes, as the module path does.
             end = _zstd_first_frame_size(payload)
-            if end is not None and len(payload) - end in (0, 4):
-                out = _zstd_cli_decode(payload[:end])
-                if out is not None:
-                    return out
-            raise ProfileError(f"{bzimage}: corrupt or trailing-garbage zstd payload")
-        raise ProfileError(f"{bzimage}: cannot decode zstd payload")
+            frame = payload[:end] if end is not None else payload
+            out = _zstd_cli_decode(frame)
+            if out is None:
+                kept = _zstd_cli_keep(frame)
+                if kept:
+                    raise DecodedPayloadError(f"{bzimage}: corrupt zstd payload", kept)
+                raise ProfileError(f"{bzimage}: corrupt zstd payload")
+            if end is None or len(payload) - end not in (0, 4):
+                raise DecodedPayloadError(f"{bzimage}: corrupt or trailing-garbage zstd payload", out)
+            return out
+        raise UndecodablePayloadError(f"{bzimage}: cannot decode zstd payload without compression.zstd or the zstd CLI")
 
     # 7. bzip2 (BZh, arch/x86/boot/compressed/Makefile:138)
     if payload.startswith(b"BZh"):
         try:
             d = bz2.BZ2Decompressor()
-            out = d.decompress(payload)
+            out = d.decompress(payload, DECODER_OUTPUT_CAP + 1)
+            _check_output_cap(out, f"{bzimage}: bzip2 payload")
+        except DecoderLimitError:
+            raise
         except Exception as e:
+            kept = _lenient_stream(bz2.BZ2Decompressor, payload)
+            if kept:
+                raise DecodedPayloadError(f"{bzimage}: corrupt bzip2 payload ({e})", kept) from e
             raise ProfileError(f"{bzimage}: corrupt bzip2 payload ({e})") from e
         if not d.eof or len(d.unused_data) not in (0, 4):
-            raise ProfileError(f"{bzimage}: corrupt or trailing-garbage bzip2 payload")
+            raise DecodedPayloadError(f"{bzimage}: corrupt or trailing-garbage bzip2 payload", out)
         return out
 
     # 8. Uncompressed ELF vmlinux. payload_length must end at the ELF span.
@@ -1772,15 +2107,44 @@ def _decompress_declared_payload(bzimage: Path, force_pure_python_lz4: bool = Fa
     if payload.startswith(b"\x7fELF"):
         span = _elf64_le_span(payload)
         if span is None:
-            raise ProfileError(f"{bzimage}: uncompressed ELF payload is not a complete ELF64")
+            # The bytes are in hand: the scanner scans them (truncated ELF
+            # allowed) before refusing.
+            raise DecodedPayloadError(f"{bzimage}: uncompressed ELF payload is not a complete ELF64", payload)
         if span != len(payload):
-            raise ProfileError(
+            raise DecodedPayloadError(
                 f"{bzimage}: uncompressed ELF payload has {len(payload) - span} trailing bytes "
-                "after the ELF span (payload_length must cover one vmlinux, not a following member)"
+                "after the ELF span (payload_length must cover one vmlinux, not a following member)",
+                payload,
             )
         return payload
 
-    raise ProfileError(
+    # 9. LZO (\x89LZO..., CONFIG_KERNEL_LZO, Makefile :143-144: lzop -9 output
+    # plus the 4-byte size trailer). Decoded with `lzop -dc` like the
+    # initramfs/ikconfig path. No usable lzop is never "never decoded" for a
+    # normal kbuild format: unpinnable, after scanning any output.
+    if payload.startswith(_LZO_FILE_MAGIC):
+        if not _tool_ready("lzo"):
+            raise ProfileError(f"{bzimage}: cannot decode LZO payload: lzop unavailable (never pinnable)")
+        kept = b""
+        last_rc = None
+        candidates = [payload[:-4], payload] if len(payload) > len(_LZO_FILE_MAGIC) + 4 else [payload]
+        for candidate in candidates:
+            try:
+                r = _run_bounded(["lzop", "-dc"], candidate)
+            except OSError as e:
+                if kept:
+                    raise DecodedPayloadError(f"{bzimage}: corrupt LZO payload (lzop could not start: {e})", kept) from e
+                raise ProfileError(f"{bzimage}: cannot decode LZO payload: lzop could not start ({e}) (never pinnable)") from e
+            if r.returncode == 0 and r.stdout:
+                return r.stdout
+            last_rc = r.returncode
+            if len(r.stdout) > len(kept):
+                kept = r.stdout
+        if kept:
+            raise DecodedPayloadError(f"{bzimage}: corrupt LZO payload (lzop exit {last_rc})", kept)
+        raise ProfileError(f"{bzimage}: corrupt LZO payload (lzop exit {last_rc}, no output; never pinnable)")
+
+    raise UndecodablePayloadError(
         f"{bzimage}: unsupported or undecodable bzImage payload format (magic={payload[:8].hex()})"
     )
 
@@ -1795,13 +2159,18 @@ def _extract_bzimage_payload(bzimage: Path, force_pure_python_lz4: bool = False,
     mistake hides in the same place: more than one plausible payload or IKCFG, or a
     payload the HdrS header names that is not the one scripts/extract-ikconfig would
     use (kernel/common 3938c8d97142, scripts/extract-ikconfig: raw IKCFG_ST+gzip first,
-    then gzip, xz, bzip2, lzma, lzo, lz4 legacy, zstd). CONFIG_KERNEL_LZO is not decoded.
+    then gzip, xz, bzip2, lzma, lzo, lz4 legacy, zstd). CONFIG_KERNEL_LZO is decoded with lzop.
     """
     if raw is None:
         raw = bzimage.read_bytes()
     vmlinux = _decompress_declared_payload(bzimage, force_pure_python_lz4=force_pure_python_lz4, raw=raw)
     start, plen = _hdrs_payload_bounds(raw, bzimage)
-    _refuse_ambiguous_bzimage(raw, start, plen, bzimage, vmlinux)
+    try:
+        _refuse_ambiguous_bzimage(raw, start, plen, bzimage, vmlinux)
+    except DecodedPayloadError:
+        raise
+    except ProfileError as exc:
+        raise DecodedPayloadError(str(exc), vmlinux) from exc
     return vmlinux
 
 

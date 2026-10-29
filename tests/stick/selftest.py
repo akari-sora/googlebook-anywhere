@@ -170,6 +170,10 @@ check("rendered entry: no placeholder left, initcall_blacklist = the mapping, lo
       "@" not in ent and f"initcall_blacklist={ics}" in opts and {"lockdown=integrity", "efi=noruntime"} <= set(opts)
       and not {"nvme", "nvme_core"} & tbl and "nvme" not in ics)
 check("entry's module_blacklist covers the profile's blacklist.modules and every mapped module", bl_img <= tbl and set(imap) <= tbl)
+drain_extra = {"gpio_cros_ec", "cros_ec_hwmon", "cros_ec_wdt", "rtc_cros_ec", "cros_ec_uart", "cros_ec_rpmsg"}
+check("entry covers the default and drain image blacklists including cros_ec_proto",
+      bl_img | {"cros_ec_proto"} <= tbl
+      and (bl_img - {"cros_ec", "cros_ec_lpcs"}) | drain_extra | {"cros_ec_proto"} <= tbl)
 check("entry's options line is short enough (< 1900 bytes)", len(next(l for l in ent.splitlines() if l.startswith("options "))) < 1900)
 
 # --- check-cmdline: the installer's runtime check of the kernel command line, against module-blacklist.txt made by

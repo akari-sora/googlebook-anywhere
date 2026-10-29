@@ -1,0 +1,1229 @@
+{
+  "schema": 1,
+  "targets": [
+    {
+      "path": "system/lib64/libzmij.dylib.so",
+      "site_va": "0x42dd",
+      "partition": "system_a",
+      "image_path": "system/lib64/libzmij.dylib.so",
+      "sha256": "0e8ac83aa1b8c130a11b670250a4829d9750ec854ed3bc8c4ce2e4d2f0f9353e",
+      "size": 36112,
+      "file_offset": "0x42dd",
+      "function_va": "0x4190",
+      "function_size": 1203,
+      "function_name": "_RNvXs_NtCs5ck5XJOkKhq_4zmij7privatedNtB4_6Sealed20write_to_zmij_buffer",
+      "function_sha256": "808b520c7f410c6e7322804c21e744a282906de1708586b4533e9e34f02e8981",
+      "table_va": "0x37c0",
+      "table_file_offset": "0x37c0",
+      "table_hex": "bbb88d0600000000bbb88d0600000000f0d8ffff00000000f0d8ffff000000007b1400007b1400007b1400007b1400009a199a199a199a199a199a199a199a199cff00009cff00009cff00009cff0000f600f600f600f600f600f600f600f6000f0e0d0c0b0a0908070605040302010030303030303030303030303030303030",
+      "context_va": "0x42bc",
+      "context_offset": "0x42bc",
+      "context_hex": "c5f96ec2c4e1f96ec8c5f16cc0c5f9f40ec5f173d128c5e9efd2c4e369025e1005c4e2f1b4c3c5f9e44e20c5f172d103c4e271404e40c5f9d4c1c5f9e44e30c5f1d54e50c5f9d4c1c4",
+      "xmm3_function_mentions": [
+        "42d6:\tc4 e3 69 02 5e 10 05 \tvpblendd $0x5,0x10(%rsi),%xmm2,%xmm3",
+        "42dd:\tc4 e2 f1 b4 c3       \t{vex} vpmadd52luq %xmm3,%xmm1,%xmm0"
+      ],
+      "patch_offset": "0x42d6",
+      "patch_va": "0x42d6",
+      "patched_sha256": "1669994c735f5c0c89f92843c237ec2f39155f0429eb96f970b61e69233fcfc3",
+      "patched_function_sha256": "6eeaaebbe5b39a38df322a854fb509df4edfebcafebbe306fc036ae884267eb6",
+      "direct_function_branches_into_patch_interior": 0
+    },
+    {
+      "path": "vendor/lib64/libzmij.dylib.so",
+      "site_va": "0x42dd",
+      "partition": "vendor_a",
+      "image_path": "lib64/libzmij.dylib.so",
+      "sha256": "bb27b85eba085c1534e89f9f5c313ca1cab2d78740f56a393ac179688a4efaf2",
+      "size": 36112,
+      "file_offset": "0x42dd",
+      "function_va": "0x4190",
+      "function_size": 1203,
+      "function_name": "_RNvXs_NtCs5ck5XJOkKhq_4zmij7privatedNtB4_6Sealed20write_to_zmij_buffer",
+      "function_sha256": "808b520c7f410c6e7322804c21e744a282906de1708586b4533e9e34f02e8981",
+      "table_va": "0x37c0",
+      "table_file_offset": "0x37c0",
+      "table_hex": "bbb88d0600000000bbb88d0600000000f0d8ffff00000000f0d8ffff000000007b1400007b1400007b1400007b1400009a199a199a199a199a199a199a199a199cff00009cff00009cff00009cff0000f600f600f600f600f600f600f600f6000f0e0d0c0b0a0908070605040302010030303030303030303030303030303030",
+      "context_va": "0x42bc",
+      "context_offset": "0x42bc",
+      "context_hex": "c5f96ec2c4e1f96ec8c5f16cc0c5f9f40ec5f173d128c5e9efd2c4e369025e1005c4e2f1b4c3c5f9e44e20c5f172d103c4e271404e40c5f9d4c1c5f9e44e30c5f1d54e50c5f9d4c1c4",
+      "xmm3_function_mentions": [
+        "42d6:\tc4 e3 69 02 5e 10 05 \tvpblendd $0x5,0x10(%rsi),%xmm2,%xmm3",
+        "42dd:\tc4 e2 f1 b4 c3       \t{vex} vpmadd52luq %xmm3,%xmm1,%xmm0"
+      ],
+      "patch_offset": "0x42d6",
+      "patch_va": "0x42d6",
+      "patched_sha256": "ccacee826a52005c6dfafd48a01615116931c0f5bd8399340e9405d4a156bed4",
+      "patched_function_sha256": "6eeaaebbe5b39a38df322a854fb509df4edfebcafebbe306fc036ae884267eb6",
+      "direct_function_branches_into_patch_interior": 0
+    },
+    {
+      "path": "system/lib64/libinput.so",
+      "site_va": "0xcf4fd",
+      "partition": "system_a",
+      "image_path": "system/lib64/libinput.so",
+      "sha256": "9d181166ba4e876919c9a4c308c60c8b62f8bcbbc00ec4b1ae013c134f7e0778",
+      "size": 2102072,
+      "file_offset": "0xcf4fd",
+      "function_va": "0xcf3b0",
+      "function_size": 1203,
+      "function_name": "_RNvXs_NtCsyRw7ZWD79Y_4zmij7privatedNtB4_6Sealed20write_to_zmij_buffer",
+      "function_sha256": "460e1e0fee227a1b887d16e951c1953235931344e50ece4073cac5b98d91f629",
+      "table_va": "0x58ec0",
+      "table_file_offset": "0x58ec0",
+      "table_hex": "bbb88d0600000000bbb88d0600000000f0d8ffff00000000f0d8ffff000000007b1400007b1400007b1400007b1400009a199a199a199a199a199a199a199a199cff00009cff00009cff00009cff0000f600f600f600f600f600f600f600f6000f0e0d0c0b0a0908070605040302010030303030303030303030303030303030",
+      "context_va": "0xcf4dc",
+      "context_offset": "0xcf4dc",
+      "context_hex": "c5f96ec2c4e1f96ec8c5f16cc0c5f9f40ec5f173d128c5e9efd2c4e369025e1005c4e2f1b4c3c5f9e44e20c5f172d103c4e271404e40c5f9d4c1c5f9e44e30c5f1d54e50c5f9d4c1c4",
+      "xmm3_function_mentions": [
+        "cf4f6:\tc4 e3 69 02 5e 10 05 \tvpblendd $0x5,0x10(%rsi),%xmm2,%xmm3",
+        "cf4fd:\tc4 e2 f1 b4 c3       \t{vex} vpmadd52luq %xmm3,%xmm1,%xmm0"
+      ],
+      "patch_offset": "0xcf4f6",
+      "patch_va": "0xcf4f6",
+      "patched_sha256": "d062eb3eda8e669c7fef1168c18348421215fd024d2710191e616aa47465f567",
+      "patched_function_sha256": "3d9c536785a93635cdb75e4b9c7167faef943d2897da9e05a90e2beca637cf11",
+      "direct_function_branches_into_patch_interior": 0
+    },
+    {
+      "path": "system/lib64/libinputflinger.so",
+      "site_va": "0x1aa7dd",
+      "partition": "system_a",
+      "image_path": "system/lib64/libinputflinger.so",
+      "sha256": "e27014ec1e2e4d611cdd6df2c1175d86d679d1353ee970f190e831953fbcb3e4",
+      "size": 4494656,
+      "file_offset": "0x1aa7dd",
+      "function_va": "0x1aa690",
+      "function_size": 1203,
+      "function_name": "_RNvXs_NtCsyRw7ZWD79Y_4zmij7privatedNtB4_6Sealed20write_to_zmij_buffer",
+      "function_sha256": "20c06c112d3fadc187a4fcefff511b1159ab5fd202f5cb49551e128a96ef3224",
+      "table_va": "0xb4b40",
+      "table_file_offset": "0xb4b40",
+      "table_hex": "bbb88d0600000000bbb88d0600000000f0d8ffff00000000f0d8ffff000000007b1400007b1400007b1400007b1400009a199a199a199a199a199a199a199a199cff00009cff00009cff00009cff0000f600f600f600f600f600f600f600f6000f0e0d0c0b0a0908070605040302010030303030303030303030303030303030",
+      "context_va": "0x1aa7bc",
+      "context_offset": "0x1aa7bc",
+      "context_hex": "c5f96ec2c4e1f96ec8c5f16cc0c5f9f40ec5f173d128c5e9efd2c4e369025e1005c4e2f1b4c3c5f9e44e20c5f172d103c4e271404e40c5f9d4c1c5f9e44e30c5f1d54e50c5f9d4c1c4",
+      "xmm3_function_mentions": [
+        "1aa7d6:\tc4 e3 69 02 5e 10 05 \tvpblendd $0x5,0x10(%rsi),%xmm2,%xmm3",
+        "1aa7dd:\tc4 e2 f1 b4 c3       \t{vex} vpmadd52luq %xmm3,%xmm1,%xmm0"
+      ],
+      "patch_offset": "0x1aa7d6",
+      "patch_va": "0x1aa7d6",
+      "patched_sha256": "5067ae67853d5ed18b8d969701bc75071221ad1c9953570d41cabc378ac2b5b1",
+      "patched_function_sha256": "eec3c4ec1658447b91dc1a4d0803c066fd28d5173875d624ac9299663142fa34",
+      "direct_function_branches_into_patch_interior": 0
+    },
+    {
+      "path": "system/bin/prefetch",
+      "site_va": "0x23933d",
+      "partition": "system_a",
+      "image_path": "system/bin/prefetch",
+      "sha256": "fcba959b2862c19c1a441aad99611a0bf8349f51eebcb7040f8c348ece8c7abd",
+      "size": 2608312,
+      "file_offset": "0x23933d",
+      "function_va": "0x2391f0",
+      "function_size": 1203,
+      "function_name": "stripped; prologue and epilogue matched to exported libzmij function",
+      "function_sha256": "cfb6bd0c4132fa6a56f829089de987b79fef4a9194a714e28a078713ba8fbaac",
+      "table_va": "0x65b80",
+      "table_file_offset": "0x65b80",
+      "table_hex": "bbb88d0600000000bbb88d0600000000f0d8ffff00000000f0d8ffff000000007b1400007b1400007b1400007b1400009a199a199a199a199a199a199a199a199cff00009cff00009cff00009cff0000f600f600f600f600f600f600f600f6000f0e0d0c0b0a0908070605040302010030303030303030303030303030303030",
+      "context_va": "0x23931c",
+      "context_offset": "0x23931c",
+      "context_hex": "c5f96ec2c4e1f96ec8c5f16cc0c5f9f40ec5f173d128c5e9efd2c4e369025e1005c4e2f1b4c3c5f9e44e20c5f172d103c4e271404e40c5f9d4c1c5f9e44e30c5f1d54e50c5f9d4c1c4",
+      "xmm3_function_mentions": [
+        "239336:\tc4 e3 69 02 5e 10 05 \tvpblendd $0x5,0x10(%rsi),%xmm2,%xmm3",
+        "23933d:\tc4 e2 f1 b4 c3       \t{vex} vpmadd52luq %xmm3,%xmm1,%xmm0"
+      ],
+      "patch_offset": "0x239336",
+      "patch_va": "0x239336",
+      "patched_sha256": "380b4378daa8caea8149502f2a8840b30f8cf0123a3baaac6e0ecf85af2e354d",
+      "patched_function_sha256": "f178b2a5925de7a5dc5d9c818285f27acbf7c06d01d1eb20889d9c9e0fa5d4ba",
+      "direct_function_branches_into_patch_interior": 0
+    },
+    {
+      "path": "system/bin/ectool",
+      "site_va": "0x1be9ed",
+      "partition": "system_a",
+      "image_path": "system/bin/ectool",
+      "sha256": "b91baa3d3c6b019b9fe148c645f4d583bcb4e157b087eeeabfbe63e9c3b7d6a2",
+      "size": 1947600,
+      "file_offset": "0x1be9ed",
+      "function_va": "0x1be8a0",
+      "function_size": 1203,
+      "function_name": "stripped; prologue and epilogue matched to exported libzmij function",
+      "function_sha256": "2c7153871b86177475f6dd461c5f5da385ebd747afcd86ef81ef518c50778f69",
+      "table_va": "0x219c0",
+      "table_file_offset": "0x219c0",
+      "table_hex": "bbb88d0600000000bbb88d0600000000f0d8ffff00000000f0d8ffff000000007b1400007b1400007b1400007b1400009a199a199a199a199a199a199a199a199cff00009cff00009cff00009cff0000f600f600f600f600f600f600f600f6000f0e0d0c0b0a0908070605040302010030303030303030303030303030303030",
+      "context_va": "0x1be9cc",
+      "context_offset": "0x1be9cc",
+      "context_hex": "c5f96ec2c4e1f96ec8c5f16cc0c5f9f40ec5f173d128c5e9efd2c4e369025e1005c4e2f1b4c3c5f9e44e20c5f172d103c4e271404e40c5f9d4c1c5f9e44e30c5f1d54e50c5f9d4c1c4",
+      "xmm3_function_mentions": [
+        "1be9e6:\tc4 e3 69 02 5e 10 05 \tvpblendd $0x5,0x10(%rsi),%xmm2,%xmm3",
+        "1be9ed:\tc4 e2 f1 b4 c3       \t{vex} vpmadd52luq %xmm3,%xmm1,%xmm0"
+      ],
+      "patch_offset": "0x1be9e6",
+      "patch_va": "0x1be9e6",
+      "patched_sha256": "627332003e7ea6a4a06355e0b76b12d87fe9de89e44d4a4ec75bb7449e5dd615",
+      "patched_function_sha256": "67602334dfa7c2a92a7c2bb508daa666cd791f10d58c58e66df07d2f050329de",
+      "direct_function_branches_into_patch_interior": 0
+    },
+    {
+      "path": "vendor/bin/ectool",
+      "site_va": "0x1be9ed",
+      "partition": "vendor_a",
+      "image_path": "bin/ectool",
+      "sha256": "b91baa3d3c6b019b9fe148c645f4d583bcb4e157b087eeeabfbe63e9c3b7d6a2",
+      "size": 1947600,
+      "file_offset": "0x1be9ed",
+      "function_va": "0x1be8a0",
+      "function_size": 1203,
+      "function_name": "stripped; prologue and epilogue matched to exported libzmij function",
+      "function_sha256": "2c7153871b86177475f6dd461c5f5da385ebd747afcd86ef81ef518c50778f69",
+      "table_va": "0x219c0",
+      "table_file_offset": "0x219c0",
+      "table_hex": "bbb88d0600000000bbb88d0600000000f0d8ffff00000000f0d8ffff000000007b1400007b1400007b1400007b1400009a199a199a199a199a199a199a199a199cff00009cff00009cff00009cff0000f600f600f600f600f600f600f600f6000f0e0d0c0b0a0908070605040302010030303030303030303030303030303030",
+      "context_va": "0x1be9cc",
+      "context_offset": "0x1be9cc",
+      "context_hex": "c5f96ec2c4e1f96ec8c5f16cc0c5f9f40ec5f173d128c5e9efd2c4e369025e1005c4e2f1b4c3c5f9e44e20c5f172d103c4e271404e40c5f9d4c1c5f9e44e30c5f1d54e50c5f9d4c1c4",
+      "xmm3_function_mentions": [
+        "1be9e6:\tc4 e3 69 02 5e 10 05 \tvpblendd $0x5,0x10(%rsi),%xmm2,%xmm3",
+        "1be9ed:\tc4 e2 f1 b4 c3       \t{vex} vpmadd52luq %xmm3,%xmm1,%xmm0"
+      ],
+      "patch_offset": "0x1be9e6",
+      "patch_va": "0x1be9e6",
+      "patched_sha256": "627332003e7ea6a4a06355e0b76b12d87fe9de89e44d4a4ec75bb7449e5dd615",
+      "patched_function_sha256": "67602334dfa7c2a92a7c2bb508daa666cd791f10d58c58e66df07d2f050329de",
+      "direct_function_branches_into_patch_interior": 0
+    },
+    {
+      "path": "system/bin/aisealhostservice",
+      "site_va": "0xc38dd",
+      "partition": "system_a",
+      "image_path": "system/bin/aisealhostservice",
+      "sha256": "4a9f43a12c3f585272c03c307e52d8ffdc92dea2efa88f0dcf1871edfb908377",
+      "size": 1145312,
+      "file_offset": "0xc38dd",
+      "function_va": "0xc3790",
+      "function_size": 1203,
+      "function_name": "stripped; prologue and epilogue matched to exported libzmij function",
+      "function_sha256": "d4888b4ca8f3b65d9bd25bf3a4f19b9a76427cf1649ac16f94099e51337088ef",
+      "table_va": "0x31800",
+      "table_file_offset": "0x31800",
+      "table_hex": "bbb88d0600000000bbb88d0600000000f0d8ffff00000000f0d8ffff000000007b1400007b1400007b1400007b1400009a199a199a199a199a199a199a199a199cff00009cff00009cff00009cff0000f600f600f600f600f600f600f600f6000f0e0d0c0b0a0908070605040302010030303030303030303030303030303030",
+      "context_va": "0xc38bc",
+      "context_offset": "0xc38bc",
+      "context_hex": "c5f96ec2c4e1f96ec8c5f16cc0c5f9f40ec5f173d128c5e9efd2c4e369025e1005c4e2f1b4c3c5f9e44e20c5f172d103c4e271404e40c5f9d4c1c5f9e44e30c5f1d54e50c5f9d4c1c4",
+      "xmm3_function_mentions": [
+        "c38d6:\tc4 e3 69 02 5e 10 05 \tvpblendd $0x5,0x10(%rsi),%xmm2,%xmm3",
+        "c38dd:\tc4 e2 f1 b4 c3       \t{vex} vpmadd52luq %xmm3,%xmm1,%xmm0"
+      ],
+      "patch_offset": "0xc38d6",
+      "patch_va": "0xc38d6",
+      "patched_sha256": "4513629a8507da99a4b77e0c83d530fd936fcf9c49b40273b94ceb46b522e992",
+      "patched_function_sha256": "2b6216447f8c4eda4ea87e63e85cf967ab913811e77fb2d3281cbdbe647ad31c",
+      "direct_function_branches_into_patch_interior": 0
+    },
+    {
+      "path": "vendor/bin/hw/android.hardware.usb-service.desktop",
+      "site_va": "0x258ebd",
+      "partition": "vendor_a",
+      "image_path": "bin/hw/android.hardware.usb-service.desktop",
+      "sha256": "8d2bf44ba2c1737746e1e1c9f32a99302460afffb0c0586d5c4f432889e45d87",
+      "size": 2775848,
+      "file_offset": "0x258ebd",
+      "function_va": "0x258d70",
+      "function_size": 1203,
+      "function_name": "stripped; prologue and epilogue matched to exported libzmij function",
+      "function_sha256": "44871d926b405e099dc2b5377e2f789e10a99e72a902f0b27b385d9559c330a4",
+      "table_va": "0x69a40",
+      "table_file_offset": "0x69a40",
+      "table_hex": "bbb88d0600000000bbb88d0600000000f0d8ffff00000000f0d8ffff000000007b1400007b1400007b1400007b1400009a199a199a199a199a199a199a199a199cff00009cff00009cff00009cff0000f600f600f600f600f600f600f600f6000f0e0d0c0b0a0908070605040302010030303030303030303030303030303030",
+      "context_va": "0x258e9c",
+      "context_offset": "0x258e9c",
+      "context_hex": "c5f96ec2c4e1f96ec8c5f16cc0c5f9f40ec5f173d128c5e9efd2c4e369025e1005c4e2f1b4c3c5f9e44e20c5f172d103c4e271404e40c5f9d4c1c5f9e44e30c5f1d54e50c5f9d4c1c4",
+      "xmm3_function_mentions": [
+        "258eb6:\tc4 e3 69 02 5e 10 05 \tvpblendd $0x5,0x10(%rsi),%xmm2,%xmm3",
+        "258ebd:\tc4 e2 f1 b4 c3       \t{vex} vpmadd52luq %xmm3,%xmm1,%xmm0"
+      ],
+      "patch_offset": "0x258eb6",
+      "patch_va": "0x258eb6",
+      "patched_sha256": "37e0980d51308a4003557b4e43851874790681df8d690374b994616ee6a15f5b",
+      "patched_function_sha256": "5c506b555ba74b71e597b1aa81df667969bd7be0cf463c063f14fb3917c05acf",
+      "direct_function_branches_into_patch_interior": 0
+    },
+    {
+      "path": "apex/com.google.android.virt/bin/vm",
+      "site_va": "0x10fb5d",
+      "partition": "system_a",
+      "apex_path": "system/apex/com.google.android.virt.apex",
+      "payload_path": "/bin/vm",
+      "sha256": "dcae3a1b5c7caf88edc15ffcfb913346de7c7760413219e2a0a84b4ada43b4d0",
+      "size": 1559144,
+      "file_offset": "0x10fb5d",
+      "function_va": "0x10fa10",
+      "function_size": 1203,
+      "function_name": "stripped; prologue and epilogue matched to exported libzmij function",
+      "function_sha256": "c3e1e0a8f5264efcfe036dbf3c7fd130d192f6afe160dd4d9bb615d7f4b9f7fd",
+      "table_va": "0x2b500",
+      "table_file_offset": "0x2b500",
+      "table_hex": "bbb88d0600000000bbb88d0600000000f0d8ffff00000000f0d8ffff000000007b1400007b1400007b1400007b1400009a199a199a199a199a199a199a199a199cff00009cff00009cff00009cff0000f600f600f600f600f600f600f600f6000f0e0d0c0b0a0908070605040302010030303030303030303030303030303030",
+      "context_va": "0x10fb3c",
+      "context_offset": "0x10fb3c",
+      "context_hex": "c5f96ec2c4e1f96ec8c5f16cc0c5f9f40ec5f173d128c5e9efd2c4e369025e1005c4e2f1b4c3c5f9e44e20c5f172d103c4e271404e40c5f9d4c1c5f9e44e30c5f1d54e50c5f9d4c1c4",
+      "xmm3_function_mentions": [
+        "10fb56:\tc4 e3 69 02 5e 10 05 \tvpblendd $0x5,0x10(%rsi),%xmm2,%xmm3",
+        "10fb5d:\tc4 e2 f1 b4 c3       \t{vex} vpmadd52luq %xmm3,%xmm1,%xmm0"
+      ],
+      "patch_offset": "0x10fb56",
+      "patch_va": "0x10fb56",
+      "patched_sha256": "2fe0bcd8e7cb9d4c0fed104ad1a3fd6bb5dd88c448b99ac007b4bad161535bb9",
+      "patched_function_sha256": "6082fef060502ac899af965086082dca78dab945f1d961619b719cadd4210f31",
+      "direct_function_branches_into_patch_interior": 0
+    },
+    {
+      "path": "apex/com.google.android.virt/bin/virtmgr",
+      "site_va": "0x33367d",
+      "partition": "system_a",
+      "apex_path": "system/apex/com.google.android.virt.apex",
+      "payload_path": "/bin/virtmgr",
+      "sha256": "557ef96c0f8e77fdbd7af63870e374ff266dd85f9f81dc7d6efbd232371ee725",
+      "size": 4631928,
+      "file_offset": "0x33367d",
+      "function_va": "0x333530",
+      "function_size": 1203,
+      "function_name": "stripped; prologue and epilogue matched to exported libzmij function",
+      "function_sha256": "2605fdff4e6abfed69e3d34292f40020a2ae76b9f40172a0487ebded5e80d9ac",
+      "table_va": "0x971c0",
+      "table_file_offset": "0x971c0",
+      "table_hex": "bbb88d0600000000bbb88d0600000000f0d8ffff00000000f0d8ffff000000007b1400007b1400007b1400007b1400009a199a199a199a199a199a199a199a199cff00009cff00009cff00009cff0000f600f600f600f600f600f600f600f6000f0e0d0c0b0a0908070605040302010030303030303030303030303030303030",
+      "context_va": "0x33365c",
+      "context_offset": "0x33365c",
+      "context_hex": "c5f96ec2c4e1f96ec8c5f16cc0c5f9f40ec5f173d128c5e9efd2c4e369025e1005c4e2f1b4c3c5f9e44e20c5f172d103c4e271404e40c5f9d4c1c5f9e44e30c5f1d54e50c5f9d4c1c4",
+      "xmm3_function_mentions": [
+        "333676:\tc4 e3 69 02 5e 10 05 \tvpblendd $0x5,0x10(%rsi),%xmm2,%xmm3",
+        "33367d:\tc4 e2 f1 b4 c3       \t{vex} vpmadd52luq %xmm3,%xmm1,%xmm0"
+      ],
+      "patch_offset": "0x333676",
+      "patch_va": "0x333676",
+      "patched_sha256": "efb810acf60c78b0f166b9705a847946ecfffd3178556762b682f30c024a2e0d",
+      "patched_function_sha256": "4fa00bd37abce3a102f2f7847e1893dded9b22f54e5df3023561934867b5027b",
+      "direct_function_branches_into_patch_interior": 0
+    },
+    {
+      "path": "apex/com.google.android.virt/bin/early_virtmgr",
+      "site_va": "0x2ffd3d",
+      "partition": "system_a",
+      "apex_path": "system/apex/com.google.android.virt.apex",
+      "payload_path": "/bin/early_virtmgr",
+      "sha256": "428a56875e184fc91fec68dfa1126d3d43f0ec0d0cbca34eeb5788ffc9cf25bc",
+      "size": 4424896,
+      "file_offset": "0x2ffd3d",
+      "function_va": "0x2ffbf0",
+      "function_size": 1203,
+      "function_name": "stripped; prologue and epilogue matched to exported libzmij function",
+      "function_sha256": "712598f9df3cfd41239cdfecc0a2a55432409c7c823569f66e6f0c9208f25300",
+      "table_va": "0x85fc0",
+      "table_file_offset": "0x85fc0",
+      "table_hex": "bbb88d0600000000bbb88d0600000000f0d8ffff00000000f0d8ffff000000007b1400007b1400007b1400007b1400009a199a199a199a199a199a199a199a199cff00009cff00009cff00009cff0000f600f600f600f600f600f600f600f6000f0e0d0c0b0a0908070605040302010030303030303030303030303030303030",
+      "context_va": "0x2ffd1c",
+      "context_offset": "0x2ffd1c",
+      "context_hex": "c5f96ec2c4e1f96ec8c5f16cc0c5f9f40ec5f173d128c5e9efd2c4e369025e1005c4e2f1b4c3c5f9e44e20c5f172d103c4e271404e40c5f9d4c1c5f9e44e30c5f1d54e50c5f9d4c1c4",
+      "xmm3_function_mentions": [
+        "2ffd36:\tc4 e3 69 02 5e 10 05 \tvpblendd $0x5,0x10(%rsi),%xmm2,%xmm3",
+        "2ffd3d:\tc4 e2 f1 b4 c3       \t{vex} vpmadd52luq %xmm3,%xmm1,%xmm0"
+      ],
+      "patch_offset": "0x2ffd36",
+      "patch_va": "0x2ffd36",
+      "patched_sha256": "f92bcf2e9351e082129202a151ee39d6678c0a72f194cd4819d27e9c00021a1e",
+      "patched_function_sha256": "d2f15711b02a474a13bf0ae7cee3edd4cf0b4a7f1dc07f2e44c3da4a3b972131",
+      "direct_function_branches_into_patch_interior": 0
+    },
+    {
+      "path": "apex/com.google.android.virt/bin/crosvm_minimal",
+      "site_va": "0x6b315d",
+      "partition": "system_a",
+      "apex_path": "system/apex/com.google.android.virt.apex",
+      "payload_path": "/bin/crosvm_minimal",
+      "sha256": "20a4e108c740ddacc50713b40c4d8dffab6da483000fb957867a55b24668e5b3",
+      "size": 7495184,
+      "file_offset": "0x6b315d",
+      "function_va": "0x6b3010",
+      "function_size": 1203,
+      "function_name": "stripped; prologue and epilogue matched to exported libzmij function",
+      "function_sha256": "27d0e3286a1c809ce723e52216969590c85c5e117fd789c91b8ee4f3674e59a0",
+      "table_va": "0x62900",
+      "table_file_offset": "0x62900",
+      "table_hex": "bbb88d0600000000bbb88d0600000000f0d8ffff00000000f0d8ffff000000007b1400007b1400007b1400007b1400009a199a199a199a199a199a199a199a199cff00009cff00009cff00009cff0000f600f600f600f600f600f600f600f6000f0e0d0c0b0a0908070605040302010030303030303030303030303030303030",
+      "context_va": "0x6b313c",
+      "context_offset": "0x6b313c",
+      "context_hex": "c5f96ec2c4e1f96ec8c5f16cc0c5f9f40ec5f173d128c5e9efd2c4e369025e1005c4e2f1b4c3c5f9e44e20c5f172d103c4e271404e40c5f9d4c1c5f9e44e30c5f1d54e50c5f9d4c1c4",
+      "xmm3_function_mentions": [
+        "6b3156:\tc4 e3 69 02 5e 10 05 \tvpblendd $0x5,0x10(%rsi),%xmm2,%xmm3",
+        "6b315d:\tc4 e2 f1 b4 c3       \t{vex} vpmadd52luq %xmm3,%xmm1,%xmm0"
+      ],
+      "patch_offset": "0x6b3156",
+      "patch_va": "0x6b3156",
+      "patched_sha256": "ae193269f510179f9940a1803223e6d385275fc17d1b7eb5f6bfdc44f7354b3e",
+      "patched_function_sha256": "8e86c3873304693fb8c9e7a4f88442a3d82c30a54fbe55642c60a40ac79b69a8",
+      "direct_function_branches_into_patch_interior": 0
+    },
+    {
+      "path": "apex/com.google.android.virt/bin/crosvm",
+      "site_va": "0xad5add",
+      "partition": "system_a",
+      "apex_path": "system/apex/com.google.android.virt.apex",
+      "payload_path": "/bin/crosvm",
+      "sha256": "2b642953cc6bf985ab6c96fcd19a60efae916cdfdfed8894c377186c1341b081",
+      "size": 15011568,
+      "file_offset": "0xad5add",
+      "function_va": "0xad5990",
+      "function_size": 1203,
+      "function_name": "stripped; prologue and epilogue matched to exported libzmij function",
+      "function_sha256": "d27ec9fd6624b0104d29b28b536c786e1fe30bc3cfaf5e41a4756b6329a4b576",
+      "table_va": "0xe9140",
+      "table_file_offset": "0xe9140",
+      "table_hex": "bbb88d0600000000bbb88d0600000000f0d8ffff00000000f0d8ffff000000007b1400007b1400007b1400007b1400009a199a199a199a199a199a199a199a199cff00009cff00009cff00009cff0000f600f600f600f600f600f600f600f6000f0e0d0c0b0a0908070605040302010030303030303030303030303030303030",
+      "context_va": "0xad5abc",
+      "context_offset": "0xad5abc",
+      "context_hex": "c5f96ec2c4e1f96ec8c5f16cc0c5f9f40ec5f173d128c5e9efd2c4e369025e1005c4e2f1b4c3c5f9e44e20c5f172d103c4e271404e40c5f9d4c1c5f9e44e30c5f1d54e50c5f9d4c1c4",
+      "xmm3_function_mentions": [
+        "ad5ad6:\tc4 e3 69 02 5e 10 05 \tvpblendd $0x5,0x10(%rsi),%xmm2,%xmm3",
+        "ad5add:\tc4 e2 f1 b4 c3       \t{vex} vpmadd52luq %xmm3,%xmm1,%xmm0"
+      ],
+      "patch_offset": "0xad5ad6",
+      "patch_va": "0xad5ad6",
+      "patched_sha256": "b31b4952b109515caec9b7ca3def6927cf445093ac641eb60e5b9838ced4a012",
+      "patched_function_sha256": "33a1e488f3915c7b7b10de1c0807130e5982a203c4d6222e786d02852e5a4ec8",
+      "direct_function_branches_into_patch_interior": 0
+    },
+    {
+      "path": "apex/com.android.hardware.audio.desktop/lib64/libzmij.dylib.so",
+      "site_va": "0x42dd",
+      "partition": "vendor_a",
+      "apex_path": "apex/com.android.hardware.audio.desktop.apex",
+      "payload_path": "/lib64/libzmij.dylib.so",
+      "sha256": "bb27b85eba085c1534e89f9f5c313ca1cab2d78740f56a393ac179688a4efaf2",
+      "size": 36112,
+      "file_offset": "0x42dd",
+      "function_va": "0x4190",
+      "function_size": 1203,
+      "function_name": "_RNvXs_NtCs5ck5XJOkKhq_4zmij7privatedNtB4_6Sealed20write_to_zmij_buffer",
+      "function_sha256": "808b520c7f410c6e7322804c21e744a282906de1708586b4533e9e34f02e8981",
+      "table_va": "0x37c0",
+      "table_file_offset": "0x37c0",
+      "table_hex": "bbb88d0600000000bbb88d0600000000f0d8ffff00000000f0d8ffff000000007b1400007b1400007b1400007b1400009a199a199a199a199a199a199a199a199cff00009cff00009cff00009cff0000f600f600f600f600f600f600f600f6000f0e0d0c0b0a0908070605040302010030303030303030303030303030303030",
+      "context_va": "0x42bc",
+      "context_offset": "0x42bc",
+      "context_hex": "c5f96ec2c4e1f96ec8c5f16cc0c5f9f40ec5f173d128c5e9efd2c4e369025e1005c4e2f1b4c3c5f9e44e20c5f172d103c4e271404e40c5f9d4c1c5f9e44e30c5f1d54e50c5f9d4c1c4",
+      "xmm3_function_mentions": [
+        "42d6:\tc4 e3 69 02 5e 10 05 \tvpblendd $0x5,0x10(%rsi),%xmm2,%xmm3",
+        "42dd:\tc4 e2 f1 b4 c3       \t{vex} vpmadd52luq %xmm3,%xmm1,%xmm0"
+      ],
+      "patch_offset": "0x42d6",
+      "patch_va": "0x42d6",
+      "patched_sha256": "ccacee826a52005c6dfafd48a01615116931c0f5bd8399340e9405d4a156bed4",
+      "patched_function_sha256": "6eeaaebbe5b39a38df322a854fb509df4edfebcafebbe306fc036ae884267eb6",
+      "direct_function_branches_into_patch_interior": 0
+    },
+    {
+      "path": "apex/com.android.hardware.fingerprint.crosfp/bin/hw/android.hardware.biometrics.fingerprint-service.crosfp",
+      "site_va": "0x14afed",
+      "partition": "vendor_a",
+      "apex_path": "apex/com.android.hardware.fingerprint.crosfp.apex",
+      "payload_path": "/bin/hw/android.hardware.biometrics.fingerprint-service.crosfp",
+      "sha256": "841e8f184156549f5650994536f4e025b46af783427e32ec11dc141bd959b1d4",
+      "size": 1808520,
+      "file_offset": "0x14afed",
+      "function_va": "0x14aea0",
+      "function_size": 1203,
+      "function_name": "stripped; prologue and epilogue matched to exported libzmij function",
+      "function_sha256": "dc7719f6bf1fb7d88dda3ab5e229a2c05628fd7cc33eacfd913daf4b35387c9b",
+      "table_va": "0x31b00",
+      "table_file_offset": "0x31b00",
+      "table_hex": "bbb88d0600000000bbb88d0600000000f0d8ffff00000000f0d8ffff000000007b1400007b1400007b1400007b1400009a199a199a199a199a199a199a199a199cff00009cff00009cff00009cff0000f600f600f600f600f600f600f600f6000f0e0d0c0b0a0908070605040302010030303030303030303030303030303030",
+      "context_va": "0x14afcc",
+      "context_offset": "0x14afcc",
+      "context_hex": "c5f96ec2c4e1f96ec8c5f16cc0c5f9f40ec5f173d128c5e9efd2c4e369025e1005c4e2f1b4c3c5f9e44e20c5f172d103c4e271404e40c5f9d4c1c5f9e44e30c5f1d54e50c5f9d4c1c4",
+      "xmm3_function_mentions": [
+        "14afe6:\tc4 e3 69 02 5e 10 05 \tvpblendd $0x5,0x10(%rsi),%xmm2,%xmm3",
+        "14afed:\tc4 e2 f1 b4 c3       \t{vex} vpmadd52luq %xmm3,%xmm1,%xmm0"
+      ],
+      "patch_offset": "0x14afe6",
+      "patch_va": "0x14afe6",
+      "patched_sha256": "66f7f4095c2db4d661a6c1bdd751880e5375bc6aff41f34047d88bf489f552f2",
+      "patched_function_sha256": "a97826c2e5f9a0c9284173fe0f57b5d3cbf3a5da99b3c3bbd919e5a5cb4665e8",
+      "direct_function_branches_into_patch_interior": 0
+    },
+    {
+      "path": "system_ext/bin/trusty_security_vm_launcher",
+      "site_va": "0xe0f0d",
+      "partition": "system_ext_a",
+      "image_path": "bin/trusty_security_vm_launcher",
+      "sha256": "f920b5baf3a8eb7318b167dad02d49647d8a5f83e4de93d5ea1cb17538f47e7f",
+      "size": 1072152,
+      "file_offset": "0xe0f0d",
+      "function_va": "0xe0dc0",
+      "function_size": 1203,
+      "function_name": "stripped; .eh_frame FDE 0xe0dc0..0xe1273, approved zmij formatter pattern",
+      "function_sha256": "b1d13a26bac46aee7ebb6a657fe843963562920e07425f8650cee159b0d1e658",
+      "table_va": "0x23e80",
+      "table_file_offset": "0x23e80",
+      "table_hex": "bbb88d0600000000bbb88d0600000000f0d8ffff00000000f0d8ffff000000007b1400007b1400007b1400007b1400009a199a199a199a199a199a199a199a199cff00009cff00009cff00009cff0000f600f600f600f600f600f600f600f6000f0e0d0c0b0a0908070605040302010030303030303030303030303030303030",
+      "context_va": "0xe0eec",
+      "context_offset": "0xe0eec",
+      "context_hex": "c5f96ec2c4e1f96ec8c5f16cc0c5f9f40ec5f173d128c5e9efd2c4e369025e1005c4e2f1b4c3c5f9e44e20c5f172d103c4e271404e40c5f9d4c1c5f9e44e30c5f1d54e50c5f9d4c1c4",
+      "xmm3_function_mentions": [
+        "e0f06: c4 e3 69 02 5e 10 05 vpblendd $0x5,0x10(%rsi),%xmm2,%xmm3",
+        "e0f0d: c4 e2 f1 b4 c3 vpmadd52luq %xmm3,%xmm1,%xmm0"
+      ],
+      "patch_offset": "0xe0f06",
+      "patch_va": "0xe0f06",
+      "patched_sha256": "08b70c7072ee6d85e48626b06b89f35295b008eee17ac5fbba8c4fec8a611762",
+      "patched_function_sha256": "cb42a6069d76a57191edb1d420b1990e1f8ca73489bc525c374555bd6bff0241",
+      "direct_function_branches_into_patch_interior": 0
+    }
+  ],
+  "description": "Exact build-time IFMA patch and residual policy for pinned lapis build16452207; 17 patched ELFs, persistent APEX signing, exact raw-candidate and unsupported-image pins.",
+  "original_hex": "c4e369025e1005c4e2f1b4c3",
+  "replacement_hex": "c5f1f44e10c5f9d4c10f1f00",
+  "residuals": [
+    {
+      "partition": "system_a",
+      "container_chain": [
+        {
+          "kind": "tree_file",
+          "path": "system/apex/com.google.android.virt.apex"
+        },
+        {
+          "kind": "zip_member",
+          "path": "apex_payload.img"
+        },
+        {
+          "kind": "erofs_file",
+          "path": "etc/fs/microdroid.img",
+          "sha256": "df0733894a15bc0cb60480c38958f4d272c196d56b4230f253f2d921faa1e66f"
+        },
+        {
+          "kind": "erofs_file",
+          "path": "system/bin/microdroid_manager",
+          "sha256": "32efab45a5653acc33c440fc0761744e70a95caf45b807209764185da747bb15"
+        }
+      ],
+      "file_offset": "0x17b96d",
+      "instruction": "vpmadd52luq",
+      "reason": "Microdroid guest-only f64 formatter; left unpatched to preserve its vbmeta/DICE chain; a guest may SIGILL without AVX-IFMA."
+    },
+    {
+      "partition": "vendor_boot_a",
+      "container_chain": [
+        {
+          "kind": "vendor_ramdisk_entry",
+          "path": "1:recovery"
+        },
+        {
+          "kind": "lz4_payload",
+          "path": "<lz4>"
+        },
+        {
+          "kind": "cpio_member",
+          "path": "system/lib64/libzmij.dylib.so",
+          "sha256": "0e8ac83aa1b8c130a11b670250a4829d9750ec854ed3bc8c4ce2e4d2f0f9353e"
+        }
+      ],
+      "file_offset": "0x42dd",
+      "instruction": "vpmadd52luq",
+      "reason": "Recovery ramdisk, not loaded by any Googlebook Anywhere boot entry; builder/install/maintenance routes and actual standalone+ESP initrds audited (FOLLOWUP-5 B)."
+    },
+    {
+      "partition": "vendor_boot_b",
+      "container_chain": [
+        {
+          "kind": "vendor_ramdisk_entry",
+          "path": "0:"
+        },
+        {
+          "kind": "initramfs_tail",
+          "path": "offset:0x28a88"
+        },
+        {
+          "kind": "lz4_payload",
+          "path": "<lz4>"
+        },
+        {
+          "kind": "cpio_member",
+          "path": "first_stage_ramdisk/system/bin/recovery",
+          "sha256": "7e2c7563c54dba1115e83b4f5a624202a190a370b5f02868f16dde389eb033b3"
+        }
+      ],
+      "file_offset": "0xc75f7",
+      "instruction": "vpmadd52luq",
+      "reason": "Recovery ramdisk, not loaded by any Googlebook Anywhere boot entry; builder/install/maintenance routes and actual standalone+ESP initrds audited (FOLLOWUP-5 B)."
+    },
+    {
+      "partition": "vendor_boot_b",
+      "container_chain": [
+        {
+          "kind": "vendor_ramdisk_entry",
+          "path": "0:"
+        },
+        {
+          "kind": "initramfs_tail",
+          "path": "offset:0x28a88"
+        },
+        {
+          "kind": "lz4_payload",
+          "path": "<lz4>"
+        },
+        {
+          "kind": "cpio_member",
+          "path": "first_stage_ramdisk/vendor/bin/recovery_media",
+          "sha256": "7e2c7563c54dba1115e83b4f5a624202a190a370b5f02868f16dde389eb033b3"
+        }
+      ],
+      "file_offset": "0xc75f7",
+      "instruction": "vpmadd52luq",
+      "reason": "Recovery ramdisk, not loaded by any Googlebook Anywhere boot entry; builder/install/maintenance routes and actual standalone+ESP initrds audited (FOLLOWUP-5 B)."
+    },
+    {
+      "partition": "vendor_boot_b",
+      "container_chain": [
+        {
+          "kind": "vendor_ramdisk_entry",
+          "path": "0:"
+        },
+        {
+          "kind": "initramfs_tail",
+          "path": "offset:0x28a88"
+        },
+        {
+          "kind": "lz4_payload",
+          "path": "<lz4>"
+        },
+        {
+          "kind": "cpio_member",
+          "path": "system/bin/recovery",
+          "sha256": "7e2c7563c54dba1115e83b4f5a624202a190a370b5f02868f16dde389eb033b3"
+        }
+      ],
+      "file_offset": "0xc75f7",
+      "instruction": "vpmadd52luq",
+      "reason": "Recovery ramdisk, not loaded by any Googlebook Anywhere boot entry; builder/install/maintenance routes and actual standalone+ESP initrds audited (FOLLOWUP-5 B)."
+    },
+    {
+      "partition": "vendor_boot_b",
+      "container_chain": [
+        {
+          "kind": "vendor_ramdisk_entry",
+          "path": "0:"
+        },
+        {
+          "kind": "initramfs_tail",
+          "path": "offset:0x28a88"
+        },
+        {
+          "kind": "lz4_payload",
+          "path": "<lz4>"
+        },
+        {
+          "kind": "cpio_member",
+          "path": "system/lib64/libzmij.dylib.so",
+          "sha256": "0e8ac83aa1b8c130a11b670250a4829d9750ec854ed3bc8c4ce2e4d2f0f9353e"
+        }
+      ],
+      "file_offset": "0x42dd",
+      "instruction": "vpmadd52luq",
+      "reason": "Recovery ramdisk, not loaded by any Googlebook Anywhere boot entry; builder/install/maintenance routes and actual standalone+ESP initrds audited (FOLLOWUP-5 B)."
+    },
+    {
+      "partition": "vendor_boot_b",
+      "container_chain": [
+        {
+          "kind": "vendor_ramdisk_entry",
+          "path": "0:"
+        },
+        {
+          "kind": "initramfs_tail",
+          "path": "offset:0x28a88"
+        },
+        {
+          "kind": "lz4_payload",
+          "path": "<lz4>"
+        },
+        {
+          "kind": "cpio_member",
+          "path": "vendor/bin/recovery_media",
+          "sha256": "7e2c7563c54dba1115e83b4f5a624202a190a370b5f02868f16dde389eb033b3"
+        }
+      ],
+      "file_offset": "0xc75f7",
+      "instruction": "vpmadd52luq",
+      "reason": "Recovery ramdisk, not loaded by any Googlebook Anywhere boot entry; builder/install/maintenance routes and actual standalone+ESP initrds audited (FOLLOWUP-5 B)."
+    },
+    {
+      "partition": "system_a",
+      "container_chain": [
+        {
+          "kind": "tree_file",
+          "path": "system/apex/com.google.android.virt.apex"
+        },
+        {
+          "kind": "zip_member",
+          "path": "apex_payload.img"
+        },
+        {
+          "kind": "erofs_file",
+          "path": "etc/fs/microdroid_kernel",
+          "sha256": "47d8cc1b17efff78e77427669a87da77a7905a3e8cca88fe81e5a665d1c4c85d"
+        },
+        {
+          "kind": "bzimage_payload",
+          "path": "vmlinux",
+          "sha256": "ac5b5281c859544b388080331087633e287e1e6217725614a8f28886fde592e3"
+        }
+      ],
+      "file_offset": "0x4a0d71",
+      "instruction": "vpmadd52huq",
+      "reason": "Microdroid guest kernel aes_ctr64_crypt_vaes_avx512: raw candidate at 0x4a0d71 lies inside EVEX vpxord (ModRM c4), not an IFMA instruction; AES registration checks CPU features and xstate. Guest residual per FOLLOWUP-5 C."
+    },
+    {
+      "partition": "system_a",
+      "container_chain": [
+        {
+          "kind": "tree_file",
+          "path": "system/apex/com.google.android.virt.apex"
+        },
+        {
+          "kind": "zip_member",
+          "path": "apex_payload.img"
+        },
+        {
+          "kind": "erofs_file",
+          "path": "etc/fs/microdroid_kernel",
+          "sha256": "47d8cc1b17efff78e77427669a87da77a7905a3e8cca88fe81e5a665d1c4c85d"
+        },
+        {
+          "kind": "bzimage_payload",
+          "path": "vmlinux",
+          "sha256": "ac5b5281c859544b388080331087633e287e1e6217725614a8f28886fde592e3"
+        }
+      ],
+      "file_offset": "0x4a0f07",
+      "instruction": "vpmadd52huq",
+      "reason": "Microdroid guest kernel aes_ctr64_crypt_vaes_avx512: raw candidate at 0x4a0f07 lies inside EVEX vpxord (ModRM c4), not an IFMA instruction; AES registration checks CPU features and xstate. Guest residual per FOLLOWUP-5 C."
+    }
+  ],
+  "known_non_instructions": [
+    {
+      "partition": "product_a",
+      "container_chain": [
+        {
+          "kind": "tree_file",
+          "path": "app/GoogleTTS/GoogleTTS.apk"
+        },
+        {
+          "kind": "zip_member",
+          "path": "lib/x86_64/libgoogle_speech_sbg_tts_jni.so"
+        }
+      ],
+      "sha256": "61524ccee3b1407f00eaef1ebdb40b0e9078c7b83171f967dc6e344df9671072",
+      "file_offset": "0x1d710ea",
+      "encoding_hex": "c462b1b548",
+      "reason": "inside vpaddd at 0x1d710e5; explicit FOLLOWUP-4 coordinator decision"
+    },
+    {
+      "partition": "product_a",
+      "container_chain": [
+        {
+          "kind": "tree_file",
+          "path": "app/TrichromeLibrary/TrichromeLibrary.apk"
+        },
+        {
+          "kind": "zip_member",
+          "path": "lib/x86_64/libmonochrome_64.so"
+        }
+      ],
+      "sha256": "19b1df399cf8cf16b077bcd47c7a2e3bdec3ca3f897aefdd762b37f5c0f59ae6",
+      "file_offset": "0x42d6c35",
+      "encoding_hex": "c402e9b5fd",
+      "reason": "Candidate 0x42d6c35 is ModRM c4 inside add $0x2,%r12 at VA 0x42d6c33 (49 83 c4 02), followed by jmp at 0x42d6c37; coherent decode from .eh_frame FDE start 0x42d5d90 to candidate+80."
+    },
+    {
+      "partition": "product_a",
+      "container_chain": [
+        {
+          "kind": "tree_file",
+          "path": "app/WallpaperAIPrebuilt_10000652/WallpaperAIPrebuilt_10000652.apk"
+        },
+        {
+          "kind": "zip_member",
+          "path": "lib/x86_64/liblancet_jni.so"
+        }
+      ],
+      "sha256": "210a18e59432395e3efb55241dd0b2350c624085bed55d2695ac883138939c55",
+      "file_offset": "0x5ddb7a",
+      "encoding_hex": "c462b1b548",
+      "reason": "inside vpaddd %zmm4,%zmm8,%zmm8 at 0x5ddb75 in Java_com_google_android_apps_aiwallpapers_data_backend_RequestUtils_upscaleImage@@VERS_1.0"
+    },
+    {
+      "partition": "product_a",
+      "container_chain": [
+        {
+          "kind": "tree_file",
+          "path": "app/WebViewGoogle/WebViewGoogle.apk"
+        },
+        {
+          "kind": "zip_member",
+          "path": "lib/x86_64/libwebviewchromium.so"
+        }
+      ],
+      "sha256": "40c3e37249de2a2ae863f358f2eb835f7218ffa329279e26579ba8500490a13f",
+      "file_offset": "0x4f17126",
+      "encoding_hex": "c402e9b4fe",
+      "reason": "inside call   7b66c03 <CrashpadHandlerMain@@Base+0x3091f33> at 0x4f17123 in CrashpadHandlerMain"
+    },
+    {
+      "partition": "product_a",
+      "container_chain": [
+        {
+          "kind": "tree_file",
+          "path": "priv-app/ALAIPrebuiltRelease/ALAIPrebuiltRelease.apk"
+        },
+        {
+          "kind": "zip_member",
+          "path": "lib/x86_64/libmlkit_google_ocr_pipeline.so"
+        }
+      ],
+      "sha256": "54a82a1c9b465b8629a0edc401abb321a3914e7ee2e03d3ba5c8cf3ed61a2838",
+      "file_offset": "0x797b4a",
+      "encoding_hex": "c462b1b548",
+      "reason": "inside vpaddd %zmm4,%zmm8,%zmm8 at 0x797b45 in Java_com_google_android_libraries_vision_visionkit_pipeline_alt_NativePipelineImpl_resetOcr@@VERS_1.0"
+    },
+    {
+      "partition": "product_a",
+      "container_chain": [
+        {
+          "kind": "tree_file",
+          "path": "priv-app/ALAIPrebuiltRelease/ALAIPrebuiltRelease.apk"
+        },
+        {
+          "kind": "zip_member",
+          "path": "lib/x86_64/libtartarus_core.so"
+        }
+      ],
+      "sha256": "75b0cd066c932cd5a743ffb19102e1a430aba4d9e8762adfc8a9ddab0b0ed1b9",
+      "file_offset": "0xc146ca",
+      "encoding_hex": "c462b1b548",
+      "reason": "inside vpaddd %zmm4,%zmm8,%zmm8 at 0xc146c5 in Java_com_google_android_libraries_abuse_hades_tartarus_core_D_l@@VERS_1.0"
+    },
+    {
+      "partition": "product_a",
+      "container_chain": [
+        {
+          "kind": "tree_file",
+          "path": "priv-app/ContextualCursorPrebuilt/ContextualCursorPrebuilt.apk"
+        },
+        {
+          "kind": "zip_member",
+          "path": "lib/x86_64/libLiteRt.so"
+        }
+      ],
+      "sha256": "f020e7d4255e88a936952759cbb9dfcc35363874b0ff4a5e256d29e19fac1d49",
+      "file_offset": "0x6695ba",
+      "encoding_hex": "c462b1b548",
+      "reason": "inside vpaddd %zmm4,%zmm8,%zmm8 at 0x6695b5 in LiteRtGetOpaqueOptionsHash@@VERS_1.0"
+    },
+    {
+      "partition": "product_a",
+      "container_chain": [
+        {
+          "kind": "tree_file",
+          "path": "priv-app/ContextualCursorPrebuilt/ContextualCursorPrebuilt.apk"
+        },
+        {
+          "kind": "zip_member",
+          "path": "lib/x86_64/libmediapipe_tasks_jni.so"
+        }
+      ],
+      "sha256": "5189bf211f24e3745754643911f055cff9c3aef224c31b7d62ac2a93d7a4222d",
+      "file_offset": "0xcb1c2a",
+      "encoding_hex": "c462b1b548",
+      "reason": "inside vpaddd %zmm4,%zmm8,%zmm8 at 0xcb1c25 in Java_com_google_mediapipe_framework_AndroidPacketCreator_nativeCreateRgbaImage@@VERS_1.0"
+    },
+    {
+      "partition": "product_a",
+      "container_chain": [
+        {
+          "kind": "tree_file",
+          "path": "priv-app/ContextualCursorPrebuilt/ContextualCursorPrebuilt.apk"
+        },
+        {
+          "kind": "zip_member",
+          "path": "lib/x86_64/libocr_grouping_jni_lib.so"
+        }
+      ],
+      "sha256": "64c16bac8b8721b16efdba9e75478e35d9e4552d93be082c9a9db0d5dd96167b",
+      "file_offset": "0x88f69a",
+      "encoding_hex": "c462b1b548",
+      "reason": "inside vpaddd %zmm4,%zmm8,%zmm8 at 0x88f695 in Java_com_google_android_desktop_gpointer_app_mlkit_jni_OcrGroupJni_recognizeLinesNative@@VERS_1.0"
+    },
+    {
+      "partition": "product_a",
+      "container_chain": [
+        {
+          "kind": "tree_file",
+          "path": "priv-app/DesktopRecorderPrebuilt_953092853/DesktopRecorderPrebuilt_953092853.apk"
+        },
+        {
+          "kind": "zip_member",
+          "path": "lib/x86_64/libdeepclu_jni.so"
+        }
+      ],
+      "sha256": "5d95706afea466c9bf0654339e06b242a7b22338a957691c380a8d01ffccf9e4",
+      "file_offset": "0x5828aa",
+      "encoding_hex": "c462b1b548",
+      "reason": "inside vpaddd %zmm4,%zmm8,%zmm8 at 0x5828a5 in Java_com_google_research_socrates_jni_DeepCluJniAnnotator_predictNative@@VERS_1.0"
+    },
+    {
+      "partition": "product_a",
+      "container_chain": [
+        {
+          "kind": "tree_file",
+          "path": "priv-app/DesktopRecorderPrebuilt_953092853/DesktopRecorderPrebuilt_953092853.apk"
+        },
+        {
+          "kind": "zip_member",
+          "path": "lib/x86_64/libtensorflowlite_jni.so"
+        }
+      ],
+      "sha256": "a4a096ba7d15f7f9ea646556ff3670e5fa1f2c0ed75736633f7653a4bcc2823d",
+      "file_offset": "0x2af80a",
+      "encoding_hex": "c462b1b548",
+      "reason": "inside vpaddd %zmm4,%zmm8,%zmm8 at 0x2af805 in TfLiteXNNPackDelegateDelete@@VERS_1.0"
+    },
+    {
+      "partition": "product_a",
+      "container_chain": [
+        {
+          "kind": "tree_file",
+          "path": "priv-app/DeviceIntelligenceNetworkPrebuiltAstrea/DeviceIntelligenceNetworkPrebuiltAstrea.apk"
+        },
+        {
+          "kind": "zip_member",
+          "path": "lib/x86_64/libpcs_tensorflow_jni.so"
+        }
+      ],
+      "sha256": "2d4779d70ab5bccd252c3e38c7625548bd7dbc1637a79e4f42ea9e254a1e57a0",
+      "file_offset": "0xcf92ea",
+      "encoding_hex": "c462b1b548",
+      "reason": "inside vpaddd %zmm4,%zmm8,%zmm8 at 0xcf92e5 in Java_com_google_fcp_client_http_HttpClientForNative_onResponseCompleted@@VERS_1.0"
+    },
+    {
+      "partition": "product_a",
+      "container_chain": [
+        {
+          "kind": "tree_file",
+          "path": "priv-app/LatinIMEGoogleDesktopPrebuilt/LatinIMEGoogleDesktopPrebuilt.apk"
+        },
+        {
+          "kind": "zip_member",
+          "path": "lib/x86_64/libintegrated_shared_object.so"
+        }
+      ],
+      "sha256": "2fd2333ffead2942ea65943d21802c3aa7df074bf3e69510a04808006302909e",
+      "file_offset": "0x23417ea",
+      "encoding_hex": "c462b1b548",
+      "reason": "inside vpaddd %zmm4,%zmm8,%zmm8 at 0x23417e5 in Java_com_google_android_apps_inputmethod_libs_genaivoice_smartedit_MobileBertIntentClassifier_nativeCallTfLiteModelForSafetyClassifier@@VERS_1.0"
+    },
+    {
+      "partition": "product_a",
+      "container_chain": [
+        {
+          "kind": "tree_file",
+          "path": "priv-app/PrebuiltBugle/PrebuiltBugle.apk"
+        },
+        {
+          "kind": "zip_member",
+          "path": "lib/x86_64/libgoogle3.so"
+        }
+      ],
+      "sha256": "6da0d4bbce65b8ce4ccd1f47d9a7003f2e81b8ebabc30a8f60239a14a804bae3",
+      "file_offset": "0xfa74ba",
+      "encoding_hex": "c462b1b548",
+      "reason": "inside vpaddd %zmm4,%zmm8,%zmm8 at 0xfa74b5 in Java_com_google_knowledge_hobbes_chat_p13n_features_PredicatesAggregator_internalClose@@VERS_1.0"
+    },
+    {
+      "partition": "product_a",
+      "container_chain": [
+        {
+          "kind": "tree_file",
+          "path": "priv-app/PrebuiltBugle/PrebuiltBugle.apk"
+        },
+        {
+          "kind": "zip_member",
+          "path": "lib/x86_64/libmediapipe_tasks_vision_jni.so"
+        }
+      ],
+      "sha256": "b4d249c420fc55cdcdd0ed76eb774c3d46b625acbd967faee808d5a810bc507c",
+      "file_offset": "0xd4bf0a",
+      "encoding_hex": "c462b1b548",
+      "reason": "inside vpaddd %zmm4,%zmm8,%zmm8 at 0xd4bf05 in Java_com_google_mediapipe_framework_SurfaceOutput_nativeSetEglSurface@@VERS_1.0"
+    },
+    {
+      "partition": "product_a",
+      "container_chain": [
+        {
+          "kind": "tree_file",
+          "path": "priv-app/Satin/Satin.apk"
+        },
+        {
+          "kind": "zip_member",
+          "path": "lib/x86_64/liblens_ondevice_engine_play_ml.so"
+        }
+      ],
+      "sha256": "75958190ea626c199d813b936f5dc3639d0d36354ecd07a9a4d9c7f56b2a9c33",
+      "file_offset": "0x14ad14a",
+      "encoding_hex": "c462b1b548",
+      "reason": "inside vpaddd %zmm4,%zmm8,%zmm8 at 0x14ad145 in Java_com_google_android_libraries_lens_ondevice_nativeapi_LodeSplitRegistry_initializePlayMlPackSplitHandler@@VERS_1.0"
+    },
+    {
+      "partition": "product_a",
+      "container_chain": [
+        {
+          "kind": "tree_file",
+          "path": "priv-app/Satin/Satin.apk"
+        },
+        {
+          "kind": "zip_member",
+          "path": "lib/x86_64/libnga_jni.so"
+        }
+      ],
+      "sha256": "575f816a9a6cc010cdf4f6a9645acc485a7b6c7bb111687cd41f901cb87c6442",
+      "file_offset": "0x1f34cca",
+      "encoding_hex": "c462b1b548",
+      "reason": "inside vpaddd %zmm4,%zmm8,%zmm8 at 0x1f34cc5 in Java_com_google_android_libraries_micore_screen2x_Screen2x_nativeExtractText@@VERS_1.0"
+    },
+    {
+      "partition": "system_a",
+      "container_chain": [
+        {
+          "kind": "tree_file",
+          "path": "system/lib64/libandroid_gui.dylib.so"
+        }
+      ],
+      "sha256": "28d5c7dd1f02200926a292eff0cf731e16aa8e433db7b16b4b91fe953795d09a",
+      "file_offset": "0x9f8b",
+      "encoding_hex": "c422c9b5f6",
+      "reason": "GNU hash data in validated .gnu.hash section; file offset 0x9f8b, not executable instruction (FOLLOWUP-5 D)."
+    },
+    {
+      "partition": "vendor_a",
+      "container_chain": [
+        {
+          "kind": "tree_file",
+          "path": "apex/com.android.hardware.audio.desktop.apex"
+        },
+        {
+          "kind": "zip_member",
+          "path": "apex_payload.img"
+        },
+        {
+          "kind": "erofs_file",
+          "path": "lib64/libdesktop_audio_effects_internal.so"
+        }
+      ],
+      "sha256": "5ff4723b1ff8014fcddfbc944b664523475e5549d8e2876af44bc8d4e6b8edf0",
+      "file_offset": "0x65aa9a",
+      "encoding_hex": "c462b1b548",
+      "reason": "inside vpaddd %zmm4,%zmm8,%zmm8 at 0x65aa95 in plugin_processor_create_ast@@LIBSTYLE_CROS_1.0"
+    },
+    {
+      "partition": "vendor_a",
+      "container_chain": [
+        {
+          "kind": "tree_file",
+          "path": "lib64/libclvk.so"
+        }
+      ],
+      "sha256": "6f299e912a9f3ec7c9dd3e95b04a392239d30abfa9b6e2c43e30af7a6a6df561",
+      "file_offset": "0x16da649",
+      "encoding_hex": "c4e289b52c",
+      "reason": "inside add    $0xffffffe2,%r12d at 0x16da647 in clvk_get_config@@CLVK_UNIT_TESTING_FCT"
+    },
+    {
+      "container_chain": [
+        {
+          "kind": "tree_file",
+          "path": "kernel"
+        },
+        {
+          "kind": "bzimage_payload",
+          "path": "vmlinux"
+        }
+      ],
+      "encoding_hex": "c462d1b548",
+      "file_offset": "0x5fa481",
+      "partition": "boot_a",
+      "reason": "inside vpxord %zmm12,%zmm0,%zmm0 at 0xffffffff813fa47c in aes_ctr64_crypt_vaes_avx512",
+      "sha256": "f8ede4cc42dc65707dea5c281eb6d4f89f3b15a510c51f61fe5f5afbc44cddd5"
+    },
+    {
+      "container_chain": [
+        {
+          "kind": "tree_file",
+          "path": "kernel"
+        },
+        {
+          "kind": "bzimage_payload",
+          "path": "vmlinux"
+        }
+      ],
+      "encoding_hex": "c462d1b548",
+      "file_offset": "0x5fa617",
+      "partition": "boot_a",
+      "reason": "inside vpxord %zmm12,%zmm0,%zmm0 at 0xffffffff813fa612 in aes_ctr64_crypt_vaes_avx512",
+      "sha256": "f8ede4cc42dc65707dea5c281eb6d4f89f3b15a510c51f61fe5f5afbc44cddd5"
+    },
+    {
+      "container_chain": [
+        {
+          "kind": "tree_file",
+          "path": "kernel"
+        },
+        {
+          "kind": "bzimage_payload",
+          "path": "vmlinux"
+        }
+      ],
+      "encoding_hex": "c402e9b4fe",
+      "file_offset": "0x1325ad8",
+      "partition": "boot_a",
+      "reason": "inside add    $0x2,%r12 at 0xffffffff82125ad6 in uas_queuecommand",
+      "sha256": "f8ede4cc42dc65707dea5c281eb6d4f89f3b15a510c51f61fe5f5afbc44cddd5"
+    },
+    {
+      "container_chain": [
+        {
+          "kind": "tree_file",
+          "path": "kernel"
+        },
+        {
+          "kind": "bzimage_payload",
+          "path": "vmlinux"
+        }
+      ],
+      "encoding_hex": "c462d1b548",
+      "file_offset": "0x5fa481",
+      "partition": "boot_b",
+      "reason": "inside vpxord %zmm12,%zmm0,%zmm0 at 0xffffffff813fa47c in aes_ctr64_crypt_vaes_avx512",
+      "sha256": "f8ede4cc42dc65707dea5c281eb6d4f89f3b15a510c51f61fe5f5afbc44cddd5"
+    },
+    {
+      "container_chain": [
+        {
+          "kind": "tree_file",
+          "path": "kernel"
+        },
+        {
+          "kind": "bzimage_payload",
+          "path": "vmlinux"
+        }
+      ],
+      "encoding_hex": "c462d1b548",
+      "file_offset": "0x5fa617",
+      "partition": "boot_b",
+      "reason": "inside vpxord %zmm12,%zmm0,%zmm0 at 0xffffffff813fa612 in aes_ctr64_crypt_vaes_avx512",
+      "sha256": "f8ede4cc42dc65707dea5c281eb6d4f89f3b15a510c51f61fe5f5afbc44cddd5"
+    },
+    {
+      "container_chain": [
+        {
+          "kind": "tree_file",
+          "path": "kernel"
+        },
+        {
+          "kind": "bzimage_payload",
+          "path": "vmlinux"
+        }
+      ],
+      "encoding_hex": "c402e9b4fe",
+      "file_offset": "0x1325ad8",
+      "partition": "boot_b",
+      "reason": "inside add    $0x2,%r12 at 0xffffffff82125ad6 in uas_queuecommand",
+      "sha256": "f8ede4cc42dc65707dea5c281eb6d4f89f3b15a510c51f61fe5f5afbc44cddd5"
+    },
+    {
+      "container_chain": [
+        {
+          "kind": "tree_file",
+          "path": "kernel.efi"
+        },
+        {
+          "kind": "bzimage_payload",
+          "path": "vmlinux"
+        }
+      ],
+      "encoding_hex": "c462d1b548",
+      "file_offset": "0x5fa481",
+      "partition": "efi_system_a",
+      "reason": "inside vpxord %zmm12,%zmm0,%zmm0 at 0xffffffff813fa47c in aes_ctr64_crypt_vaes_avx512",
+      "sha256": "f8ede4cc42dc65707dea5c281eb6d4f89f3b15a510c51f61fe5f5afbc44cddd5"
+    },
+    {
+      "container_chain": [
+        {
+          "kind": "tree_file",
+          "path": "kernel.efi"
+        },
+        {
+          "kind": "bzimage_payload",
+          "path": "vmlinux"
+        }
+      ],
+      "encoding_hex": "c462d1b548",
+      "file_offset": "0x5fa617",
+      "partition": "efi_system_a",
+      "reason": "inside vpxord %zmm12,%zmm0,%zmm0 at 0xffffffff813fa612 in aes_ctr64_crypt_vaes_avx512",
+      "sha256": "f8ede4cc42dc65707dea5c281eb6d4f89f3b15a510c51f61fe5f5afbc44cddd5"
+    },
+    {
+      "container_chain": [
+        {
+          "kind": "tree_file",
+          "path": "kernel.efi"
+        },
+        {
+          "kind": "bzimage_payload",
+          "path": "vmlinux"
+        }
+      ],
+      "encoding_hex": "c402e9b4fe",
+      "file_offset": "0x1325ad8",
+      "partition": "efi_system_a",
+      "reason": "inside add    $0x2,%r12 at 0xffffffff82125ad6 in uas_queuecommand",
+      "sha256": "f8ede4cc42dc65707dea5c281eb6d4f89f3b15a510c51f61fe5f5afbc44cddd5"
+    }
+  ],
+  "unsupported_allowlist": [
+    {
+      "partition": "system_a",
+      "container_chain": [
+        {
+          "kind": "tree_file",
+          "path": "system/apex/com.google.android.virt.apex"
+        },
+        {
+          "kind": "zip_member",
+          "path": "apex_payload.img"
+        },
+        {
+          "kind": "erofs_file",
+          "path": "etc/fs/microdroid_vbmeta.img"
+        }
+      ],
+      "sha256": "72a24483f3eba2280623dab019bff5ce291741f18d4554b1adc6ee89ecf94d9a",
+      "reason": "Microdroid AVB metadata blob: 65536 bytes, AVB0 libavb 1.0, algorithm 2, auth block 576 bytes, aux block 1600 bytes, avbtool 1.4.0; no executable filesystem payload (FOLLOWUP-5 H3)."
+    }
+  ]
+}

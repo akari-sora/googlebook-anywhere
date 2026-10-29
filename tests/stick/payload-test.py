@@ -109,6 +109,11 @@ awk = subprocess.run(
 )
 names = mod.module_names(template)
 check(
+    "installer template blocks all six extra drain EC modules",
+    {"gpio_cros_ec", "cros_ec_hwmon", "cros_ec_wdt", "rtc_cros_ec",
+     "cros_ec_uart", "cros_ec_rpmsg"} <= set(names),
+)
+check(
     "module_blacklist matches setup-stick.sh",
     shell.returncode == 0 and shell.stdout.split() == names and names == sorted(set(names)),
 )

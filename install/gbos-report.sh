@@ -585,7 +585,7 @@ PCI_RE = re.compile(r"[0-9a-f]{4}:[0-9a-f]{4}")
 PINNED_KERNELS = (
     "6.18.21-android17-5-g3938c8d97142-ab16302624",
 )
-LAPIS_BUILDS = {"CL3B.260622.271.R1", "16452207"}
+LAPIS_BUILDS = {"CL3B.260622.271.R1", "16452207", "CL3B.260622.276.R4", "16658739"}
 PROFILES = {"kano": "kano", "generic-x86": "generic-x86"}
 PROFILE_STATUS = {"verified": "verified", "experimental": "experimental", "probe-only": "probe-only"}
 # Output field names. tests/report/report-test.sh reads this tuple. A new add() key must be listed here.

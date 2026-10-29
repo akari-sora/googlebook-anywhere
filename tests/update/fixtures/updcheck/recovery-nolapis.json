@@ -1,0 +1,20 @@
+[
+ {
+  "channel": "STABLE",
+  "device": "mica",
+  "file": "recovery.zip",
+  "filesize": 19230966272,
+  "manufacturer": "Dell",
+  "md5": "2b75ca43b008bf0f2a72a717dd5642f1",
+  "model": "XPS Googlebook",
+  "name": "XPS Googlebook",
+  "url": "https://dl.google.com/device/recovery/mica-user/16471258/recovery.zip",
+  "zipfilesize": 1,
+  "buildexploreruri": "",
+  "buildidentifier": "16471258_CL3B.260622.273.R1",
+  "target": "mica-user",
+  "branch": "arsp-26Q3-desktop-release",
+  "dateupdated": "2026-10-05",
+  "previousVersionGeneration": 1791211069242011
+ }
+]

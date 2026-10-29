@@ -22,7 +22,7 @@ variables:
 .deps: &deps
   before_script:
     - apt-get update -qq
-    - apt-get install -y -qq --no-install-recommends bash busybox coreutils util-linux procps python3 python3-yaml mtools zstd lz4 shellcheck git file gdisk > /dev/null
+    - apt-get install -y -qq --no-install-recommends bash busybox coreutils util-linux procps python3 python3-yaml mtools zstd lz4 lzop erofs-utils shellcheck git file gdisk openssl > /dev/null
     # the runner reuses the checkout between jobs and the test jobs hand it to the tester user; root's git would refuse it
     - git config --global --add safe.directory "$CI_PROJECT_DIR"
 
@@ -55,6 +55,7 @@ stick:
     - python3 tests/update/mutate.py -j 2      # each listed guard of gbos-update.py reverted in a copy must turn the self-test red
     # Docker is root. This suite is the normal-user path (no network, no disk), same python entry as the lines above.
     - useradd -m tester && chown -R tester:tester "$CI_PROJECT_DIR"
+    - runuser -u tester -- python3 tests/update/check-updates-test.py   # offline fixtures (install/check-updates.py, update.sh notice)
     - runuser -u tester -- python3 -I tests/stick/run_make_maint_test.py
     - runuser -u tester -- python3 -I tests/stick/public-export-test.py
     - python3 -I tests/stick/release-notes-gate.py   # tag gate: line 3 is release-status released, no unpublished wording anywhere in the file

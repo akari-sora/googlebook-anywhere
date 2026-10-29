@@ -840,6 +840,10 @@ opts = [ln for ln in rendered.splitlines() if ln.startswith("options ")]
 if len(opts) != 1:
     raise SystemExit("options")
 opt = opts[0]
+mods = set(next(o for o in opt.split() if o.startswith("module_blacklist=")).split("=", 1)[1].split(","))
+if not {"gpio_cros_ec", "cros_ec_hwmon", "cros_ec_wdt", "rtc_cros_ec",
+        "cros_ec_uart", "cros_ec_rpmsg"} <= mods or {"nvme", "nvme_core"} & mods:
+    raise SystemExit("drain EC blocks or nvme handling")
 if "systemd.mask=systemd-firstboot.service" in opt:
     raise SystemExit("mask")
 if not opt.endswith(" gbos.install=1"):

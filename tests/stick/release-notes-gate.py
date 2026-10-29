@@ -79,7 +79,7 @@ PINNED_CI_BLOCKS = {
     ".deps": """.deps: &deps
   before_script:
     - apt-get update -qq
-    - apt-get install -y -qq --no-install-recommends bash busybox coreutils util-linux procps python3 python3-yaml mtools zstd lz4 shellcheck git file gdisk > /dev/null
+    - apt-get install -y -qq --no-install-recommends bash busybox coreutils util-linux procps python3 python3-yaml mtools zstd lz4 lzop erofs-utils shellcheck git file gdisk openssl > /dev/null
     # the runner reuses the checkout between jobs and the test jobs hand it to the tester user; root's git would refuse it
     - git config --global --add safe.directory "$CI_PROJECT_DIR"
 """,

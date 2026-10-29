@@ -1,7 +1,7 @@
 """kano-gbos-watch.py / kano-gbos-watch-nvme.py: "unobservable" instead of a false all-clear, the full guard set of
 the device profile (profiles/kano/profile.toml) on this boot's command line, danger handling with a confirmed EC power
 cut (fake pyserial), and a hung camera grab that cannot stall the watch."""
-import json, shutil, subprocess, threading, time, tomllib, unittest
+import ast, json, shutil, subprocess, threading, time, tomllib, unittest
 from helpers import HARNESS, REPO, HarnessCase, harness_copy
 
 
@@ -13,6 +13,35 @@ def image_blacklist():
 
 BL = image_blacklist()
 LATE = "spi_intel_pci"                       # far down the list: a check of the first names only would miss it
+# Oracle for builder/image.py EC_EXTRA_BLOCK. The watcher parses that assignment; it must not carry its own copy.
+EXPECT_EXTRA = ("gpio_cros_ec", "cros_ec_hwmon", "cros_ec_wdt", "rtc_cros_ec", "cros_ec_uart", "cros_ec_rpmsg")
+
+
+def image_extra_block():
+    path = REPO / "builder" / "image.py"
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and len(node.targets) == 1:
+            target = node.targets[0]
+            if isinstance(target, ast.Name) and target.id == "EC_EXTRA_BLOCK":
+                value = list(ast.literal_eval(node.value))
+                if tuple(value) != EXPECT_EXTRA:
+                    raise AssertionError(f"EC_EXTRA_BLOCK changed: {value}")
+                return value
+    raise AssertionError("EC_EXTRA_BLOCK missing from builder/image.py")
+
+
+EXTRA = image_extra_block()
+
+
+def drain_cmdline(drop):
+    """Profile blacklist without `drop`, plus every EC_EXTRA_BLOCK name that was not dropped."""
+    drop = set(drop)
+    mods = [m for m in BL if m not in drop]
+    for name in EXTRA:
+        if name not in drop and name not in mods:
+            mods.append(name)
+    return cmdline(modules=mods)
 
 
 def cmdline(initcalls="nvme_init,mei_me_driver_init", modules=None, extra=""):
@@ -229,6 +258,76 @@ class Watch(HarnessCase):
         self.assertGreater(len(pids), 1, "a hung grab must be killed so that the next one can start")
         alive = [p for p in pids if subprocess.run(["kill", "-0", p], capture_output=True).returncode == 0]
         self.assertEqual(alive, [], "ffmpeg left running")
+
+    def _drain_line(self, drop):
+        return cmdline(modules=[m for m in BL if m not in drop])
+
+    def _restart(self):
+        self.stop.set()
+        time.sleep(0.6)
+        self.stop.clear()
+        self.log.write_text("")
+        frames = self.fk.tmp / "frames"
+        if frames.exists():
+            shutil.rmtree(frames)
+
+    def test_drain_policy_allows_only_the_transport_pair(self):
+        self.writer([drain_cmdline({"cros_ec", "cros_ec_lpcs"}),
+                     "[    2.000000] cros_ec_lpcs GOOG0004:00: probe\n",
+                     "[    2.100000] cros-ec-dev cros-ec-dev.0: no EC behind it\n",
+                     "[    2.200000] init: Loaded kernel module /vendor/lib/modules/cros_ec.ko\n",
+                     "[    2.300000] init: Loaded kernel module /vendor/lib/modules/cros_ec_lpcs.ko\n",
+                     "[    2.400000] init: Loaded kernel module /vendor/lib/modules/cros_ec_proto.ko\n"],
+                    then_idle=False)
+        r = self.watch(5, *FAST, "--ec-policy", "drain")
+        self.assertEqual(r.returncode, 0, self.explain(r))
+        self.reason("this boot observed, no danger line seen", r.stdout)
+
+    def test_drain_policy_cuts_power_when_a_third_module_is_missing(self):
+        self.writer([drain_cmdline({"cros_ec", "cros_ec_lpcs", "cros_ec_dev"}),
+                     "[    2.000000] x\n"], then_idle=False)
+        r = self.watch(30, *FAST, "--ec-policy", "drain")
+        self.assertEqual(r.returncode, 3, self.explain(r))
+        self.reason("module_blacklist entry cros_ec_dev", r.stdout)
+
+    def test_drain_policy_refuses_each_missing_extra(self):
+        for name in EXTRA:
+            with self.subTest(name=name):
+                self._restart()
+                before = len(self.ec_writes())
+                self.writer([drain_cmdline({"cros_ec", "cros_ec_lpcs", name}),
+                             "[    2.000000] x\n"], then_idle=False)
+                r = self.watch(30, *FAST, "--ec-policy", "drain")
+                self.assertEqual(r.returncode, 3, self.explain(r))
+                self.reason(f"module_blacklist entry {name}", r.stdout)
+                self.assertEqual(self.ec_writes()[before:before + 2], ["apshutdown", "powerinfo"])
+
+    def test_drain_policy_cuts_power_when_each_extra_module_loads(self):
+        for name in EXTRA:
+            with self.subTest(name=name):
+                self._restart()
+                before = len(self.ec_writes())
+                self.writer([drain_cmdline({"cros_ec", "cros_ec_lpcs"}),
+                             f"[    2.000000] init: Loaded kernel module /vendor/lib/modules/{name}.ko\n"],
+                            then_idle=False)
+                r = self.watch(30, *FAST, "--ec-policy", "drain")
+                self.assertEqual(r.returncode, 2, self.explain(r))
+                self.reason("forbidden EC module loaded", r.stdout)
+                self.assertEqual(self.ec_writes()[before:before + 2], ["apshutdown", "powerinfo"])
+
+    def test_drain_policy_still_cuts_on_an_ec_consumer(self):
+        self.writer([drain_cmdline({"cros_ec", "cros_ec_lpcs"}),
+                     "[    2.000000] cros_ec_keyb: buttons\n"], then_idle=False)
+        r = self.watch(30, *FAST, "--ec-policy", "drain")
+        self.assertEqual(r.returncode, 2, self.explain(r))
+        self.reason("EC consumer driver bound", r.stdout)
+
+    def test_default_policy_still_cuts_when_the_transport_pair_is_absent(self):
+        self.writer([self._drain_line({"cros_ec", "cros_ec_lpcs"}),
+                     "[    2.000000] x\n"], then_idle=False)
+        r = self.watch(30, *FAST)
+        self.assertEqual(r.returncode, 3, self.explain(r))
+        self.reason("module_blacklist entry cros_ec", r.stdout)
 
     def test_hung_ec_port_times_out(self):
         self.writer([GOOD_USB, "[    2.000000] x\n", "[    3.000000] tpm tpm0: starting up\n"], then_idle=False)

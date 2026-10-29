@@ -47,3 +47,6 @@ declare -A EXPECT_REFKEY=(
 VENDOR_PART_SIZE=452984832
 SYSEXT_PART_SIZE=209715200
 
+
+# Stock vbmeta rollback index; verify before resigning.
+VBMETA_ROLLBACK_INDEX=1339

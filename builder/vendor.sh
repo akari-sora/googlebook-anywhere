@@ -5,7 +5,8 @@
 # History of the individual changes (safe2 ... safe25, all verified on the real KANO):
 # Rebuild kano-safe25.img: safe24 + ACPI Power Button no longer excluded (KANO has no cros_ec_buttons); safe24 = safe23 + light on-disk diag (adb is the live channel); safe23 = safe22 + adbd on tcp:5555 (system pins localhost), udsattestation stopped; safe22 = safe21 + key-only adb over TCP 5555 for the harness (the builder's key), fsync'd heavy diag files; safe21 = safe20 + stop timberslide/gscd (EC/TPM crash loops), 5-min system_server watchdog setting, audio self-test only on request, battery/bluetooth/camera/sensors/power in the diag; safe20 = safe19 + one-shot audio self-test (dras_tool tone + mic), diag without global sync (small files via dd conv=fsync), audio dumpsys pipes; safe19 = safe18 + DRAS audio config for the KANO card (sof-nau8825, from ChromeOS kano UCM), keyboard backlight LED path for the KANO (idc, ueventd, genfscon), serial logcat only on the serial-debug entry, lighter diag (60 s, io-top, audio/input dumps, reader timeouts); safe18 = safe17 + cmd/dumpsys fd/pipe access for the kano debug domain, timeouts and display/backlight reads in kano-diag, Wi-Fi join via pipes; safe16 without the firmware updaters/flash tools (fwupd + cabs, flashrom, futility, ectool, crossystem, ap-ec-fw.zip); safe15 + KANO firmware (AX211 Wi-Fi, AX211 Bluetooth, SOF IPC3 max98373+nau8825), iwlmvm load, Wi-Fi autoconnect from /data/kano-wifi.conf; safe13 + kano_diag (dmesg and logcat snapshots in /data/kano-diag every 20 s, for boots where the serial console dies); safe12 + kano_bootfix (sets persist.vold.dont_commit_checkpoint=1 every boot, so a fresh /data does not fall back into the 'Checkpoint commit failed' loop); safe11 without the IWeaver/ISecretkeeper VINTF declarations (their HALs need the protected VM, so LockSettings waited forever and the watchdog killed system_server); safe10 with /data on f2fs (4K fsync on the Kingston: f2fs median 4 ms vs ext4 p90 18 s) and without the rejected cross-treble overrides; safe9 + stop the GSC/EC/Trusty crash loops (each crash writes a tombstone to the slow stick and system_server fsyncs stall past the watchdog) + quieter serial logcat; safe8 + no cppreopts (system_server watchdog loop on the slow stick) + serial logcat (permissive kano_kmsg_logcat domain, on-device policy compile); safe7 + userdata without checkpoint=block (no dm-bow rollback after power cuts); experiment A (colour pipeline off) + drm_hwcomposer client backend (no tiled buffer on a plane; xe faults on DPT scanout) + unencrypted userdata, no USB voldmanaged, ro.debuggable=1 (serial console).
 # Vendor drops fwupd's on-boot starts and desktop_kernel_max_rollforward_boot.rc.
-# Other logical partitions stay byte-identical. vbmeta is re-signed.
+# With patch_ifma enabled, system_a and system_ext_a are also rebuilt and verified;
+# other logical partitions stay byte-identical. vbmeta is re-signed.
 # ESP initrd keeps the current archive and takes the standalone bootconfig,
 # with vbmeta digest, size, and boot_a UUID filled in.
 set -euo pipefail
@@ -27,10 +28,21 @@ KEY="$GBOS_AVB_KEY"
 FW="${GBOS_FIRMWARE:?GBOS_FIRMWARE = firmware directory (builder/fetch-inputs.sh <dir> fills <dir>/firmware)}"
 export GBOS_AUDIO_SRC="${GBOS_AUDIO_SRC:?GBOS_AUDIO_SRC = audio sources of the profile (builder/fetch-inputs.sh <dir> fills <dir>/audio-src)}"
 export GBOS_PROFILE GBOS_ADB_PUBKEY="${GBOS_ADB_PUBKEY:-}"
-# GBOS_EC (opt-in EC features, see builder/image.py): a comma list of sensors, typec, buttons; empty = none
+# GBOS_EC (opt-in EC features, see builder/image.py): empty, exactly drain, or sensors, typec, buttons.
+# drain is exclusive. Duplicates, empty items and unknown items are refused.
 export GBOS_EC="${GBOS_EC:-}"
-[[ "$GBOS_EC" =~ ^((sensors|typec|buttons)(,(sensors|typec|buttons))*)?$ ]] \
-    || { echo "GBOS_EC must be empty or a comma list of sensors, typec, buttons, not $GBOS_EC"; exit 2; }
+gbos_ec_ok() {
+    local ec="$1" n u
+    if [ -z "$ec" ] || [ "$ec" = "drain" ]; then
+        return 0
+    fi
+    [[ "$ec" =~ ^(sensors|typec|buttons)(,(sensors|typec|buttons))*$ ]] || return 1
+    n=$(printf '%s\n' "$ec" | tr ',' '\n' | grep -c .)
+    u=$(printf '%s\n' "$ec" | tr ',' '\n' | sort -u | grep -c .)
+    [ "$n" = "$u" ]
+}
+gbos_ec_ok "$GBOS_EC" \
+    || { echo "GBOS_EC must be empty, drain, or a comma list of sensors, typec, buttons, not $GBOS_EC"; exit 2; }
 # GBOS_TEST_AUTOOFF (developer-only; install/install.sh refuses it): empty = off; else seconds 60..7200.
 # Canonical decimal, no leading zeros. Check the text before any arithmetic: bash wraps 2^64+60 to 60.
 if [ -n "${GBOS_TEST_AUTOOFF:-}" ]; then
@@ -69,9 +81,17 @@ if len(key) != 524 or struct.unpack_from("<I", key, 0)[0] != 64 or struct.unpack
 PY
 fi
 python3 "$HERE/lib/devprofile.py" check "$GBOS_PROFILE" || exit 2
+if [ -n "$GBOS_EC" ]; then
+    gbos_ec_model=$(python3 "$HERE/lib/devprofile.py" get "$GBOS_PROFILE" model.id)
+    [ "$gbos_ec_model" = kano ] || { echo "GBOS_EC is audited for the KANO only"; exit 2; }
+fi
 if [ -n "$GBOS_DEV_KERNEL_DIR" ]; then
     python3 "$HERE/lib/devprofile.py" check-kconfig "$GBOS_PROFILE" "$GBOS_DEV_KERNEL_DIR" || exit 2
 fi
+# Select the same measured partition identity and rollback index as the IFMA path.
+BUILD_IDENTITY=$(python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import ifma; print(ifma.VENDOR_FINGERPRINT, ifma.VENDOR_SECURITY_PATCH, ifma.VBMETA_ROLLBACK_INDEX)' "$HERE/lib") || exit 1
+read -r VENDOR_FINGERPRINT VENDOR_SECURITY_PATCH VBMETA_ROLLBACK_INDEX <<< "$BUILD_IDENTITY"
+
 AUDIO_LIST=$(python3 "$HERE/lib/devprofile.py" get "$GBOS_PROFILE" audio.sources)
 if [ -n "$AUDIO_LIST" ]; then
     grep -v '^#' "$GBOS_PROFILE/$AUDIO_LIST" | awk 'NF == 3 {print $3 "  " $1}' | ( cd "$GBOS_AUDIO_SRC" && sha256sum -c ) >/dev/null \
@@ -91,13 +111,15 @@ echo "copy base image"
 cp --reflink=auto "$REAL" "$IMG"
 
 python3 - "$IMG" "$TMP" "$HERE/lib" << 'PY'
-import pickle, struct, sys, uuid
+import os, pickle, struct, sys, uuid
 from pathlib import Path
 
 img = Path(sys.argv[1])
 tmp = Path(sys.argv[2])
 sys.path.insert(0, sys.argv[3])
 import rebuild
+import devprofile
+import ifma
 
 def gpt(path):
     with path.open("rb") as f:
@@ -176,11 +198,17 @@ orig = struct.unpack_from(">Q", blob, idx + 12)[0]
 erofs = blob[:orig]
 (tmp / "vendor.erofs.src").write_bytes(erofs)
 u = str(uuid.UUID(bytes=erofs[1024 + 48:1024 + 64]))
-if u != "7aead136-f6d4-508e-9bf2-2517134fe885":
-    raise SystemExit("unexpected vendor uuid " + u + ": this builder supports only lapis CL3B.260622.271.R1 (build 16452207)")
+if u != ifma.VENDOR_UUID:
+    raise SystemExit(f"unexpected vendor uuid {u}: selected Google build {ifma.LAPIS_BUILD}")
 
 data, blksz, meta_off, xattr, root = rebuild.load_image(tmp / "vendor.erofs.src")
-vmap, _hard = rebuild.walk_image(str(tmp / "vendor.erofs.src"), root, data, blksz, meta_off, xattr)
+strict_metadata = bool(devprofile.load(os.environ["GBOS_PROFILE"]).get("cpu_compat", {}).get("patch_ifma", False))
+vmap, _hard = rebuild.walk_image(
+    str(tmp / "vendor.erofs.src"), root, data, blksz, meta_off, xattr,
+    strict_metadata=strict_metadata,
+)
+if strict_metadata and _hard:
+    raise SystemExit(f"vendor_a has {_hard} hardlinked entries; handle before rebuild")
 (tmp / "vendor.meta.pickle").write_bytes(pickle.dumps(vmap))
 (tmp / "offsets.env").write_text(
     f"ESP_OFF={parts['EFI-SYSTEM']['start']}\n"
@@ -325,6 +353,10 @@ if hooks and hasattr(hooks, "display"):
     hooks.display(ctx)
 elif prof["display"]["build_prop_set"] or prof["display"]["hwc_backend"]:
     raise SystemExit("profile display settings need hooks.vendor with display()")
+# display.density (profile, 0 = unset): vendor ro.sf.lcd_density, the base density the display-size slider scales from.
+bp.write_text(devprofile.set_lcd_density(bp.read_text(), prof["display"]["density"]))
+if prof["display"]["density"]:
+    print("display density:", [l for l in bp.read_text().splitlines() if l.startswith(devprofile.DENSITY_PROP + "=")])
 # No cppreopts: copying system_other odex to /data took 540 s on the stick and pushed PMS past the watchdog.
 bt = bp.read_text()
 if bt.splitlines().count("ro.cp_system_other_odex=1") != 1:
@@ -419,6 +451,27 @@ on post-fs-data
 """)
 (tree / "etc/init/kano-bootfix.rc").chmod(0o644)
 vmap["etc/init/kano-bootfix.rc"] = dict(vmap["etc/init/fwupd.rc"])
+# Every profile. Google's payload passes otacerts.zip; inferred (not verified on hardware): a
+# delta cannot match the modified vendor/system source blocks and a full payload cannot switch
+# the slot (blocked boot-control path; the boot menu does not follow Google's boot-control slot
+# switch). Stop and disable update_engine right after update_engine.rc enables it, so the setup
+# wizard should not repeat that step and a Google OTA does not compete with gbos-update.py for
+# the inactive slot. Verified in QEMU only: the action ran and update_engine never started; not
+# verified on a device that it never runs or that the wizard finishes. stop is an init builtin. Do not redefine the service in this file.
+# Trigger: the same ro.boot.slot_suffix=* that update_engine.rc uses to enable it (system rc
+# files are parsed first, so this action runs after the enable). A vendor rc cannot use
+# init.svc.update_engine: init refuses it ("unexported property trigger", seen in QEMU).
+(tree / "etc/init/gbos-no-ota.rc").write_text("""# Inferred: these images cannot finish a Google OTA (delta source blocks do not
+# match the modified vendor/system; a full payload cannot switch the slot, and the
+# boot menu does not follow Google's boot-control slot switch). Stop and disable
+# update_engine right after update_engine.rc enables it, so the setup wizard should
+# not loop and a Google OTA does not compete with gbos-update.py for the inactive slot. Same trigger as the enable in /system/etc/init/update_engine.rc;
+# system rc files are parsed first, so this runs after it.
+on property:ro.boot.slot_suffix=*
+    stop update_engine
+""")
+(tree / "etc/init/gbos-no-ota.rc").chmod(0o644)
+vmap["etc/init/gbos-no-ota.rc"] = dict(vmap["etc/init/fwupd.rc"])
 (tree / "etc/kano-diag.sh").write_text("""#!/system/bin/sh
 # KANO debug: dmesg/logcat/display/input/audio/Wi-Fi snapshots on /data every 20 s (for boots whose serial console dies).
 D=/data/kano-diag
@@ -488,7 +541,8 @@ dev_wifi_hook = ""
 if os.environ.get("GBOS_DEV_KERNEL_DIR") and (Path(os.environ["GBOS_DEV_KERNEL_DIR"]) / "modules/amdgpu.ko").is_file():
     # amd-hx370 handles graphics in /vendor/etc/amd-hx370-graphics.sh on early-boot (safe entry: gbos_efifb +
     # pastel with amdgpu blacklisted; experimental native entry: modprobe amdgpu once, never gbos_efifb).
-    # Other profiles keep the QEMU-proven boot_completed load of amdgpu + snd-sof-amd-acp70 + simpledrm.
+    # Other profiles keep the boot_completed load of amdgpu + snd-sof-amd-acp70 + simpledrm.
+    # KANO's no-GPU QEMU self-test cannot exercise that trigger.
     if prof["model"]["id"] != "amd-hx370":
         dev_kmod_boot = (
             "    exec_background u:r:vendor_modprobe:s0 -- /vendor/bin/modprobe --dirname=/vendor/lib/dev-modules amdgpu\n"
@@ -526,6 +580,10 @@ exit 1
 for f in ("etc/init/kano-hw.rc", "etc/kano-wifi.sh"):
     (tree / f).chmod(0o644)
     vmap[f] = dict(vmap["etc/init/fwupd.rc"])
+# Build-time AVX-IFMA -> AVX2 patch (when [cpu_compat] patch_ifma = true): patches the 3 plain vendor_a ELFs
+# (including bin/ectool before REMOVE unlinks it) and unpacks/patches/rebuilds/re-signs the 2 vendor_a APEXes.
+import ifma
+ifma.patch_vendor_tree(prof, tree, tmp)
 # (safe16's diag additions are part of the safe19 kano-diag.sh above)
 # Remove every firmware updater / flash tool from vendor (touch I2C-HID and Wi-Fi are live now; "disabled" is not enough).
 REMOVE = ["bin/fwupd-binder", "bin/fwupd_blocking_update", "bin/fwupdmgr", "bin/fw-updater-wrapper", "etc/init/fwupd.rc",
@@ -560,6 +618,18 @@ if ! grep -q keep_bootcon /proc/cmdline; then
   while true; do sleep 86400; done
 fi
 exec 3>/dev/kmsg
+(
+  # Only the QEMU functional test supplies this nonce. Read the actual Android
+  # property and process list repeatedly; an init trigger or cmdline is not evidence.
+  nonce=$(/system/bin/getprop ro.boot.gbos_qemu_nonce)
+  case "$nonce" in
+    ''|*[!0-9a-f]*) exit 0 ;;
+  esac
+  while true; do
+    printf '<14>gbos-qemu-probe: %s boot_completed=%s system_server_pid=%s\\n' "$nonce" "$(/system/bin/getprop sys.boot_completed)" "$(pidof system_server)" >&3
+    sleep 5
+  done
+) &
 while true; do
   /system/bin/logcat -b main,system,crash -v time '*:E' SystemServer:I SystemServerTiming:I ActivityManager:I PackageManager:W Watchdog:I AndroidRuntime:I SystemServiceManager:I BootReceiver:I dras:I DEBUG:S cutils-trace:S prefetch:S timberslide:S DesktopChargeControlHal:S gscd:S secretkeeper-hal-trusty:S SystemServiceRegistry:S StatsCompanionService:S 2>&1 |
   while IFS= read -r line; do
@@ -832,8 +902,15 @@ if prof["input"]["power_button"] == "acpi" and not (hooks and hasattr(hooks, "po
     raise SystemExit("profile input.power_button = acpi needs hooks.vendor with power_button()")
 if hooks and hasattr(hooks, "power_button"):
     hooks.power_button(ctx)
-# GBOS_EC (opt-in; unset = nothing here runs and the vendor tree is as before): the profile's vendor side of the variant
-EC = [f for f in os.environ.get("GBOS_EC", "").split(",") if f]
+# GBOS_EC (opt-in; unset = nothing here runs and the vendor tree is as before).
+# drain is exclusive and changes no vendor file: no overlay, IIO label, keylayout, or dependency.
+raw_ec = os.environ.get("GBOS_EC", "")
+if raw_ec:
+    if not (hooks and hasattr(hooks, "ec_vendor_features")):
+        raise SystemExit("GBOS_EC needs a profile whose hooks.vendor has ec_vendor_features() (profiles/kano/vendor.py)")
+    EC = hooks.ec_vendor_features(raw_ec)
+else:
+    EC = []
 if EC:
     if not (hooks and hasattr(hooks, "ec")):
         raise SystemExit("GBOS_EC needs a profile whose hooks.vendor has ec() (profiles/kano/vendor.py)")
@@ -1331,7 +1408,13 @@ if prof["hooks"]["vendor"]:
     hooks = importlib.util.module_from_spec(spec); spec.loader.exec_module(hooks)
     if hasattr(hooks, "expected"):
         p_new, p_changed = hooks.expected(prof)
-    EC = [f for f in os.environ.get("GBOS_EC", "").split(",") if f]
+    raw_ec = os.environ.get("GBOS_EC", "")
+    if raw_ec:
+        if not hasattr(hooks, "ec_vendor_features"):
+            raise SystemExit("GBOS_EC needs a profile whose hooks.vendor has ec_vendor_features() (profiles/kano/vendor.py)")
+        EC = hooks.ec_vendor_features(raw_ec)
+    else:
+        EC = []
     if EC and hasattr(hooks, "ec_expected"):
         e_new, e_changed = hooks.ec_expected(EC)
         p_new, p_changed = p_new + e_new, p_changed + e_changed
@@ -1344,7 +1427,7 @@ for fwe in prof["firmware"]:
     fw_new += ["firmware/" + "/".join(parts[:i]) for i in range(1, len(parts)) if "firmware/" + "/".join(parts[:i]) not in old]
     fw_new.append("firmware/" + fwe["path"])
 expect_changed = sorted(set(["build.prop", "etc/fstab.android-desktop", "etc/init/android.hardware.security.secretkeeper.trusty.desktop.rc", "etc/init/hal_desktop_charge_control_default.rc", "etc/selinux/vendor_sepolicy.cil"] + p_changed))
-expect_new = sorted(set(["etc/kano-adb_keys", "etc/kano-adb.sh", "etc/init/kano-adb.rc", "etc/init/kano-services.rc", "etc/kano-tone-1k.wav", "etc/kano-audiotest.sh", "etc/init/kano-audiotest.rc", "etc/init/kano-bootfix.rc", "etc/init/kano-diag.rc", "etc/init/kano-hw.rc", "etc/init/kano-logcat.rc", "etc/kano-diag.sh", "etc/kano-logcat.sh", "etc/kano-wifi.sh"] + p_new + fw_new))
+expect_new = sorted(set(["etc/kano-adb_keys", "etc/kano-adb.sh", "etc/init/kano-adb.rc", "etc/init/kano-services.rc", "etc/kano-tone-1k.wav", "etc/kano-audiotest.sh", "etc/init/kano-audiotest.rc", "etc/init/kano-bootfix.rc", "etc/init/gbos-no-ota.rc", "etc/init/kano-diag.rc", "etc/init/kano-hw.rc", "etc/init/kano-logcat.rc", "etc/kano-diag.sh", "etc/kano-logcat.sh", "etc/kano-wifi.sh"] + p_new + fw_new))
 if not os.environ.get("GBOS_ADB_PUBKEY"):
     expect_new = sorted(x for x in expect_new if "kano-adb" not in x)
 kano_kmods = [k for k in ("ac", "gbos_wakefilter") if k in prof["kmods"]]
@@ -1366,6 +1449,8 @@ if os.environ.get("GBOS_DEV_KERNEL_DIR"):
         + [m for m in ("modules.dep", "modules.alias", "modules.softdep", "modules.order") if (dev_mod_dir / m).is_file()]
     )
     expect_new = sorted(expect_new + ["lib/dev-modules"] + [f"lib/dev-modules/{f}" for f in dev_files])
+import ifma
+expect_changed = ifma.changed_vendor_paths(prof, expect_changed)
 import gralloc
 expect_changed = gralloc.changed_paths(prof, expect_changed)
 if prof.get("gralloc"):
@@ -1394,10 +1479,14 @@ block = (
 )
 if (tmp / "vendor-tree-new/etc/init/fwupd.rc").exists() or (tmp / "vendor-tree-new/bin/fwupd-binder").exists():
     raise SystemExit("fwupd still present in the rebuilt vendor")
+ifma.verify_rebuilt_vendor_tree(prof, tmp / "vendor-tree-new", tmp)
 
 def meta(path):
     data, blksz, meta_off, xattr, root = rebuild.load_image(path)
-    m, _h = rebuild.walk_image(str(path), root, data, blksz, meta_off, xattr)
+    m, _h = rebuild.walk_image(
+        str(path), root, data, blksz, meta_off, xattr,
+        strict_metadata=ifma.enabled(prof),
+    )
     return m
 
 oldm = meta(tmp / "vendor.erofs.src")
@@ -1428,11 +1517,20 @@ ot avbtool add_hashtree_footer \
     --block_size 4096 \
     --fec_num_roots 2 \
     --prop com.android.build.vendor.os_version:17 \
-    --prop "com.android.build.vendor.fingerprint:ASUS/lapis/lapis:17/CL3B.260622.271.R1/16452207:user/release-keys" \
-    --prop com.android.build.vendor.security_patch:2026-09-01
+    --prop "com.android.build.vendor.fingerprint:$VENDOR_FINGERPRINT" \
+    --prop "com.android.build.vendor.security_patch:$VENDOR_SECURITY_PATCH"
 
 python3 -c 'import os,sys; n=os.path.getsize(sys.argv[1]); w=int(sys.argv[2]); print(n,w); assert n==w' \
     "$TMP/vendor.img" "$VENDOR_SIZE"
+
+PATCH_IFMA=$(python3 "$HERE/lib/devprofile.py" get "$GBOS_PROFILE" cpu_compat.patch_ifma)
+if [ "$PATCH_IFMA" = true ]; then
+    echo "rebuild system_a and system_ext_a (cpu_compat.patch_ifma = true)"
+    # The final firmware gate still reads both vendor-tree-base and vendor-tree-new.
+    rm -rf "$TMP/vendor-tree" "$TMP/vendor.erofs.src" "$TMP/vendor.erofs"
+    python3 -c 'import os, sys; sys.path.insert(0, sys.argv[1]); import devprofile, ifma; prof = devprofile.load(os.environ["GBOS_PROFILE"]); ifma.rebuild_system_partition(prof, sys.argv[2], sys.argv[3]); ifma.rebuild_system_ext_partition(prof, sys.argv[2], sys.argv[3])' \
+        "$HERE/lib" "$IMG" "$TMP"
+fi
 
 echo "re-sign vbmeta"
 dd if="$IMG" of="$TMP/vbmeta.old.img" bs=1 skip="$VBMETA_OFF" count=6720 status=none
@@ -1442,7 +1540,25 @@ ot avbtool update_partition_descriptor \
     --output "$TMP/vbmeta.new.img" \
     --algorithm SHA256_RSA4096 \
     --key "$KEY" \
-    --rollback_index 1339
+    --rollback_index "$VBMETA_ROLLBACK_INDEX"
+if [ "$PATCH_IFMA" = true ]; then
+    cp "$TMP/vbmeta.new.img" "$TMP/vbmeta.step1.img"
+    ot avbtool update_partition_descriptor \
+        --image "$TMP/vbmeta.step1.img" \
+        --partition_image "$TMP/system.img" \
+        --output "$TMP/vbmeta.new.img" \
+        --algorithm SHA256_RSA4096 \
+        --key "$KEY" \
+        --rollback_index "$VBMETA_ROLLBACK_INDEX"
+    cp "$TMP/vbmeta.new.img" "$TMP/vbmeta.step2.img"
+    ot avbtool update_partition_descriptor \
+        --image "$TMP/vbmeta.step2.img" \
+        --partition_image "$TMP/system_ext.img" \
+        --output "$TMP/vbmeta.new.img" \
+        --algorithm SHA256_RSA4096 \
+        --key "$KEY" \
+        --rollback_index "$VBMETA_ROLLBACK_INDEX"
+fi
 ot avbtool info_image --image "$TMP/vbmeta.new.img" > "$TMP/vbmeta.new.info"
 ot avbtool calculate_vbmeta_digest --image "$TMP/vbmeta.new.img" --hash_algorithm sha256 \
     | tee "$WORK/logs/vbmeta.digest.txt"
@@ -1450,13 +1566,14 @@ ot avbtool calculate_vbmeta_digest --image "$TMP/vbmeta.new.img" --hash_algorith
 echo "read ESP initrd"
 mcopy -i "$IMG@@$ESP_OFF" ::/initrd.img "$TMP/esp-initrd.img"
 
-python3 - "$IMG" "$TMP" "$STANDALONE" << 'PY'
-import struct, sys
+python3 - "$IMG" "$TMP" "$STANDALONE" "$PATCH_IFMA" << 'PY'
+import hashlib, shutil, struct, sys
 from pathlib import Path
 
 img = Path(sys.argv[1])
 tmp = Path(sys.argv[2])
 standalone = Path(sys.argv[3])
+patch_ifma = sys.argv[4]
 env = {}
 for line in (tmp / "offsets.env").read_text().splitlines():
     k, v = line.split("=", 1)
@@ -1526,12 +1643,50 @@ footer = struct.pack("<II", len(raw), sum(raw) & 0xFFFFFFFF) + b"#BOOTCONFIG\n"
 print("initrd bytes", (tmp / "initrd.new.img").stat().st_size, "vbmeta", vb_size)
 
 with img.open("r+b") as f:
+    if patch_ifma == "true":
+        system_off = int(env["SYSTEM_OFF"])
+        system_size = int(env["SYSTEM_SIZE"])
+        sys_img = tmp / "system.img"
+        if sys_img.stat().st_size != system_size:
+            raise SystemExit("system size")
+        f.seek(system_off)
+        with sys_img.open("rb") as sf:
+            shutil.copyfileobj(sf, f, length=16 << 20)
+        system_ext_off = int(env["SYSTEM_EXT_OFF"])
+        system_ext_size = int(env["SYSTEM_EXT_SIZE"])
+        system_ext_img = tmp / "system_ext.img"
+        if system_ext_img.stat().st_size != system_ext_size:
+            raise SystemExit("system_ext size")
+        f.seek(system_ext_off)
+        with system_ext_img.open("rb") as sf:
+            shutil.copyfileobj(sf, f, length=16 << 20)
     f.seek(vendor_off)
     f.write(vendor)
     f.seek(vbmeta_off)
     f.write(b"\x00" * 8192)
     f.seek(vbmeta_off)
     f.write(vb)
+
+def range_sha256(path, offset, size):
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        stream.seek(offset)
+        remaining = size
+        while remaining:
+            block = stream.read(min(16 << 20, remaining))
+            if not block:
+                raise SystemExit("short final partition readback")
+            digest.update(block)
+            remaining -= len(block)
+    return digest.hexdigest()
+
+if patch_ifma == "true":
+    for label, offset, size, expected in (
+        ("system", system_off, system_size, sys_img),
+        ("system_ext", system_ext_off, system_ext_size, system_ext_img),
+    ):
+        if range_sha256(img, offset, size) != range_sha256(expected, 0, size):
+            raise SystemExit(f"{label} final image readback differs after splice")
 print("spliced vendor and vbmeta")
 PY
 

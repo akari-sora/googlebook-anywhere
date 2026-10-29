@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Watch the KANO AP UART during a Googlebook boot; cut power through the EC on any danger line.
 
-usage: kano-gbos-watch.py <ap-uart.log> <seconds> <frames-dir> [--profile usb|nvme] [--observe-timeout S]
-                          [--stall-timeout S] [--camera-every S] [--camera-timeout S] [--ec-timeout S]
+usage: kano-gbos-watch.py <ap-uart.log> <seconds> <frames-dir> [--profile usb|nvme] [--ec-policy default|drain]
+                          [--observe-timeout S] [--stall-timeout S] [--camera-every S] [--camera-timeout S] [--ec-timeout S]
        (kano-gbos-watch-nvme.py is this script with --profile nvme: Googlebook on the internal NVMe, so the NVMe
        controller appearing is expected and the command line keeps nvme_init allowed.)
 
@@ -25,7 +25,8 @@ After the observe window a silent log only produces a note (Android legitimately
 Guards: this boot's kernel command line must carry every module of the module_blacklist of the device profile
 (profiles/kano/profile.toml, the single source the builder uses; read as TOML), every initcall of its initcall_blacklist (with --profile nvme:
 all but nvme_init, which must not be blacklisted) and efi=noruntime, and no spi-intel.* option. The kernel keeps the last module_blacklist= and adds up
-every initcall_blacklist=.
+every initcall_blacklist=. The default policy does not know GBOS_EC feature variants and cuts power if any required module is absent (fail-closed).
+--ec-policy drain is the only exception: the required modules are the profile baseline without cros_ec and cros_ec_lpcs, plus every EC_EXTRA_BLOCK name parsed from builder/image.py (not a second copy of that list). Each missing name is refused. It does not ignore the EC danger regex. The LPC transport probe/registered line and the unbound platform device named cros-ec-dev are the two lines that do not cut power; the cros_ec_dev module, keyb, chardev, sysfs, debugfs, "ChromeOS EC device at" and /dev/cros_ec still do. A "Loaded kernel module .../<file>.ko" line cuts power when <file> is a forbidden EC module (consumers, other transports, or those extras); "-" and "_" in the file name are the same module. cros_ec, cros_ec_lpcs and cros_ec_proto may load. This watcher is not a host-command allowlist.
 
 exit status: 0 window over, boot observed, no danger line; 2 danger line, EC power cut confirmed; 3 a kernel
 command line guard is missing, EC power cut confirmed; 4 unobservable (also when the window ends before this boot's
@@ -33,7 +34,7 @@ command line showed up); 5 not started: invalid arguments, KANO_EC_TTY is not se
 guard list cannot be read from the device profile; 6 danger seen but the EC power cut could not be confirmed (cut power
 by hand).
 """
-import argparse, importlib.util, math, os, re, subprocess, sys, time
+import argparse, ast, importlib.util, math, os, re, subprocess, sys, time
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -43,9 +44,18 @@ _spec = importlib.util.spec_from_file_location("kano_ser", K)
 ks = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(ks)                     # for load_env(); kano-ser.py itself runs as a subprocess
 
+# The EC bind regex stays in the default policy. --ec-policy drain does not delete it.
+EC_BIND = r"cros-ec-dev|cros_ec_lpcs .*(probe|registered)|ChromeOS EC device at"
+DRAIN_RELEASED = frozenset({"cros_ec", "cros_ec_lpcs"})
+# Fatal under drain even when the line also contains an allowed transport or platform-device name.
+# Bare "cros-ec-dev" is the unbound platform device the core creates without cros_ec_dev.ko, so it is not here.
+DRAIN_CONSUMER = re.compile(
+    r"cros_ec_dev\b|cros-ec-dev\.ko|cros_ec_keyb|cros-ec-keyb|cros_ec_chardev|cros-ec-chardev|"
+    r"cros_ec_sysfs|cros-ec-sysfs|cros_ec_debugfs|cros-ec-debugfs|"
+    r"ChromeOS EC device at|/dev/cros_(?:ec|fp|ish)\b")
 COMMON_DANGER = [
     (r"spi-nor spi|\bmtd\d+:|mtdblock\d", "SPI flash / MTD device appeared"),
-    (r"cros-ec-dev|cros_ec_lpcs .*(probe|registered)|ChromeOS EC device at", "EC driver bound"),
+    (EC_BIND, "EC driver bound"),
     (r"tpm_tis.*2\.0 TPM|tpm tpm0:|tpm_tis_i2c_cr50 .*cr50", "TPM / Cr50 driver bound"),
     (r"gsmi: ", "gsmi active"),
     (r"(?i)vbmeta digest (error|mismatch)", "vbmeta mismatch"),
@@ -62,6 +72,8 @@ PROFILES = {
 CMDLINE = "Kernel command line"
 REPO_ROOT = HERE.parent.parent
 GUARD_SOURCE = REPO_ROOT / "profiles" / "kano" / "profile.toml"
+_IMAGE_EC_LISTS = None
+LOADED_KO = re.compile(r"Loaded kernel module \S*/([A-Za-z0-9_.-]+)\.ko\b")
 
 
 def expected_guards(profile_dir=GUARD_SOURCE.parent):
@@ -85,6 +97,66 @@ def expected_guards(profile_dir=GUARD_SOURCE.parent):
     return modules, ic, plain
 
 
+def module_key(name):
+    """Module names and .ko file names spell one driver with either '-' or '_'."""
+    return name.replace("-", "_")
+
+
+def image_py():
+    """builder/image.py next to this checkout. image.py builds an image if it is imported, so callers parse it."""
+    here = Path(__file__).resolve().parent
+    for path in [here.parent.parent / "builder" / "image.py", *(p / "builder" / "image.py" for p in here.parents)]:
+        if path.is_file():
+            return path
+    raise OSError("builder/image.py not found")
+
+
+def image_ec_lists():
+    """EC_EXTRA_BLOCK, EC_CORE, EC_RELEASE, EC_NEVER and EC_DRAIN from builder/image.py.
+
+    Parsed with ast.literal_eval. This is the builder's list, not a handwritten copy.
+    """
+    global _IMAGE_EC_LISTS
+    if _IMAGE_EC_LISTS is not None:
+        return _IMAGE_EC_LISTS
+    path = image_py()
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    want = ("EC_EXTRA_BLOCK", "EC_CORE", "EC_RELEASE", "EC_NEVER", "EC_DRAIN")
+    found = {}
+    for node in tree.body:
+        if not isinstance(node, ast.Assign) or len(node.targets) != 1:
+            continue
+        target = node.targets[0]
+        if isinstance(target, ast.Name) and target.id in want:
+            found[target.id] = ast.literal_eval(node.value)
+    missing = [name for name in want if name not in found]
+    if missing:
+        raise ValueError(f"{path} is missing {', '.join(missing)}")
+    extra = found["EC_EXTRA_BLOCK"]
+    if not isinstance(extra, (list, tuple)) or not extra or not all(isinstance(item, str) and item for item in extra):
+        raise ValueError(f"{path} EC_EXTRA_BLOCK is not a list of module names")
+    if not isinstance(found["EC_RELEASE"], dict) or not isinstance(found["EC_DRAIN"], (set, frozenset, list, tuple)):
+        raise ValueError(f"{path} EC release lists have an unexpected shape")
+    _IMAGE_EC_LISTS = found
+    return found
+
+
+def drain_forbidden_module_keys():
+    """EC modules drain must not load: consumers, other transports, and every EC_EXTRA_BLOCK name.
+
+    The transport pair and cros_ec_proto are absent from this set. Keys use '_' for both spellings.
+    """
+    lists = image_ec_lists()
+    blocked = {module_key(name) for name in lists["EC_EXTRA_BLOCK"]}
+    blocked |= {module_key(name) for name in lists["EC_CORE"] if name not in lists["EC_DRAIN"]}
+    for group in lists["EC_RELEASE"].values():
+        blocked |= {module_key(name) for name in group}
+    blocked |= {module_key(name) for name in lists["EC_NEVER"] if "cros" in module_key(name)}
+    blocked -= {module_key(name) for name in lists["EC_DRAIN"]}
+    blocked.discard("cros_ec_proto")
+    return blocked
+
+
 def cmdline_tokens(text):
     """The tokens of this boot's kernel command line; a long one is printed in chunks, each but the last ending in
     a backslash."""
@@ -97,9 +169,15 @@ def cmdline_tokens(text):
     return toks
 
 
-def missing_guards(tokens, guards, profile):
-    """What the command line `tokens` lacks of `guards` (expected_guards()), as readable items; [] = all there."""
+def missing_guards(tokens, guards, profile, ec_policy="default"):
+    """What the command line `tokens` lacks of `guards` (expected_guards()), as readable items; [] = all there.
+
+    ec_policy "drain" requires (profile modules minus cros_ec and cros_ec_lpcs) union EC_EXTRA_BLOCK
+    from builder/image.py. Any other value keeps the profile list only.
+    """
     modules, initcalls, plain = guards
+    if ec_policy == "drain":
+        modules = (set(modules) - DRAIN_RELEASED) | set(image_ec_lists()["EC_EXTRA_BLOCK"])
     mb = [t.split("=", 1)[1] for t in tokens if t.startswith("module_blacklist=")]
     have = set(mb[-1].split(",")) if mb else set()          # the kernel keeps the last module_blacklist=
     ic = set()
@@ -114,6 +192,51 @@ def missing_guards(tokens, guards, profile):
     out += [p for p in plain if p not in tokens]
     out += [f"forbidden option {t}" for t in tokens if t.startswith("spi-intel.")]
     return out
+
+
+def drain_transport_exception(match, line):
+    """True when this EC-regex hit is one of the two drain exceptions and the line has no consumer.
+
+    Allowed: cros_ec_lpcs probe/registered, and the bare platform device name cros-ec-dev.
+    A consumer on the same line (MFD module, keyb, chardev, sysfs, debugfs, ChromeOS EC device, raw node) is not allowed.
+    """
+    if DRAIN_CONSUMER.search(line):
+        return False
+    if re.fullmatch(r"cros_ec_lpcs .*(?:probe|registered)", match):
+        return True
+    return match == "cros-ec-dev"
+
+
+def first_danger(body, patterns, ec_policy):
+    """The first danger hit as (why, text), or None.
+
+    drain does not drop the EC regex. It skips only an allowed transport hit, then keeps looking.
+    Consumers are fatal under drain even when that regex did not name them.
+    """
+    for pat, why in patterns:
+        if ec_policy == "drain" and pat == EC_BIND:
+            found = None
+            for m in re.finditer(pat, body):
+                line = body.splitlines()[body.count("\n", 0, m.start())]
+                if drain_transport_exception(m.group(0), line):
+                    continue
+                found = m
+                break
+            if found:
+                return why, found.group(0)
+            continue
+        m = re.search(pat, body)
+        if m:
+            return why, m.group(0)
+    if ec_policy == "drain":
+        m = DRAIN_CONSUMER.search(body)
+        if m:
+            return "EC consumer driver bound", m.group(0)
+        forbidden = drain_forbidden_module_keys()
+        for hit in LOADED_KO.finditer(body):
+            if module_key(hit.group(1)) in forbidden:
+                return "forbidden EC module loaded", hit.group(0)
+    return None
 
 
 def clean(b):
@@ -162,6 +285,7 @@ def main(argv):
     ap.add_argument("seconds", type=float)
     ap.add_argument("frames", type=Path)
     ap.add_argument("--profile", choices=sorted(PROFILES), default="usb")
+    ap.add_argument("--ec-policy", choices=("default", "drain"), default="default")
     ap.add_argument("--observe-timeout", type=float, default=120)
     ap.add_argument("--stall-timeout", type=float, default=30)
     ap.add_argument("--camera-every", type=float, default=30, help="seconds between camera frames, 0 = off")
@@ -185,6 +309,11 @@ def main(argv):
         guards = expected_guards()
     except (OSError, SyntaxError, ValueError) as e:
         bad(f"cannot read the expected command line guards from {GUARD_SOURCE}: {e}")
+    if a.ec_policy == "drain":
+        try:
+            image_ec_lists()
+        except (OSError, SyntaxError, ValueError, TypeError) as e:
+            bad(f"cannot read the drain EC block list from builder/image.py: {e}")
     patterns = PROFILES[a.profile]
     a.frames.mkdir(parents=True, exist_ok=True)
 
@@ -208,16 +337,16 @@ def main(argv):
 
             # "Module X is blacklisted" is the guard working, not the driver binding.
             body = "\n".join(l for l in whole.splitlines() if "command line" not in l.lower() and "blacklisted" not in l)
-            for pat, why in patterns:
-                m = re.search(pat, body)
-                if m:
-                    danger(f"{why}: {m.group(0)!r}", 2, a.ec_timeout)
+            hit = first_danger(body, patterns, a.ec_policy)
+            if hit:
+                why, text = hit
+                danger(f"{why}: {text!r}", 2, a.ec_timeout)
 
             cmdlines = [l for l in this.splitlines() if CMDLINE in l]
             # The command line is printed in several chunks; check it once the kernel is past 1.5 s.
             later = [float(t) for t in re.findall(r"^\S*\[\s*(\d+\.\d+)\]", this, re.M)]
             if cmdlines and later and max(later) > 1.5:
-                missing = missing_guards(cmdline_tokens("\n".join(cmdlines)), guards, a.profile)
+                missing = missing_guards(cmdline_tokens("\n".join(cmdlines)), guards, a.profile, a.ec_policy)
                 if missing:
                     danger(f"guard missing from this boot's kernel command line: {', '.join(missing)}", 3, a.ec_timeout)
                 if not verified:

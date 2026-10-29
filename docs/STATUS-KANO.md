@@ -1,6 +1,8 @@
 # KANO 硬體狀態（Acer Chromebook Spin 714，CP714-1WN／CP714-2WN，brya／kano）
 
-2026-10-22 軟體驗收更新：v0.2.3 的 CI、韌體檢查與突變測試結果見 [軟體驗收紀錄](VERIFICATION-v0.2.3.md)。本輪沒有新增 KANO 實機開機或硬體測試；下方仍保留原實機紀錄的日期與範圍。
+2026-10-29：KANO 已由 16452207 slot a keep-data 更新至 16658739 slot b；套件清單、帳號數、設定、鎖定狀態與主要使用者檔名比對相同，檔案內容及逐項 App 資料／登入有效性未驗證。`update_engine` 在 uptime 65 分鐘時 stopped；timeout 入睡後約 33 分鐘沒有螢幕自行喚醒，之後鍵盤喚醒成功。16658739 與 drain 仍須選用；此候選的 S0ix、真實電源鍵、闔蓋／開蓋、音訊及成功更新後退回均未驗證。詳見 [驗收紀錄](VERIFICATION-v0.3.0.md)。實驗性 `GBOS_EC=drain` 在休眠失敗恢復時可能重設 AP 並造成資料遺失；見 [安全說明](SAFETY.md)。
+
+2026-10-22 軟體驗收更新：v0.2.3 的 CI、韌體檢查與突變測試結果見 [軟體驗收紀錄](VERIFICATION-v0.2.3.md)。該輪沒有新增 KANO 實機開機或硬體測試；下方仍保留原實機紀錄的日期與範圍，不代表 16658739 的重新驗證。
 
 驗證日期 2026-10-12。**目前唯一在實機上驗證過的是一台 Alder Lake-P K0 工程樣機**（CPU Core i7-1260P，CPUID `06-9a-02`，iGPU PCI ID `8086:46a6`，ChromeOS CBI SKU `131073`；`131073` 是 CBI SKU，不是 CPU 型號），Googlebook 裝在內建 NVMe（SAMSUNG MZVLQ128HCHQ）。
 下方功能表中的每一項都是在該台實機上量到的結果，不是推論；唯一的例外寫明在該列（休眠／喚醒的鍵盤喚醒問題，目前是依核心原始碼推得）。驗證方式見最右欄；用到的工具在 `tools/harness/`。
@@ -40,6 +42,11 @@ Acer Chromebook Spin 714 的 12 代（`CP714-1WN`）與 13 代（`CP714-2WN`，C
 `lapis-debug.conf` 不帶 `console=ttyS0,115200n8`、`console=ttyS4,115200n8`、`console=uart8250,mmio32,0xfe03e000,115200n8`。這三個 token 在 KANO 上註冊不起 Linux tty：lapis 6.18.21 的 `CONFIG_SERIAL_8250_RUNTIME_UARTS=0`（`research/amd/lapis-kernel.config:3177`），debug 選項又拿掉 `8250.nr_uarts=4`，並用 pci-stub 佔住 LPSS UART `8086:51a8`。這不是「ttynull 先註冊、所以其他 console 類型都不會註冊」——Linux 允許不同類型的 console 同時輸出。在這張設定裡，正式 console 是內建的 `console=ttynull`；UART 上的 printk 來自 `earlycon=uart8250,mmio32,0xfe03e000,115200n8`，加上只在 debug 選項出現的 `keep_bootcon`（bootconsole 在 ttynull 註冊之後還留著）。`printk.devkmsg=on` 讓轉進 kmsg 的 logcat 從同一條 bootconsole 送出。earlycon 是單向輸出，不是可登入的 tty，也不是 getty。
 
 QEMU 的功能測試會先拿掉映像上的 `console=`／`earlycon=`，再改成 COM1 的 `console=ttyS0` 與 I/O `earlycon`（`builder/image.py`）。原樣 ESP 開機鏈測試只在預設 quiet 時跑，quiet 本來就沒有序列埠。這兩項都不能代替 KANO MMIO UART 的實機紀錄。`tools/harness/kano-gbos-watch.py` 讀的是 AP UART 上的 printk（字面 `Kernel command line`），不開 `/dev/ttyS0`。
+
+KANO 的 QEMU 沒有 GPU，所以完整 Android framework 開機與 system_server 不反覆重啟兩項是 `NOT_RUN`，
+不是 PASS；原因會記在 `image.log`、`build-info.txt` 和建置摘要。其他 gate（包含新鮮且格式正確的裝置 probe、
+沒有 `FATAL EXCEPTION IN SYSTEM PROCESS`、分割區完整 APK/APEX alignment）仍強制執行。
+QEMU 通過不能取代 KANO 實機的 `sys.boot_completed=1`、framework 穩定性或桌面驗收。
 
 三個 `console=` 加回這 12 個 ID 的 debug 命令列是 1969 bytes。核心上限是 1973（`COMMAND_LINE_SIZE` 2048 − 1 − 73 bytes 的 `CONFIG_CMDLINE` − 1 byte 分隔空白），再扣 64 bytes 給 `kano-boot.sh` 之後 builder 只接到 1909。1969 放不進去，所以維持拿掉。目前 debug 是 1879 bytes（距核心上限還有 94 bytes），quiet 是 1787 bytes；兩者都含 systemd-boot 的 `initrd=\initrd.img ` 前綴。quiet 本來就沒有這三個 token。
 
@@ -82,3 +89,23 @@ userdata、metadata、misc 三個分割區。
 - 休眠時 Wi-Fi 會斷線（2026-10-13 實測）：lapis 的 Wi-Fi 模組在進入休眠時主動斷線（`disconnect isUserTriggered=true`、
   `DEAUTH_LEAVING` reason 3），醒來後 5～7 秒重新連上。所以螢幕關閉後連不到網路 adb，要先喚醒（harness 用 EC 電源鍵）。
 - `system_server` 的 watchdog 逾時設為 5 分鐘（給慢速儲存裝置的餘裕）。
+
+## MKBP 與實驗性 `GBOS_EC=drain`（有限實機證據）
+
+這一段是公開原始碼的研究結論，不是這台驗證機的新量測。上面休眠／喚醒那一列的 v0.2 實測（闔蓋不亮、電源鍵會亮、LPIT residency 為 0）維持原樣。wakefilter 的行為沒有改。
+
+實體電源鍵和 console 的 powerbtn 走同一條 debounce 之後的路徑。只禁止 console powerbtn 擋不住真實按鍵。不是每一次被忽略的按下或放開都一定會進佇列。
+
+上蓋、平板模式，以及 init 的 switch hook 也會把事件放進 MKBP。
+
+`ALWAYS_REPORT` 只在 `host_set_events()` 接受該事件時，才是遮罩聯集的一部分；它不是無條件的 SCI 或 wake。MKBP 可以被設上，若落在 SCI 遮罩外面，仍然不會送 SCI。
+
+重試不是一顆 78 秒的計時器。延後處理大約 1 秒，次數有限；第三次檢查之後那一輪停止，事件留著，新的事件可以再開始。中斷啟動失敗有一條不限次數的重試分支。`ap_comm_failure_count` 不能拿來證明從 10 月 17 日起每 78 秒重送一次電源鍵。
+
+`GET_NEXT_EVENT` 會消費事件來源；佇列空了就清掉 MKBP active、取消延後處理、把失敗計數清掉。`_Q1B` 只做 `Notify(\_SB.CREC, 0x80)`，不消費 FIFO。
+
+在查過的路徑裡，AP 重開或 S0ix 不會自動清掉 BUTTON 佇列。`mkbp_fifo_clear_keyboard()` 只清 `KEY_MATRIX`。`mkbp_clear_fifo()` 存在，但沒有看到 AP 生命週期呼叫它。sysjump 沒有被顯示成會清這個佇列，它也不是 EC 硬重設。EC 重設不是永久的。
+
+哪一個事件會讓螢幕亮起來，目前不知道。`_Q03` 是 PWRB notify 路徑；`_Q1B` 不是。wakefilter 只在已 armed、沒有其他使用者輸入、而且選定的 PWRB wake count 沒有增加時，才丟掉 resume 的 `KEY_WAKEUP`；它放行 `KEY_POWER`。約 59 秒 ON 加 19 秒 OFF 和 Android timeout／autosuspend 相容，這是推論。不能說 MKBP 會自己偽造電源鍵；10-29 的 drain 實機觀察僅證明約 33 分鐘沒有自行亮屏，不能外推更長時間。
+
+實驗性 `GBOS_EC=drain` 不是預設；10-29 的實機觀察涵蓋 transport 載入、約 33 分鐘沒有自行亮屏與鍵盤喚醒，完整休眠／喚醒驗收仍未完成。這個值只解除 `cros_ec` 和 `cros_ec_lpcs`，仍封鎖 `cros_ec_hwmon`、`cros_ec_rpmsg`、`cros_ec_uart`、`cros_ec_wdt`、`gpio_cros_ec`、`rtc_cros_ec`。實機結果與未驗證範圍見本頁開頭及 [驗收紀錄](VERIFICATION-v0.3.0.md)；啟用前仍須核對實際模組原始碼與相依、EC／AML 版本，先在可丟棄資料的 USB 測試，不要直接以內建碟當成先決驗證。先備份資料，休眠失敗恢復可能重設 AP。預設 serial-debug 命令列仍是 1879 bytes、quiet 仍是 1787 bytes。drain 的 serial-debug 拿掉 `ignore_loglevel` 和 `loglevel=8`（quiet 本來就沒有這兩個），讓加上六個 `EC_EXTRA_BLOCK` 名字之後仍是 1909 bytes，64 bytes 的餘裕還在；earlycon 留著。沒有把 `cros_ec_lpcs` 加進 early-boot modprobe：這份 checkout 沒有出貨的 vendor_dlkm `modules.dep`，consumer 不是這兩個模組的必要相依，既有的 GOOG0004 uevent 路徑會載入它們。QEMU 沒有 EC，停在 `EC ID not detected` 不能當成 drain 或 `HOST_SLEEP` 通過。

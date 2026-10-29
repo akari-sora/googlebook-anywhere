@@ -198,6 +198,10 @@ def run(ns, work):
         set_prop("ro.build.display.id", "")
         set_prop("ro.build.id", "16452207")
     with_change(show_build, use_probe=False)
+    # Independently render each added public build value; do not derive this list
+    # from the implementation's vocabulary or its build allowlist.
+    for build in ("CL3B.260622.276.R4", "16658739"):
+        with_change(lambda build=build: set_prop("ro.build.display.id", build), use_probe=False)
 
     def draft(profile, status):
         def mutate(profile=profile, status=status):

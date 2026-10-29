@@ -1,0 +1,23 @@
+{
+  "build": "16658739",
+  "SYSTEM_UUID": "660708fb-2706-5075-aac7-5782820ea42a",
+  "SYSTEM_SALT": "948f2e15ed1a9b70a1260b551529feb39ace85747fddf9ef78397ff9c15ccab3",
+  "SYSTEM_FINGERPRINT": "Android/desktop_system/desktop:17/CL3B.260622.276.R4/16658739:user/release-keys",
+  "SYSTEM_SECURITY_PATCH": "2026-10-01",
+  "SYSTEM_OS_VERSION": "17",
+  "SYSTEM_EXT_UUID": "40c07ad6-c346-50e6-9405-1ce9f51b806c",
+  "SYSTEM_EXT_SALT": "b14f17c0007cfc878a5cdac13f0514ac3b7d22996d4db3d254082387c6705124",
+  "SYSTEM_EXT_FINGERPRINT": "ASUS/lapis/lapis:17/CL3B.260622.276.R4/16658739:user/release-keys",
+  "SYSTEM_EXT_SECURITY_PATCH": "2026-10-01",
+  "SYSTEM_EXT_OS_VERSION": "17",
+  "VENDOR_UUID": "4d286de7-7133-55bf-8283-b414f127b88a",
+  "VENDOR_FINGERPRINT": "ASUS/lapis/lapis:17/CL3B.260622.276.R4/16658739:user/release-keys",
+  "VENDOR_SECURITY_PATCH": "2026-10-01",
+  "VBMETA_ROLLBACK_INDEX": 1369,
+  "apex_salts": {
+    "system/apex/com.google.android.virt.apex": "2e5cb21d9824edaff1c06394a94446ee48b871c32868801bd4453234f4c38cf2",
+    "apex/com.android.hardware.audio.desktop.apex": "e389e98363f0be67dd5dae28da111ee0e464880736a2b3ee3270a0f4d43a1d9c",
+    "apex/com.android.hardware.fingerprint.crosfp.apex": "296b8e1881f1668f6fda928a06ade40a30516d3ac848dedf42ccbe5a60f0b3e7"
+  },
+  "manifest_sha256": "48b75cd4944d027514ac93d69f3453fe23bd9161ca3295087a487501c6c5b0c2"
+}

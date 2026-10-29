@@ -5,8 +5,25 @@
 - **這個專案的新版本**，Google 的 build 不變，例如加了驅動、改了開機參數。
 - **Google 的新 build**（新的 lapis recovery zip）。
 
-兩種都用同一套更新方式：`/data`（App、檔案、Google 帳號）保留，不碰任何韌體；中途失敗時，原本的版本仍能開機。
+兩種都用同一套更新方式：預期保留 `/data`（App、檔案、Google 帳號），不碰任何韌體；實際保留結果需自行確認。中途失敗時，原本的版本通常仍能開機。
 唯一的例外是 ESP 連新舊兩份開機檔案都放不下、又加了 `--without-fallback`：見下面「ESP 放不下兩個版本」。
+
+## 怎麼知道有新版本
+
+Google 的 OTA 簽章仍可能通過，但推測無法完成更新，且會與本專案更新工具爭用 slot。v0.3.0 映像在啟動時停止 `update_engine`；2026-10-29 KANO keep-data 更新至 16658739 後 uptime 65 分鐘時讀回 stopped，未證明全程不曾啟動；全新安裝的設定精靈／GMS 反應仍未驗證。Play 商店的 App 更新不受此限制。查詢新版請在建置用的電腦上執行：
+
+```sh
+install/check-updates.py [--json]   # --hint 只給 install.sh / update.sh 用；--json 與 --hint 不能並用
+```
+
+它只讀兩份公開的小 JSON，不下載映像、不帶 cookie 或 token，User-Agent 只有 `googlebook-anywhere-check-updates`，逾時 10 秒：
+
+- **Google**：`https://dl.google.com/dl/edgedl/device/recovery/production_recovery.json`（`base/builds/16452207.sh` 註明的 recovery 索引），找 `target` 為 `lapis-user` 的項目，`buildidentifier` 開頭的 build 編號比釘選的（`GBOS_LAPIS_BUILD`，預設 16452207）新時，印出 `newer Google build available: <新> (pinned <舊>)`。新 build 要等這個專案加上 `base/builds/<build>.sh` 才能建置（見「支援 Google 的新 build」）。
+- **這個專案**：GitLab Releases API（`https://gitlab.com/api/v4/projects/aa22396584%2Fgooglebook-anywhere/releases`，公開、不需 token），取 `upcoming_release` 不是 true 的最大 `vX.Y.Z` `tag_name`，和這份 checkout 的 `docs/RELEASE-NOTES.md` 第 1 行比較。有新版時印出 `newer release available: <新> (this checkout <舊>)`，先 `git pull` 再更新。
+
+兩份格式都在 2026-10-23 對照實際回應確認過。網路不通或格式不對時印出 `could not check`，結束碼仍是 0。
+
+`update.sh` 開始建置前、`install.sh` 的最後摘要都會呼叫 `check-updates.py --hint`：只在有新版本時印一行 `NOTE (...)`，其他情況不印，也不會讓安裝或更新失敗。`--no-update-check` 或 `GBOS_NO_UPDATE_CHECK=1` 跳過（離線建置；這兩個只對直接執行的 `install.sh`／`update.sh` 有效，`docker-install.sh` 沒有轉發這個選項與環境變數）；設了 `CI` 時 `--hint` 不印任何東西。
 
 ## 原理：兩個 slot
 
@@ -71,12 +88,12 @@ install/update.sh --work ~/gbos-work --disk /dev/disk/by-id/usb-<你的隨身碟
 
 1. `install.sh --update`：
    - 原始碼變了，舊的 base 或映像就移到 `base.prev`／`build.prev`；
-   - 用保存在 `~/gbos-work/keys/vbmeta.pem` 的金鑰重建。v0.1.0 的工作目錄第一次執行時，會從 `base/keys/` 複製這把金鑰。
+   - 用保存在 `~/gbos-work/keys/vbmeta.pem` 的 AVB 金鑰與 `~/gbos-work/keys/apex-keys/` 的 APEX payload／container keyset 重建。AVB 金鑰旁的 `apex-keys/` 目錄是簽章身分的一部分；請和 AVB 金鑰放在一起、一起備份，每次更新都用同一對建置。若 `GBOS_AVB_KEY` 指到暫存目錄裡的複本，預設 keyset 目錄會跟著變、每次建置都會產生全新的 APEX keyset；請把 `GBOS_APEX_KEYS_DIR` 指到固定的持久目錄。v0.1.0 的工作目錄第一次執行時，會從 `base/keys/` 複製 AVB 金鑰；APEX keyset 則由首次啟用 IFMA 修補的建置建立並持續沿用。
 2. `sudo install/write-usb.sh --keep-data <映像> <隨身碟>`：
    - 和全新寫入一樣的防呆：只接受 USB 整顆碟、不能是系統碟或使用中、要輸入序號；
    - 然後交給 `gbos-update.py`。
 
-> **不要刪 `~/gbos-work/keys/`**。換了金鑰的映像無法更新已安裝的系統，只能全新安裝，資料會清掉。
+> **不要刪 `~/gbos-work/keys/`，也不要只備份 `vbmeta.pem` 而漏掉 `apex-keys/`**。遺失其中任何一組都會改變映像身分。`out/build-info.txt` 記下兩個 APEX 指紋（payload 公鑰 SPKI 與 container 憑證的 SHA-256）；更新前後比對，必須維持相同指紋。第一次從 Google 簽章的 APEX 更新到自行重簽的 APEX 尚未在 KANO 實機驗證；更新前應保存資料並記錄 build-info 中的兩個 APEX 指紋，後續建置必須維持相同指紋。若身分不連續，請停止 keep-data 更新並改做全新安裝。
 
 ### ESP 放不下兩個版本
 
@@ -92,7 +109,7 @@ Google 新 build 換了 kernel 時就是這種情況：KANO 的 ESP 是 64 MiB�
 
 ## 內建碟使用者（安裝碟）
 
-內建碟上的 Googlebook 要用安裝碟更新，不是 `write-usb.sh --keep-data`（那個指令會拒絕多了 XBOOTLDR 與 kano-maint 的碟）：
+內建碟上的 Googlebook 要用安裝碟更新，不是 `write-usb.sh --keep-data`（那個指令會拒絕多了 XBOOTLDR 與 kano-maint 的碟）。2026-10-29 已在 KANO 由 16452207 slot a keep-data 更新至 16658739 slot b；套件清單、帳號數、設定、鎖定狀態及主要使用者檔名比對相同，個人檔案內容、逐項 App 資料／登入有效性未驗證，見 [驗收紀錄](VERIFICATION-v0.3.0.md)；先備份並保留原有 AVB 與 APEX 簽章身分，確認後再執行：
 
 1. 在自己的電腦建出新映像。用**同一個**映像跑 `install/stick/make-pristine.py`，再跑 `install/make-installer-stick.sh`（`--root` 與 `--xbootldr` 見 `install/stick/README.md`）。維護系統會寫進新的安裝碟檔，不必在隨身碟上再跑 `setup-stick.sh`。
 2. `sudo install/write-usb.sh <安裝碟檔> /dev/disk/by-id/usb-<你的隨身碟>`。不要加 `--keep-data`。
@@ -131,6 +148,8 @@ Google 新 build 換了 kernel 時就是這種情況：KANO 的 ESP 是 64 MiB�
 
 ## 退回上一版
 
+2026-10-29 的失敗候選曾兩次退回舊版並保留資料；成功更新至 16658739 後再退回仍未驗證。新版可能已升級 `/data`，保留 previous-version 選項不保證舊版可開機。
+
 - **開機選單**：選「Googlebook KANO quiet (previous version)」，就是更新前的那個 slot，用的是同一份 /data。
 - **改成預設**：`gbos-update.py rollback <碟> [--rdev MAJ:MIN] [--stick-boot <安裝碟的 XBOOTLDR>] [--allow-build-change]`
   （需要 root，碟上的系統不能在執行中）。它把「目前」與「previous version」兩組選項互換，什麼分割區都不寫。之後的更新會寫進換下來的那個 slot。
@@ -149,6 +168,21 @@ Google 新 build 換了 kernel 時就是這種情況：KANO 的 ESP 是 64 MiB�
 - vendor／system_ext 分割區大小。
 
 `base/build-base.sh` 與 `install/install.sh` 讀 `GBOS_LAPIS_BUILD`（預設 16452207）選擇其中一個。
+
+本樹也提供 16658739（CL3B.260622.276.R4）的獨立 pins。選它時，整個 base 與裝置建置都要使用相同的
+`GBOS_LAPIS_BUILD=16658739`，例如：
+
+```sh
+GBOS_LAPIS_BUILD=16658739 GBOS_APEX_KEYS_DIR=/path/to/existing/keys/apex-keys \
+  install/install.sh --work /path/to/work --key /path/to/existing/keys/vbmeta.pem --update
+```
+
+AVB 與 APEX 金鑰必須沿用既有安裝的身分。切換 Google build 會使 base 快取失效，即使 base 原始碼沒有改變；
+`--update` 會保存上一份 base，再依選定的 pins 重建。16658739 保留相同 kernel／開機參數；AVB rollback index
+從 1339 更新到 stock 的 1369，分割區 UUID、fingerprint、security patch 與 APEX salts 從該 build 的原始映像核對。
+KANO 的這次 keep-data 更新已有上述有限實機證據；其他機器仍須按上述跨 Google build 的驗證步驟進行，不能以軟體建置或 QEMU 取代。
+
+實驗性螢幕亮起修正另須明確設定 `GBOS_EC=drain`；只選 16658739 不會啟用 drain。它不能和其他 EC 功能並用，休眠失敗恢復可能重設 AP 並丟失資料。先決條件見 [安全說明](SAFETY.md)，實機結果見 [v0.3.0 驗收紀錄](VERIFICATION-v0.3.0.md)。
 
 新增一個 build 的步驟：
 
@@ -175,6 +209,7 @@ Google 新 build 換了 kernel 時就是這種情況：KANO 的 ESP 是 64 MiB�
   - 內建碟模式與安裝碟選單（含兩支安裝碟輪流更新）；
   - ESP 放不下時的兩種順序與中間的視窗；
   - 寫入防護。
+- `tests/update/check-updates-test.py`：`check-updates.py` 與 `update.sh` 提示的離線測試（`tests/update/fixtures/updcheck/` 是兩份公開 JSON 的精簡複本，加上較新／較舊的項目；網路錯誤與逾時用本機 socket）。`GBOS_UPDCHECK_LIVE=1` 時多一項讀真正的兩個網址，預設跳過。`install.sh` 摘要裡的提示在 `tests/install/install-sh-test.sh` 測。
 - `tests/update/mutate.py`：把 `gbos-update.py` 列出的 25 項防護逐一在暫存複本裡拿掉，每一項都必須讓 selftest 至少一項檢查失敗（改壞後無法編譯、或 selftest 沒有任何一項失敗就崩潰，都算這個清單的錯誤）。不在清單上的：只在寫入程式本身出錯時才會觸發的事後檢查，以及要真的 block device 才能測的 sysfs 路徑檢查（`tests/install/run.sh` 用 loop 裝置測）。
 - `tests/update/qemu-update.py <空目錄> <N> <N+1>`：真的映像，Linux＋KVM。依序：
   1. N 第一次開機（/data 格式化）；

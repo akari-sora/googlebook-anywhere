@@ -161,6 +161,10 @@ sources = "audio-src.list"           # ChromeOS board-overlays files, fetched by
 modprobe = ["iwlmvm"]                # the AX211 needs the iwlmvm op-mode (lapis only loads iwlmld, for BE200/BE211)
 
 [display]
+# display.density: unset = stock vendor ro.sf.lcd_density (260 per public sources, to be verified on the device). One
+# KANO profile covers the 1920x1200 and 2560x1600 panels, so it stays unset; for a 14" FHD/WUXGA panel 200 is the
+# suggested starting point from the panel math
+# (docs/DISPLAY-DENSITY.md). Range 120-480, e.g. `density = 200`.
 stack = "native"                     # native | gop-swiftshader (builder/lib/devprofile.py)
 hwc_backend = "client"               # xe faults scanning Y-tiled buffers through DPT on ADL-P: SurfaceFlinger composes all
 # drm_hwcomposer colour pipeline, HDR and log gamma LUT off; SurfaceFlinger treats the panel as sRGB SDR
@@ -182,6 +186,11 @@ power_button = "acpi"                # cros_ec_keyb is blacklisted: the ACPI Pow
 # vendor.py camera(). false until it is proven on the KANO's Android: only a build with GBOS_CAMERA_OVERLAY=<its
 # out/vendor> includes it. true = every build needs that overlay.
 libcamera = false
+
+[cpu_compat]
+# Replace the 16 unchecked VEX AVX-IFMA vpmadd52luq instructions across system_a, vendor_a and 3 APEXes with an
+# exact 12-byte AVX2 sequence at build time (Alder Lake/Raptor Lake KANO and AMD Zen 5 lack VEX AVX-IFMA).
+patch_ifma = true
 
 [hooks]
 vendor = "vendor.py"                 # model-specific vendor edits that need more than data (comments, DRAS files)

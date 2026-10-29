@@ -1070,7 +1070,7 @@ r = subprocess.run([sys.executable, ROOT / "builder/lib/devprofile.py", "check-k
                    capture_output=True, text=True)
 check("check-kconfig accepts a compliant amd-hx370 kernel dir", r.returncode == 0 and "ok for amd-hx370" in r.stdout)
 
-# Supported HdrS payload formats are decoded from raw[start:start+plen]. LZO is not one of them.
+# Supported HdrS payload formats are decoded from raw[start:start+plen]. LZO is decoded with lzop.
 # A second IKCFG outside that slice is a candidate and is refused (it is not ignored).
 DECOY_SETUP = b"IKCFG_ST" + gzip.compress(GOOD_KCFG.encode()) + b"IKCFG_ED"
 for fmt in ("gzip", "lz4", "xz", "lzma", "zstd", "bzip2", "uncompressed"):
@@ -1557,7 +1557,9 @@ try:
     devprofile.check_kconfig(amd, kd_lzo)
     check("check-kconfig refuses LZO payload magic", False)
 except devprofile.ProfileError as e:
-    check(f"check-kconfig refuses LZO payload magic ({e})", "unsupported or undecodable" in str(e))
+    # spec change (gb-ifma023g C2): an LZO payload is decoded with lzop; this
+    # fake one is refused either way (lzop missing, or lzop rejects it).
+    check(f"check-kconfig refuses LZO payload magic ({e})", "LZO payload" in str(e))
 
 zstd_elf = devprofile.build_test_vmlinux_elf(GOOD_KCFG)
 zstd_frame = _compress_payload(zstd_elf, "zstd")
@@ -4209,7 +4211,6 @@ else:
     _skip("amdgpu_linear.c backend, linear import, and YV12 stride", _SOURCE_WHY)
     _skip("upstream-delta.patch pin", _SOURCE_WHY)
 
-
 def _release_archive_paths(text):
     start = text.find('git -C "$ROOT" archive')
     pipe = text.find("| gzip", start)
@@ -4304,4 +4305,3 @@ else:
 shutil.rmtree(tmp, ignore_errors=True)
 print(f"profile tests: {passed} passed, {failed} failed")
 sys.exit(1 if failed else 0)
-

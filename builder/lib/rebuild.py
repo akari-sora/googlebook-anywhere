@@ -21,7 +21,8 @@ EROFS_MAGIC = 0xE0F5E1E2
 
 
 def load_image(path):
-    data = open(path, "rb").read()
+    with open(path, "rb") as stream:
+        data = stream.read()
     sb = 1024
     if struct.unpack_from("<I", data, sb)[0] != EROFS_MAGIC:
         raise SystemExit(f"not an EROFS image: {path}")
@@ -33,13 +34,42 @@ def load_image(path):
     return data, blksz, meta, xattr_blk, root
 
 
-def fs_uuid(path):
+def superblock_params(path, *, strict_metadata=False):
     with open(path, "rb") as f:
         f.seek(1024)
-        sb = f.read(128)
-    if struct.unpack_from("<I", sb, 0)[0] != EROFS_MAGIC:
+        sb = f.read(144)
+    if len(sb) < 128 or struct.unpack_from("<I", sb, 0)[0] != EROFS_MAGIC:
         raise SystemExit(f"not an EROFS image: {path}")
-    return str(uuid.UUID(bytes=sb[48:64]))
+    blksz = 1 << sb[12]
+    build_time = struct.unpack_from("<Q", sb, 24)[0]
+    build_time_nsec = struct.unpack_from("<I", sb, 32)[0]
+    if strict_metadata and build_time_nsec >= 1_000_000_000:
+        raise SystemExit(f"invalid EROFS build-time nanoseconds {build_time_nsec}: {path}")
+    u = str(uuid.UUID(bytes=sb[48:64]))
+    compat = struct.unpack_from("<I", sb, 8)[0]
+    volume_name = sb[64:80].split(b"\0", 1)[0].decode("utf-8", "surrogateescape")
+    incompat = struct.unpack_from("<I", sb, 80)[0]
+    compr_algs = struct.unpack_from("<H", sb, 84)[0]
+    pcluster_size = None
+    if (incompat & 0x2) and (compr_algs & 0x1) and len(sb) >= 134:
+        cfg_size, _max_dist, max_pclusterblks = struct.unpack_from("<HHH", sb, 128)
+        if cfg_size >= 6 and max_pclusterblks > 0:
+            pcluster_size = max_pclusterblks * blksz
+    elif incompat & 0x2:
+        pcluster_size = 32768
+    return {
+        "uuid": u,
+        "build_time": build_time,
+        "build_time_nsec": build_time_nsec,
+        "compat": compat,
+        "incompat": incompat,
+        "volume_name": volume_name,
+        "pcluster_size": pcluster_size,
+    }
+
+
+def fs_uuid(path):
+    return superblock_params(path)["uuid"]
 
 
 def parse_entry(data, off):
@@ -53,7 +83,7 @@ def parse_entry(data, off):
     return full, raw, esize
 
 
-def inode_raw(data, blksz, meta, nid):
+def inode_raw(data, blksz, meta, nid, *, strict_metadata=False):
     """Inode header fields (EROFS on-disk compact/extended layouts)."""
     off = meta * blksz + nid * 32
     fmt, xcount, mode = struct.unpack_from("<HHH", data, off)
@@ -61,23 +91,31 @@ def inode_raw(data, blksz, meta, nid):
     if extended:
         size = struct.unpack_from("<Q", data, off + 8)[0]
         uid, gid = struct.unpack_from("<II", data, off + 24)
+        mtime_sec = struct.unpack_from("<Q", data, off + 32)[0]
+        mtime_nsec = struct.unpack_from("<I", data, off + 40)[0]
+        if strict_metadata and mtime_nsec >= 1_000_000_000:
+            raise SystemExit(f"inode {nid}: invalid mtime nanoseconds {mtime_nsec}")
         nlink = struct.unpack_from("<I", data, off + 44)[0]
         isize = 64
     else:
         nlink, size = struct.unpack_from("<HI", data, off + 6)
         uid, gid = struct.unpack_from("<HH", data, off + 24)
+        mtime_sec = None
+        mtime_nsec = None
         isize = 32
     iu = struct.unpack_from("<I", data, off + 16)[0]
     xsize = 12 + 4 * (xcount - 1) if xcount else 0
     return dict(off=off, fmt=fmt, layout=(fmt >> 1) & 7, xcount=xcount, mode=mode, extended=extended,
-                size=size, uid=uid, gid=gid, nlink=nlink, isize=isize, xsize=xsize, iu=iu)
+                size=size, uid=uid, gid=gid, mtime_sec=mtime_sec, mtime_nsec=mtime_nsec,
+                nlink=nlink, isize=isize, xsize=xsize, iu=iu)
 
 
-def inode_meta(data, blksz, meta, xattr_blk, nid):
-    r = inode_raw(data, blksz, meta, nid)
+def inode_meta(data, blksz, meta, xattr_blk, nid, *, strict_metadata=False):
+    r = inode_raw(data, blksz, meta, nid, strict_metadata=strict_metadata)
     off, isize, xcount = r["off"], r["isize"], r["xcount"]
     selinux = None
     caps = None
+    xattrs = {}
     if xcount:
         xoff = off + isize
         shared_count = data[xoff + 4]
@@ -87,10 +125,16 @@ def inode_meta(data, blksz, meta, xattr_blk, nid):
 
         def take(name, raw):
             nonlocal selinux, caps
+            if strict_metadata and name in xattrs:
+                raise SystemExit(f"duplicate xattr {name!r} on nid {nid}")
             if name == "security.selinux":
+                xattrs[name] = raw
                 selinux = raw.split(b"\x00", 1)[0].decode()
             elif name == "security.capability":
+                xattrs[name] = raw
                 caps = raw
+            elif strict_metadata:
+                raise SystemExit(f"unsupported xattr {name!r} on nid {nid}")
 
         ip = xoff + 12 + 4 * shared_count
         while ip + 4 <= end:
@@ -102,11 +146,15 @@ def inode_meta(data, blksz, meta, xattr_blk, nid):
             take(name, raw)
     return {
         "mode": r["mode"] & 0o7777,
+        "file_type": r["mode"] & 0o170000,
         "uid": r["uid"],
         "gid": r["gid"],
         "nlink": r["nlink"],
+        "mtime_sec": r["mtime_sec"],
+        "mtime_nsec": r["mtime_nsec"],
         "selinux": selinux,
         "caps": caps,
+        "xattrs": xattrs,
         "extended": r["extended"],
     }
 
@@ -137,20 +185,31 @@ def list_dir(data, blksz, meta, nid):
     return ents
 
 
-def walk_image(img, root_nid, data, blksz, meta, xattr_blk):
+def walk_image(img, root_nid, data, blksz, meta, xattr_blk, *, strict_metadata=False):
     """Metadata of every path in the image (img is kept for call compatibility; data is the image's bytes)."""
     meta_by_path = {}
     hard = 0
+    build_time_sec = struct.unpack_from("<Q", data, 1024 + 24)[0]
+    build_time_nsec = struct.unpack_from("<I", data, 1024 + 32)[0]
+    if strict_metadata and build_time_nsec >= 1_000_000_000:
+        raise SystemExit(f"{img}: invalid EROFS build-time nanoseconds {build_time_nsec}")
+
+    def effective_meta(nid):
+        info = inode_meta(data, blksz, meta, xattr_blk, nid, strict_metadata=strict_metadata)
+        if info["mtime_sec"] is None:
+            info["mtime_sec"] = build_time_sec
+            info["mtime_nsec"] = build_time_nsec
+        return info
 
     def rec(nid, rel):
         nonlocal hard
-        meta_by_path[rel] = inode_meta(data, blksz, meta, xattr_blk, nid)
+        meta_by_path[rel] = effective_meta(nid)
         for enid, typ, name in list_dir(data, blksz, meta, nid):
             child = name if rel == "" else rel + "/" + name
             if typ == 2:
                 rec(enid, child)
             else:
-                info_c = inode_meta(data, blksz, meta, xattr_blk, enid)
+                info_c = effective_meta(enid)
                 meta_by_path[child] = info_c
                 if info_c["nlink"] > 1:
                     hard += 1
@@ -159,11 +218,41 @@ def walk_image(img, root_nid, data, blksz, meta, xattr_blk):
     return meta_by_path, hard
 
 
+def restore_mtimes(root, meta):
+    """Restore timestamps represented by extended EROFS inodes before mkfs.erofs."""
+    root = os.fspath(root)
+    for rel, info in sorted(meta.items(), key=lambda item: item[0].count("/"), reverse=True):
+        sec = info.get("mtime_sec")
+        nsec = info.get("mtime_nsec")
+        if sec is None and nsec is None:
+            continue
+        if not isinstance(sec, int) or not isinstance(nsec, int) or not 0 <= nsec < 1_000_000_000:
+            raise SystemExit(f"invalid EROFS mtime for {rel!r}")
+        path = root if rel == "" else os.path.join(root, rel)
+        timestamp_ns = sec * 1_000_000_000 + nsec
+        try:
+            os.utime(path, ns=(timestamp_ns, timestamp_ns), follow_symlinks=False)
+        except (NotImplementedError, OSError) as exc:
+            raise SystemExit(f"cannot restore EROFS mtime on {rel!r}: {exc}") from exc
+        got = os.lstat(path).st_mtime_ns
+        if got != timestamp_ns:
+            raise SystemExit(f"cannot represent EROFS mtime on {rel!r}: wanted {timestamp_ns}, got {got}")
+
+
 def esc_regex(path):
     return re.sub(r"([.^$\\*+?()\[\]{}|])", r"\\\1", path)
 
 
-def write_configs(mount, root, meta, out_fc, out_fs):
+def decode_capability(raw, where):
+    if not isinstance(raw, (bytes, bytearray)) or len(raw) != 20:
+        raise SystemExit(f"security.capability on {where} is not supported by this rebuild")
+    magic_etc, p0, i0, p1, i1 = struct.unpack("<5I", raw)
+    if magic_etc != 0x02000001 or i0 != 0 or i1 != 0 or (p0 | p1) == 0:
+        raise SystemExit(f"security.capability on {where} is not supported by this rebuild")
+    return (p1 << 32) | p0
+
+
+def write_configs(mount, root, meta, out_fc, out_fs, *, allow_caps=False):
     rows = []
 
     def add(rel, info):
@@ -203,17 +292,25 @@ def write_configs(mount, root, meta, out_fc, out_fs):
         if info.get("selinux") is None:
             missing.append(rel)
             continue
-        # The fs_config written here carries no capability column, so a file capability would be silently lost.
+        where = f"{mount.rstrip('/')}/{rel}"
+        cap_suffix = ""
         if info.get("caps"):
-            raise SystemExit(f"security.capability on {mount}/{rel} is not supported by this rebuild")
-        full = mount if rel == "" else mount + "/" + rel
+            if not allow_caps:
+                raise SystemExit(f"security.capability on {where} is not supported by this rebuild")
+            cap_val = decode_capability(info["caps"], where)
+            cap_suffix = f" capabilities=0x{cap_val:x}"
+        if mount == "/":
+            full = "/" if rel == "" else "/" + rel
+            fs_path = rel
+        else:
+            full = mount if rel == "" else mount + "/" + rel
+            fs_path = "" if rel == "" else mount[1:] + "/" + rel  # vendor/foo
         fc_lines.append(f"{esc_regex(full)} {info['selinux']}")
-        fs_path = "" if rel == "" else mount[1:] + "/" + rel  # vendor/foo
         mode = f"0{info['mode']:o}"
         if rel == "":
-            fs_lines.append(f" {info['uid']} {info['gid']} {mode}")
+            fs_lines.append(f" {info['uid']} {info['gid']} {mode}{cap_suffix}")
         else:
-            fs_lines.append(f"{fs_path} {info['uid']} {info['gid']} {mode}")
+            fs_lines.append(f"{fs_path} {info['uid']} {info['gid']} {mode}{cap_suffix}")
     if missing:
         raise SystemExit("missing selinux for: " + ", ".join(missing[:20]))
     out_fc.write_text("\n".join(fc_lines) + "\n")

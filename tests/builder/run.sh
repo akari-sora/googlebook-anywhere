@@ -18,7 +18,7 @@ for f in "$ROOT"/builder/*.sh "$ROOT"/builder/kmod/*.sh "$ROOT"/builder/camera/*
     [ -e "$f" ] || continue   # an unmatched glob (the release archive has no tools/release/*.sh)
     bash -n "$f" && ok "bash -n ${f#$ROOT/}" || bad "bash -n ${f#$ROOT/}"
 done
-for f in "$ROOT"/builder/*.py "$ROOT"/builder/lib/*.py "$ROOT"/builder/kmod/*.py "$ROOT"/base/*.py "$ROOT"/install/stick/*.py "$ROOT"/install/probe/*.py \
+for f in "$ROOT"/builder/*.py "$ROOT"/builder/lib/*.py "$ROOT"/builder/ifma/*.py "$ROOT"/builder/kmod/*.py "$ROOT"/base/*.py "$ROOT"/install/stick/*.py "$ROOT"/install/probe/*.py \
          "$ROOT"/profiles/*/*.py "$ROOT"/tests/*/*.py "$ROOT"/tools/mesa/*.py; do
     [ -e "$f" ] || continue
     python3 -m py_compile "$f" && ok "py_compile ${f#$ROOT/}" || bad "py_compile ${f#$ROOT/}"
@@ -35,6 +35,7 @@ expect "build.sh refuses an absolute GBOS_IMAGE_NAME" 2 "plain file name" -- "${
 expect "build.sh refuses a GBOS_IMAGE_NAME with a path" 2 "plain file name" -- "${B[@]}" GBOS_OUT="$T/o1" GBOS_IMAGE_NAME=../x.img bash "$ROOT/builder/build.sh"
 expect "build.sh refuses an unknown GBOS_EC feature" 2 "GBOS_EC must be" -- "${B[@]}" GBOS_OUT="$T/o1" GBOS_EC=sensors,chardev bash "$ROOT/builder/build.sh"
 expect "build.sh refuses a malformed GBOS_EC list" 2 "GBOS_EC must be" -- "${B[@]}" GBOS_OUT="$T/o1" GBOS_EC=sensors, bash "$ROOT/builder/build.sh"
+expect "GBOS_EC=drain variant (tests/builder/ec-drain-test.py)" 0 "ec-drain tests: [0-9]+ passed, 0 failed" -- python3 "$ROOT/tests/builder/ec-drain-test.py"
 mkdir -p "$T/o2"; touch "$T/o2/leftover"
 expect "build.sh refuses a non-empty GBOS_OUT" 2 "new or empty directory" -- "${B[@]}" GBOS_OUT="$T/o2" bash "$ROOT/builder/build.sh"
 expect "build.sh requires GBOS_INPUTS" 2 "GBOS_INPUTS" -- env -u GBOS_INPUTS -u GBOS_FIRMWARE -u GBOS_AUDIO_SRC GBOS_BASE="$T/base.img" GBOS_INITRD="$T/initrd.img" GBOS_OTATOOLS="$T/ota" GBOS_AVB_KEY="$T/key.pem" GBOS_OUT="$T/o3" bash "$ROOT/builder/build.sh"
@@ -43,9 +44,15 @@ mkdir -p "$T/badprof/badprof"; sed '/^image_name = /d' "$ROOT/profiles/kano/prof
 expect "build.sh refuses an invalid device profile" 2 "missing key image_name" -- "${B[@]}" GBOS_OUT="$T/o4" GBOS_PROFILE="$T/badprof/badprof" bash "$ROOT/builder/build.sh"
 [ ! -e "$T/o4" ] && ok "build.sh wrote nothing for the invalid profile" || bad "build.sh created GBOS_OUT for an invalid profile"
 expect "device profile loader (tests/builder/profile-test.py)" 0 "profile tests: [0-9]+ passed, 0 failed" -- python3 "$ROOT/tests/builder/profile-test.py"
+expect "display.density option (tests/builder/density-test.py)" 0 "density tests: [0-9]+ passed, 0 failed" -- python3 "$ROOT/tests/builder/density-test.py"
 expect "shipped module firmware (tests/builder/firmware-test.py)" 0 "firmware tests: [0-9]+ passed, 0 failed, 0 skipped" -- python3 "$ROOT/tests/builder/firmware-test.py"
 # every name a builder Python script reads is bound (symtable; py_compile does not catch a removed definition)
 expect "builder scripts read no unbound names (tests/builder/undefined-names-test.py)" 0 "undefined-name tests: [0-9]+ passed, 0 failed" -- python3 "$ROOT/tests/builder/undefined-names-test.py"
+expect "IFMA build-time patcher (tests/builder/test-patch-ifma.py)" 0 "patch-ifma tests: [0-9]+ passed, 0 failed" -- python3 -B "$ROOT/tests/builder/test-patch-ifma.py"
+expect "APK/APEX alignment gate" 0 "^OK$" -- python3 -B "$ROOT/tests/builder/container-alignment-test.py"
+expect "QEMU framework acceptance" 0 "^OK$" -- python3 -B "$ROOT/tests/builder/qemu-framework-test.py"
+expect "lapis base build pins and final hash guard" 0 "lapis base pins tests: [0-9]+ passed, 0 failed" -- python3 "$ROOT/tests/builder/lapis-base-pins-test.py"
+expect "lapis IFMA build selection and identity guards" 0 "lapis IFMA pins: [0-9]+ passed, 0 failed" -- python3 "$ROOT/tests/builder/lapis-ifma-pins-test.py"
 # tools/release/png-ok.py: the only binary files the public export and the release archive accept (docs/images/*.png)
 expect "png-ok accepts the screenshots and refuses hidden payloads (tests/builder/png-ok-test.py)" 0 "png-ok tests: [0-9]+ passed, 0 failed" -- python3 "$ROOT/tests/builder/png-ok-test.py"
 # the release archive builds from this checkout (git only: the release archive itself has no .git)
@@ -64,6 +71,12 @@ if [ -f "$ROOT/tools/release/make-release.sh" ] && [ "$(git -C "$ROOT" rev-parse
         ok "the release archive carries tools/minigbm/NOTICES.txt"; else bad "the release archive lacks tools/minigbm/NOTICES.txt"; fi
     if grep -q "/tools/minigbm/build-libminigbm-gralloc.sh$" "$T/rel.list" || grep -q "/tools/minigbm/amdgpu_linear.c$" "$T/rel.list" || grep -q "/tools/minigbm/upstream-delta.patch$" "$T/rel.list"; then
         bad "the release archive ships git-only minigbm build sources"; else ok "the release archive omits git-only minigbm build sources"; fi
+    if grep -q "/builder/lib/ifma.py$" "$T/rel.list" && grep -q "/builder/ifma/manifest.json$" "$T/rel.list" \
+        && grep -q "/builder/ifma/scan-ifma.py$" "$T/rel.list" && grep -q "/builder/ifma/patch-ifma.py$" "$T/rel.list" \
+        && grep -q "/builder/ifma/elfutil.py$" "$T/rel.list" \
+        && [ "$(git -C "$ROOT" ls-files 'builder/ifma/*.py' | wc -l | tr -d ' ')" = "$(grep -c '/builder/ifma/[^/]*\.py$' "$T/rel.list")" ]; then
+        ok "the release archive carries builder/lib/ifma.py, every builder/ifma/*.py and the IFMA manifest"
+    else bad "the release archive lacks builder/lib/ifma.py, a builder/ifma/*.py or builder/ifma/manifest.json"; fi
     mkdir -p "$T/rel-tree"
     tar -xzf "$T/rel/googlebook-anywhere-v9.9.9.tar.gz" -C "$T/rel-tree"
     rel_root="$T/rel-tree/googlebook-anywhere-v9.9.9"
@@ -75,6 +88,8 @@ if [ -f "$ROOT/tools/release/make-release.sh" ] && [ "$(git -C "$ROOT" rev-parse
     else
         bad "extracted release archive has NOTICES.txt and not the minigbm build sources"
     fi
+    expect "an installer from the extracted release archive can import ifma (manifest present)" 0 "^ifma import ok$" -- \
+        env PYTHONDONTWRITEBYTECODE=1 python3 -I -c 'import sys; sys.path.insert(0, sys.argv[1]); import ifma; assert ifma.MANIFEST_PATH.is_file(), ifma.MANIFEST_PATH; print("ifma import ok")' "$rel_root/builder/lib"
     expect "extracted release archive passes tests/builder/profile-test.py" 0 "profile tests: [0-9]+ passed, 0 failed" -- python3 "$rel_root/tests/builder/profile-test.py"
     expect "extracted release archive passes tests/builder/run.sh" 0 "builder tests: [0-9]+ passed, 0 failed" -- bash "$rel_root/tests/builder/run.sh"
 else
@@ -367,6 +382,7 @@ grep -qE '^KSRC_COMMIT=[0-9a-f]{40}$' "$ROOT/builder/kmod/build-ac.sh" && ok "bu
     && ok "vendor.sh can read the one ac.ko pin" || bad "vendor.sh cannot read exactly one ac.ko pin"
 printf 'not an elf' > "$T/fake.ko"; : > "$T/symvers"
 expect "check-ko.py refuses a file that is not a relocatable ELF" 1 "not a 64-bit" -- python3 "$ROOT/builder/kmod/check-ko.py" "$T/fake.ko" "$T/symvers" "SMP "
+expect "check-ko.py validates version tables and module_layout without executing modules" 0 "42 passed, 0 failed" -- python3 "$ROOT/tests/builder/check-ko-test.py"
 [ "$(python3 "$ROOT/builder/lib/devprofile.py" kmods "$ROOT/profiles/kano" | tr '\n' ' ')" = "ac gbos_wakefilter " ] && ok "the KANO profile ships ac.ko and gbos_wakefilter.ko" \
     || bad "the KANO profile does not list kmods = [\"ac\", \"gbos_wakefilter\"]"
 # gbos_wakefilter.ko: built in build-ac.sh's work dir; only the guards and the pin here
@@ -892,6 +908,7 @@ print("AUTOOFF OK")
 PY
 expect "GBOS_TEST_AUTOOFF runs the generated script" 0 "^AUTOOFF SCRIPT OK$" -- python3 "$ROOT/tests/builder/autooff-script-test.py"
 expect "vendor.sh switch off writes no autooff files" 0 "^VENDOR OFF OK$" -- python3 "$ROOT/tests/builder/autooff-vendor-off-test.py"
+expect "gbos-no-ota rc fixture and QEMU log checks" 0 "^NO-OTA OK$" -- python3 "$ROOT/tests/builder/no-ota-test.py"
 expect "image.py autooff log checks" 0 "^AUTOOFF LOG OK$" -- python3 - "$ROOT/builder/image.py" << 'PY'
 import ast, re, sys
 from pathlib import Path

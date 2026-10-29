@@ -5,7 +5,8 @@ from the stock vendor_boot options, the profile and the safety rules (profiles/_
 of the finished USB image:
   1. functional: kernel + initrd + the serial-debug options handed to QEMU directly, Android checked on the serial log;
   2. boot chain: firmware -> the image's own ESP -> systemd-boot -> the default entry, checked by disk writes.
-The image is built as <name>.partial and renamed to <name> only when every check passes."""
+The image is built as <name>.partial and renamed to <name> only when every applicable check passes.
+Without a QEMU GPU, framework completion/stability are NOT_RUN; all other checks remain mandatory."""
 import hashlib, json, os, re, shutil, socket, struct, subprocess, sys, tempfile, time, uuid
 from pathlib import Path
 if not __debug__:
@@ -39,12 +40,35 @@ GENERIC = PROF["display"]["stack"] == "gop-swiftshader"   # GOP framebuffer + Sw
 AMD_HX370 = PROF["model"]["id"] == "amd-hx370"
 # Both generic-x86 and amd-hx370's safe default entry use the GOP framebuffer + SwiftShader path in QEMU self-tests.
 GOP = GENERIC or AMD_HX370
-# Opt-in EC features (default: none, and then every byte below is as without this switch). Each one releases an
-# audited set of ChromeOS EC kernel drivers (docs/SAFETY.md, "EC 功能變體"); the EC userspace channels and every EC
-# writer stay blocked in every variant. KANO only (its hooks.vendor has the ec() hook).
-EC_FEATURES = [f for f in os.environ.get("GBOS_EC", "").split(",") if f]
-assert set(EC_FEATURES) <= {"sensors", "typec", "buttons"} and len(set(EC_FEATURES)) == len(EC_FEATURES), EC_FEATURES
-assert not EC_FEATURES or PROF["model"]["id"] == "kano", "GBOS_EC is audited for the KANO only"
+def parse_gbos_ec(raw, model_id):
+    """GBOS_EC: empty, a unique sensors/typec/buttons list, or exactly drain. Non-empty is KANO only.
+
+    drain is exclusive (drain,sensors and buttons,drain are refused). Duplicates, empty items and unknown
+    items are refused. build.sh and vendor.sh apply the same rule before this stage.
+    """
+    if not isinstance(raw, str):
+        raise SystemExit("GBOS_EC must be empty, drain, or a comma list of sensors, typec, buttons")
+    if raw == "":
+        features = []
+    elif raw == "drain":
+        features = ["drain"]
+    elif re.fullmatch(r"(sensors|typec|buttons)(,(sensors|typec|buttons))*", raw):
+        features = raw.split(",")
+        if len(features) != len(set(features)):
+            raise SystemExit(
+                "GBOS_EC must be empty, drain, or a comma list of sensors, typec, buttons, not " + raw)
+    else:
+        raise SystemExit(
+            "GBOS_EC must be empty, drain, or a comma list of sensors, typec, buttons, not " + raw)
+    if features and model_id != "kano":
+        raise SystemExit("GBOS_EC is audited for the KANO only")
+    return features
+
+
+# Opt-in EC features (default: none, and then every byte below is as without this switch). Each feature releases an
+# audited set of ChromeOS EC kernel drivers (docs/SAFETY.md, "EC 功能變體"). drain is not a feature: it releases only
+# cros_ec and cros_ec_lpcs. The EC userspace channels and every EC writer stay blocked in every variant. KANO only.
+EC_FEATURES = parse_gbos_ec(os.environ.get("GBOS_EC", ""), PROF["model"]["id"])
 KMOD_AC = "ac" in PROF["kmods"]   # vendor carries ac.ko (builder/kmod/build-ac.sh; builder/vendor.sh checks the pin)
 KMOD_WAKEFILTER = "gbos_wakefilter" in PROF["kmods"]   # vendor carries gbos_wakefilter.ko (build-gbos_wakefilter.sh)
 # Developer-only. Empty = no auto-off service (install.sh refuses a non-empty value). When set, QEMU has no
@@ -128,7 +152,7 @@ while off < len(body):
 assert changed == 1 and added == depchanged == (1 if STUB else 0), (changed, added, depchanged)
 (OUT / "initrd.img").write_bytes(bytes(out) + bc)
 
-# entries: the stock vendor_boot options of lapis build 16452207 (the only build the base supports), the profile's
+# entries: the reviewed vendor_boot options shared by lapis builds 16452207/16658739, the profile's
 # additions and the project-wide safety options (builder/lib/devprofile.py make_entries)
 VBOOT = PARTS["vendor_boot_a"]
 with open(SRC, "rb") as f:
@@ -136,7 +160,7 @@ with open(SRC, "rb") as f:
 assert vh[:8] == b"VNDRBOOT" and struct.unpack_from("<I", vh, 8)[0] == 4, "vendor_boot_a: not a v4 vendor boot image"
 vcmd = vh[28:28 + 2048].split(b"\0")[0]
 assert hashlib.sha256(vcmd).hexdigest() == "311e95df564037a863af096fb6265f15e8340e4b60e2736676e43d81d876aee7", \
-    "vendor_boot_a command line is not the one of lapis build 16452207"
+    "vendor_boot_a command line is not the reviewed command line of supported lapis builds"
 E = devprofile.make_entries(PROF, vcmd.decode())
 normal, debug, quiet = E["normal"], E["debug"], E["quiet"]
 # GBOS_EC: the EC transport/core plus each feature's drivers leave the blacklist; nothing they send writes EC flash,
@@ -158,19 +182,51 @@ EC_NEVER = ("cros_ec_chardev", "cros_ec_debugfs", "cros_ec_sysfs", "cros_ec_vbc"
             "cros_peripheral_charger", "cros_usbpd_charger", "cros_usbpd_logger", "cros_typec_switch", "cros_ec_ucsi",
             "tpm", "tpm_tis", "tpm_tis_core", "tpm_tis_i2c_cr50", "spi_intel_pci", "spi_intel", "thunderbolt", "i2c_dev",
             "gsmi", "nvram", "mtd", "spi_nor", "spidev", "chromeos_acpi")
-released = set(EC_CORE + [m for f in EC_FEATURES for m in EC_RELEASE[f]]) if EC_FEATURES else set()
-assert released <= set(PROF["blacklist"]["modules"]) and not released & set(EC_NEVER), released
-def ec_blacklist(o):
-    if not EC_FEATURES:
-        return o
+# drain is not a feature and must not use EC_CORE: that set includes cros_ec_dev.
+EC_DRAIN = {"cros_ec", "cros_ec_lpcs"}
+DRAIN_ONLY = EC_FEATURES == ["drain"]
+
+def ec_released(features):
+    """Modules that leave module_blacklist. drain releases the transport/core pair only."""
+    if features == ["drain"]:
+        return set(EC_DRAIN)
+    if not features:
+        return set()
+    return set(EC_CORE + [m for f in features for m in EC_RELEASE[f]])
+
+def ec_blacklist(options, features):
+    """Drop released modules from each module_blacklist= and append EC_EXTRA_BLOCK. Empty features: unchanged."""
+    released_now = ec_released(features)
+    if not features:
+        return list(options)
     out = []
-    for x in o:
+    for x in options:
         if x.startswith("module_blacklist="):
             ms = x.split("=", 1)[1].split(",")
-            x = "module_blacklist=" + ",".join([m for m in ms if m not in released] + [m for m in EC_EXTRA_BLOCK if m not in ms])
+            x = "module_blacklist=" + ",".join(
+                [m for m in ms if m not in released_now] + [m for m in EC_EXTRA_BLOCK if m not in ms])
         out.append(x)
     return out
-normal, debug, quiet = ec_blacklist(normal), ec_blacklist(debug), ec_blacklist(quiet)
+
+# Stock KANO serial-debug is 1879 bytes of the 1909 budget (docs/STATUS-KANO.md). drain removes
+# cros_ec and cros_ec_lpcs and appends the six EC_EXTRA_BLOCK names, a net +57 bytes (1936),
+# which fails cmdline_within_limit. The quiet entry already omits these two verbosity tokens.
+# Dropping them on the drain serial-debug entry lands on 1909, so the 64-byte kano-boot.sh
+# headroom stays free. earlycon (the only serial console), keep_bootcon and printk.devkmsg=on stay.
+DRAIN_DEBUG_DROP = ("ignore_loglevel", "loglevel=8")
+
+def ec_variant_entries(normal, debug, quiet, features):
+    """Blacklist rewrite for one GBOS_EC value. drain also drops two debug verbosity tokens so the line fits."""
+    normal, debug, quiet = (ec_blacklist(normal, features), ec_blacklist(debug, features),
+                            ec_blacklist(quiet, features))
+    if features == ["drain"]:
+        debug = [o for o in debug if o not in DRAIN_DEBUG_DROP]
+    return normal, debug, quiet
+
+released = ec_released(EC_FEATURES)
+assert released <= set(PROF["blacklist"]["modules"]) and not released & set(EC_NEVER), released
+base_debug, base_quiet = list(debug), list(quiet)
+normal, debug, quiet = ec_variant_entries(normal, debug, quiet, EC_FEATURES)
 def entry(title, o): return f"title {title}\nlinux /kernel.efi\ninitrd /initrd.img\noptions {' '.join(o)}\n"
 SERIAL = devprofile.SERIAL
 STUB_OPT = "pci-stub.ids=" + ",".join(PROF["cmdline"]["pci_stub_ids"])
@@ -210,6 +266,14 @@ for name, o in (("debug", debug), ("quiet", quiet)):
         assert m in bls or m in released, (name, m)
     assert set(EC_NEVER) <= set(bls), (name, set(EC_NEVER) - set(bls))
     assert not EC_FEATURES or (not released & set(bls) and set(EC_EXTRA_BLOCK) <= set(bls)), name
+    if DRAIN_ONLY:
+        base_opts = {"debug": base_debug, "quiet": base_quiet}[name]
+        base_bl = next(x for x in base_opts if x.startswith("module_blacklist=")).split("=", 1)[1].split(",")
+        # Exactly the two transport modules leave. cros_ec_dev is not in EC_NEVER (feature variants need it).
+        assert set(bls) == (set(base_bl) - {"cros_ec", "cros_ec_lpcs"}) | set(EC_EXTRA_BLOCK), (name, bls)
+        assert {"cros_ec_dev", "cros_ec_keyb"} <= set(bls), (name, bls)
+        assert set(EC_NEVER) <= set(bls), (name, set(EC_NEVER) - set(bls))
+        assert not ({"cros_ec", "cros_ec_lpcs"} & set(bls)), (name, bls)
     for m in PROF["blacklist"]["allow"]:
         assert m not in bls, (name, m)
     if name == "quiet":
@@ -373,7 +437,7 @@ def ac_ssdt(path):
                     + b"GBOS" + struct.pack("<I", 1))
     t = bytearray(hdr + body); t[9] = (-sum(t)) & 0xFF
     Path(path).write_bytes(bytes(t))
-def qemu(tag, extra):
+def qemu(tag, extra, probe_token=None):
     serial, sock, vars_fd = OUT / f"{tag}-serial.log", QMP_DIR / f"{tag}.qmp", OUT / f"{tag}-vars.fd"
     for p in (serial, sock): p.unlink(missing_ok=True)
     shutil.copy(OVMF_VARS, vars_fd)
@@ -392,8 +456,24 @@ def qemu(tag, extra):
     if QEMU_LIB: env["LD_LIBRARY_PATH"] = QEMU_LIB
     print("+", " ".join(map(str, cmd)), flush=True)
     p = subprocess.Popen(list(map(str, cmd)), env=env)
-    end = time.time() + QEMU_SECONDS
-    while time.time() < end and p.poll() is None: time.sleep(2)
+    end = time.monotonic() + QEMU_SECONDS
+    last_probe = None
+    serial_offset = 0
+    pending = ""
+    while time.monotonic() < end and p.poll() is None:
+        time.sleep(2)
+        if probe_token and serial.exists():
+            with serial.open("rb") as stream:
+                stream.seek(serial_offset)
+                pending += stream.read().decode(errors="replace")
+                serial_offset = stream.tell()
+            lines = pending.split("\n")
+            pending = lines.pop()
+            if any("gbos-qemu-probe: " + probe_token + " " in line for line in lines):
+                last_probe = time.monotonic()
+    probe_age = None if last_probe is None else time.monotonic() - last_probe
+    if probe_token:
+        print("functional device probe age at end:", probe_age, flush=True)
     alive, stats = p.poll() is None, None
     if alive:
         try:
@@ -410,9 +490,66 @@ def qemu(tag, extra):
         except subprocess.TimeoutExpired: p.kill(); p.wait()
     print(tag, "QEMU", "ran the full", QEMU_SECONDS, "s" if alive else f"exited early with {p.returncode}", "usbdisk", stats)
     log = serial.read_text(errors="replace") if serial.exists() else ""
-    return alive, stats, log
+    return alive, stats, log, probe_age
+
+def serial_device_probe(log, token, probe_age):
+    """Parse the last fresh device probe, including an unset property or an absent process during boot."""
+    reports = re.findall(r"gbos-qemu-probe: " + re.escape(token) + r" ([^\r\n]*)(\r?\n|$)", log)
+    if probe_age is None or not 0 <= probe_age <= 15 or not reports or not reports[-1][1]:
+        return None
+    return re.fullmatch(r"boot_completed=([01]?) system_server_pid=([1-9]\d*)?", reports[-1][0].strip())
+
+def serial_boot_completed(log, token, probe_age):
+    """Use the last device-generated probe, not the kernel command line or an init action."""
+    probe = serial_device_probe(log, token, probe_age)
+    return bool(probe and probe.group(1) == "1" and probe.group(2))
+
+def framework_log_checks(log, token):
+    """Reject fatal Java system-process exceptions and repeated system_server deaths/restarts."""
+    callers = set(re.findall(r"Caller\(pid=(\d+),uid=1000,sid=u:r:system_server:s0\)", log))
+    deaths = set(re.findall(r"Untracked process \(pid: (\d+) name: \(system_server\).*?\) received SIG", log))
+    probe_pids = set(re.findall(r"gbos-qemu-probe: " + re.escape(token) +
+                                r" boot_completed=\S* system_server_pid=([1-9]\d*)\s*(?:\r?\n|$)", log))
+    return {
+        "no FATAL EXCEPTION IN SYSTEM PROCESS": "FATAL EXCEPTION IN SYSTEM PROCESS" not in log,
+        "system_server did not restart repeatedly": len(callers | probe_pids) <= 1 and len(deaths) < 2,
+    }
+
+def qemu_framework_checks(log, token, probe_age, gop):
+    """Only the QEMU configuration with a display device can accept a full framework boot."""
+    checks = framework_log_checks(log, token)
+    checks["fresh well-formed device probe"] = serial_device_probe(log, token, probe_age) is not None
+    checks["device getprop sys.boot_completed is 1"] = serial_boot_completed(log, token, probe_age)
+    not_run = {}
+    if not gop:  # qemu() uses -vga none and adds bochs-display only for GOP configurations.
+        reason = "QEMU has no GPU (-vga none, no GOP display); full Android framework boot not accepted"
+        for name in ("device getprop sys.boot_completed is 1", "system_server did not restart repeatedly"):
+            del checks[name]
+            not_run[name] = reason
+    return checks, not_run
+
+def record_not_run(not_run):
+    """Keep non-acceptance visible in both image.log and the build's persistent summary."""
+    if not_run:
+        with (GBOS_OUT / "build-info.txt").open("a") as info:
+            for name, reason in not_run.items():
+                line = f"NOT_RUN {name} ({reason})"
+                print(line, flush=True)
+                info.write(line + "\n")
 
 before = sha256(IMG)
+def vendor_rc_rejections(log):
+    """Lines where init names one of the project's own vendor rc files and reports a refusal.
+
+    Covers the shapes system/core 545d248 init logs: "<file>: <line>: <error>" from the parser
+    (e.g. "ParseTriggers() failed: unexported property trigger found: ...", "service 'x'
+    overrides another service across the treble boundary."), and "Command '...' action=...
+    (<file>:<line>) took Nms and failed: ..." from Action::ExecuteCommand. Plain "processing
+    action ... from (<file>:N)" and "Parsing file <file>..." lines do not match.
+    """
+    rc = r"\b(?:kano-services|kano-audiotest|kano-hw|kano-diag|kano-adb|kano-autooff|kano-bootfix|kano-logcat|amd-hx370-graphics|gbos-efifb|gbos-no-ota)\.rc\b"
+    bad = r"(?i)(error|invalid|fail|not allowed|unexported|overrides another service|treble boundary|unable to)"
+    return [ln for ln in log.splitlines() if "init: " in ln and re.search(rc, ln) and re.search(bad, ln)]
 checks = {}
 if SKIP_SELFTEST:
     print("SKIP QEMU self-tests (GBOS_SKIP_SELFTEST=1): this image is NOT self-tested")
@@ -429,7 +566,8 @@ if SKIP_SELFTEST:
 # 1. functional: for amd-hx370, boot the SAFE default entry (quiet: amdgpu blacklisted, no amdgpu.*, gbos_efifb +
 # SwiftShader) with COM1 serial logging enabled; for other profiles, boot the debug entry's options with COM1 console.
 # QEMU has no KANO MMIO UART (0xfe03e000), so console= and earlycon= are removed and replaced with COM1
-# (console=ttyS0,115200n8 and earlycon=uart8250,io,0x3f8). This checks Android. It does not
+# (console=ttyS0,115200n8 and earlycon=uart8250,io,0x3f8). Without GOP, Android framework
+# completion/stability are NOT_RUN; the remaining Android checks still gate the image. It does not
 # show that the KANO AP UART still prints. On hardware, serial-debug keeps earlycon plus
 # keep_bootcon (printk on the bootconsole, not an interactive tty).
 if AMD_HX370:
@@ -438,6 +576,8 @@ if AMD_HX370:
             "console=ttyS0,115200n8", "earlycon=uart8250,io,0x3f8,115200n8"])
 else:
     q = [o for o in debug if not o.startswith(("console=", "earlycon="))] + ["console=ttyS0,115200n8", "earlycon=uart8250,io,0x3f8,115200n8"]
+probe_token = uuid.uuid4().hex
+q.append("androidboot.gbos_qemu_nonce=" + probe_token)
 def ec_ssdt():
     """GBOS_EC self-test only: an SSDT with the KANO's EC ACPI devices (\\_SB.CREC = GOOG0004 with GOOG0014, GOOG0007 and
     GOOG0003 below it) and no EC behind them, so ueventd loads the released drivers under this kernel and they must
@@ -459,8 +599,80 @@ if KMOD_AC:
     ac_ssdt(OUT / "ac-ssdt.aml"); extra_acpi = ["-acpitable", f"file={OUT / 'ac-ssdt.aml'}"]
 if EC_FEATURES:
     (OUT / "ec-ssdt.aml").write_bytes(ec_ssdt()); extra_acpi += ["-acpitable", f"file={OUT / 'ec-ssdt.aml'}"]
-alive, _stats, log = qemu("functional", ["-kernel", OUT / "kernel.efi", "-initrd", OUT / "initrd.img", "-append", " ".join(q)] + extra_acpi)
+alive, _stats, log, probe_age = qemu("functional", ["-kernel", OUT / "kernel.efi", "-initrd", OUT / "initrd.img", "-append", " ".join(q)] + extra_acpi, probe_token)
+boot_completed = serial_boot_completed(log, probe_token, probe_age)
+print("functional device getprop sys.boot_completed:", "1" if boot_completed else "not confirmed", flush=True)
 has = lambda p: re.search(p, log) is not None
+
+def ec_selftest_checks(log, features):
+    """QEMU serial checks for one GBOS_EC value.
+
+    An empty list is the default image. QEMU has no EC, so a drain boot is expected to stop at
+    "EC ID not detected". That line is not a drain pass and not a HOST_SLEEP pass.
+
+    Whether a module loaded is decided only from "Loaded kernel module .../*.ko". The cros_ec
+    core creates an unbound platform device named cros-ec-dev even when cros_ec_dev.ko stays
+    blacklisted, so a bare cros-ec-dev line is not an MFD driver.
+
+    Drain checks every such line against the blocked EC set: feature consumers, other
+    transports, and EC_EXTRA_BLOCK. A file name may use '-' where the module name uses '_'.
+
+    No early-boot modprobe was added. This checkout does not ship the vendor_dlkm modules.dep.
+    Consumers depend on the core, not the other way around, and the GOOG0004 SSDT above (any
+    non-empty EC_FEATURES, including drain) is the uevent path that loads cros_ec_lpcs. The
+    KANO profile's early-boot module list stays empty.
+    """
+    def found(pattern):
+        return re.search(pattern, log) is not None
+
+    if not features:
+        return {
+            "no EC transport/core/chardev module loaded": not found(
+                r"Loaded kernel module \S*/(cros_ec|cros_ec_lpcs|cros_ec_dev|cros_ec_chardev|cros_ec_sysfs|cros_ec_vbc|cros-ec-typec|cros_typec_switch)\.ko"),
+        }
+    out = {
+        # The SSDT declares the EC's ACPI devices with no EC behind them. ueventd loads the released
+        # drivers and they must give up cleanly. The EC channels and writers never load.
+        "EC variant: no EC channel/writer module loaded": not found(
+            r"Loaded kernel module \S*/(cros_ec_chardev|cros_ec_debugfs|cros_ec_sysfs|cros_ec_vbc|cros_ec_lightbar|i2c-cros-ec-tunnel|cros_charge-control|leds-cros_ec|cros_ec_spi|cros_ec_i2c|cros_ec_ishtp|cros-ec-usb|cros_peripheral_charger|cros_usbpd-charger|cros_usbpd_logger|cros_typec_switch|cros_ec_ucsi)\.ko"),
+        "EC variant: cros_ec_lpcs loaded, probed GOOG0004, gave up (no EC in QEMU)": found(
+            r"cros_ec_lpcs GOOG0004:00: EC ID not detected"),
+        "EC variant: cros-ec-typec loaded, waits for the EC": found(
+            r"cros-ec-typec GOOG0014:00: couldn't find parent EC device") if "typec" in features else True,
+        "EC variant: no /dev/cros_ec": not found(r"/dev/cros_(ec|fp|ish)\b"),
+    }
+    if features == ["drain"]:
+        # Every Loaded kernel module line. '-' and '_' name one module.
+        # Consumers, other transports and EC_EXTRA_BLOCK stay blocked. Not a HOST_SLEEP pass.
+        def mod_key(name):
+            return name.replace("-", "_")
+
+        def _drain_blocked_module_keys():
+            blocked = set()
+            for name in EC_EXTRA_BLOCK:
+                blocked.add(mod_key(name))
+            for name in EC_CORE:
+                if name not in EC_DRAIN:
+                    blocked.add(mod_key(name))
+            for group in EC_RELEASE.values():
+                for name in group:
+                    blocked.add(mod_key(name))
+            for name in EC_NEVER:
+                key = mod_key(name)
+                if "cros" in key:
+                    blocked.add(key)
+            for name in EC_DRAIN:
+                blocked.discard(mod_key(name))
+            blocked.discard("cros_ec_proto")
+            return blocked  # drain-blocked EC module keys
+
+        blocked = _drain_blocked_module_keys()
+        loaded_now = [mod_key(m.group(1)) for m in re.finditer(
+            r"Loaded kernel module \S*/([A-Za-z0-9_.-]+)\.ko\b", log)]
+        out["drain: consumers, other transports and extra EC modules stayed unloaded (not a HOST_SLEEP pass)"] = (
+            not any(key in blocked for key in loaded_now))
+    return out
+
 checks.update({
     "QEMU still running at the end (functional)": alive,
     "init second stage": has(r"init second stage started"),
@@ -481,18 +693,14 @@ checks.update({
     "kano_diag started": has(r"starting service .kano_diag."),
     "Wi-Fi modules of the profile modprobed (KANO: iwlmvm)": all(has(r"modprobe --dirname=/vendor/lib/modules " + re.escape(m)) for m in PROF["wifi"]["modprobe"]),
     "first stage loads pci-stub (if the profile uses it)": not STUB or has(r"Loading module /lib/modules/pci-stub.ko"),
-    **({"no EC transport/core/chardev module loaded": not has(r"Loaded kernel module \S*/(cros_ec|cros_ec_lpcs|cros_ec_dev|cros_ec_chardev|cros_ec_sysfs|cros_ec_vbc|cros-ec-typec|cros_typec_switch)\.ko")}
-       if not EC_FEATURES else {
-       # GBOS_EC: the SSDT above declares the EC's ACPI devices with no EC behind them; the released drivers are loaded
-       # by ueventd and must give up cleanly (the boot checks above still pass); the EC channels/writers never load
-       "EC variant: no EC channel/writer module loaded": not has(r"Loaded kernel module \S*/(cros_ec_chardev|cros_ec_debugfs|cros_ec_sysfs|cros_ec_vbc|cros_ec_lightbar|i2c-cros-ec-tunnel|cros_charge-control|leds-cros_ec|cros_ec_spi|cros_ec_i2c|cros_ec_ishtp|cros-ec-usb|cros_peripheral_charger|cros_usbpd-charger|cros_usbpd_logger|cros_typec_switch|cros_ec_ucsi)\.ko"),
-       "EC variant: cros_ec_lpcs loaded, probed GOOG0004, gave up (no EC in QEMU)": has(r"cros_ec_lpcs GOOG0004:00: EC ID not detected"),
-       "EC variant: cros-ec-typec loaded, waits for the EC": has(r"cros-ec-typec GOOG0014:00: couldn't find parent EC device") if "typec" in EC_FEATURES else True,
-       "EC variant: no /dev/cros_ec": not has(r"/dev/cros_(ec|fp|ish)\b")}),
     "kano audiotest rc parsed": has(r"init: Parsing file /vendor/etc/init/kano-audiotest.rc"),
     "kano-services rc parsed": has(r"init: Parsing file /vendor/etc/init/kano-services.rc"),
-    "no vendor rc rejections": not has(r"(?i)init: .*(kano-services|kano-audiotest|kano-hw|kano-diag|kano-adb|kano-autooff|amd-hx370-graphics).*(error|invalid|failed to parse|not allowed)"),
+    "no vendor rc rejections": not vendor_rc_rejections(log),
 })
+framework_checks, not_run = qemu_framework_checks(log, probe_token, probe_age, GOP)
+checks.update(framework_checks)
+record_not_run(not_run)
+checks.update(ec_selftest_checks(log, EC_FEATURES))
 if GOP:
     checks.update({
         "generic: GOP framebuffer handed to gbos_efifb": has(r"gbos-efifb: GOP \d+x\d+ depth 32"),
@@ -500,7 +708,6 @@ if GOP:
         "generic: no execmem denial": not has(r"avc: +denied +\{ execmem \}"),
         "generic: graphics allocator stays up": not has(r"Service 'vendor\.graphics\.allocator' \(pid \d+\) exited"),
         "generic: surfaceflinger not restarted": not has(r"Sending SIGKILL to service 'surfaceflinger'|Service 'surfaceflinger' \(pid \d+\) received SIG"),
-        "generic: boot completed": has(r"sys\.boot_completed=1"),
         "generic: no DRM master failure": not has(r"Failed to set drm master|DRM/KMS master access required"),
     })
     # a uniform frame (black, or the firmware logo on black) compresses to a few KB; the setup wizard is over 40 KB
@@ -563,7 +770,59 @@ def autooff_log_checks(log, enabled):
             "kano_autooff exited 0": found(r"Service .kano_autooff. .*exited with status 0"),
         }
     return {"no kano-autooff (GBOS_TEST_AUTOOFF not set)": not found(r"kano-autooff|kano_autooff|KANO-AUTOOFF")}
+def no_ota_log_checks(log):
+    """Serial-log checks for /vendor/etc/init/gbos-no-ota.rc (they need a QEMU boot log).
+
+    init logs the rc parse, the action, and the stop itself: Service::KillProcessGroup logs
+    "Sending <signal> to service 'update_engine' (pid N) process group" (older init: "Sending
+    signal N"); a "received signal" line alone is not stop evidence (a crash logs it too). A failed
+    command is logged by Action::ExecuteCommand as "Command 'stop update_engine' action=... took
+    Nms and failed: ..." (system/core 545d248 init/action.cpp, init/service.cpp). Passing: the
+    vendor action ran, the stop command did not fail, and update_engine either never started (the
+    stop ran before init started it, seen in QEMU build 9) or init sent it a signal after its last
+    "starting service" line (a restart is red). A log without the action line is red.
+    """
+    found = lambda p: re.search(p, log) is not None
+    # Pair each "FATAL EXCEPTION" with the first AndroidRuntime "Process:" line after it, before
+    # the next FATAL EXCEPTION, however many kernel/init lines are interleaved on the serial port.
+    # With a logcat PID column ("E AndroidRuntime" lines carry it), the Process line must come from
+    # the same PID. Java fatals only: not ANRs, native crashes or retry loops.
+    gms_fatal = False
+    lines = log.splitlines()
+    pid_of = lambda ln: (m.group(1) if (m := re.search(r"\b(\d+)\s+\d+\s+[EF]\s+AndroidRuntime\b", ln)) else None)
+    for i, line in enumerate(lines):
+        if "FATAL EXCEPTION" not in line:
+            continue
+        pid = pid_of(line)
+        for nxt in lines[i + 1:]:
+            if "FATAL EXCEPTION" in nxt:
+                break
+            if not re.search(r"Process:\s*\S", nxt) or (pid and pid_of(nxt) not in (pid, None)):
+                continue
+            if re.search(r"Process:\s*com\.google\.android\.gms(?:[.\s,:]|$)", nxt):
+                gms_fatal = True
+            break
+        if gms_fatal:
+            break
+    last_start = last_stop = -1
+    for i, line in enumerate(lines):
+        if re.search(r"init: starting service 'update_engine'", line):
+            last_start = i
+        if re.search(r"init: Sending (?:signal \d+|SIG[A-Z0-9]+) to service 'update_engine'", line):
+            last_stop = i
+    stop_failed = found(r"init: Command 'stop update_engine'[^\n]* failed") or found(r"init: [^\n]*Unable to[^\n]*update_engine")
+    action_ran = found(r"init: processing action \(ro\.boot\.slot_suffix=\*\) from \(/vendor/etc/init/gbos-no-ota\.rc")
+    return {
+        "gbos-no-ota: rc parsed without errors": found(r"init: Parsing file /vendor/etc/init/gbos-no-ota\.rc")
+            and not found(r"(?i)init: /vendor/etc/init/gbos-no-ota\.rc: .*(fail|error|unexported|not allowed|invalid)"),
+        "gbos-no-ota: action ran": action_ran,
+        "gbos-no-ota: update_engine not running (never started, or stopped after its last start)":
+            action_ran and not stop_failed and (last_start == -1 or last_stop > last_start),
+        "gbos-no-ota: no FATAL EXCEPTION in com.google.android.gms": not gms_fatal,
+    }
 checks.update(autooff_log_checks(log, TEST_AUTOOFF))
+# gbos-no-ota keys need the QEMU serial log (the setup wizard check above covers the wizard).
+checks.update(no_ota_log_checks(log))
 
 # 2. boot chain: no -kernel, so OVMF boots the image's own ESP and systemd-boot starts the default
 # entry with the options stored on that ESP (nothing is rewritten to COM1). Ran only when the
@@ -571,7 +830,7 @@ checks.update(autooff_log_checks(log, TEST_AUTOOFF))
 # entry's earlycon is the KANO MMIO UART, which QEMU does not have, so this test is not a hardware
 # UART log of the debug entry.
 if DEFAULT_ENTRY == "lapis-quiet.conf":
-    alive, stats, clog = qemu("chain", [])
+    alive, stats, clog, _probe_age = qemu("chain", [])
     wrote = (stats or {}).get("wr_bytes", 0); top = (stats or {}).get("wr_highest_offset", 0)
     checks["QEMU still running at the end (chain)"] = alive
     checks["chain: default entry keeps the serial console silent"] = "Linux version" not in clog and "Boot in" in clog

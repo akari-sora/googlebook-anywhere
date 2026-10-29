@@ -6,7 +6,7 @@ Installs Google's official **Googlebook OS** (lapis, the desktop edition of Andr
 **Acer Chromebook Spin 714 (KANO mainboard)**.
 
 - Downloads and release notes: [GitLab Releases](https://gitlab.com/aa22396584/googlebook-anywhere/-/releases) (current version: [docs/RELEASE-NOTES.md](docs/RELEASE-NOTES.md), earlier versions: [docs/RELEASE-HISTORY.md](docs/RELEASE-HISTORY.md) (both Chinese))
-- Software verification: [v0.2.3, 2026-10-22](docs/VERIFICATION-v0.2.3.md) (Chinese); hardware coverage remains documented in [KANO hardware status](docs/STATUS-KANO.md).
+- Verification: [v0.3.0](docs/VERIFICATION-v0.3.0.md) (includes the October 29 KANO keep-data update and limited standby evidence); earlier [v0.2.3](docs/VERIFICATION-v0.2.3.md) and [KANO hardware status](docs/STATUS-KANO.md) retain their original coverage (Chinese).
 - Source code and issues: [gitlab.com/aa22396584/googlebook-anywhere](https://gitlab.com/aa22396584/googlebook-anywhere) (the primary repo). [akari-sora/googlebook-anywhere](https://github.com/akari-sora/googlebook-anywhere) on GitHub is a read-only mirror; use GitLab for issues and downloads.
 
 > This is not an official Google project. The repo contains no Google files: the scripts download the official recovery image from Google, check it against a fixed SHA-256,
@@ -66,7 +66,7 @@ What does not work: auto-rotate and the light sensor, keyboard backlight adjustm
 "Charging" icon: since v0.2 the image includes the ACPI charger driver (`ac.ko`, reads ACPI only, sends no EC commands); on KANO hardware, Android shows charging when the charger is plugged in (2026-10-13).
 Standby: in v0.1, the screen lights up again by itself within tens of seconds after you close the lid or turn off the screen (every dark wake carries a power-button `KEY_WAKEUP`); since v0.2 the image includes
 `gbos_wakefilter.ko`, which drops that key event when the power button did not wake the system. On KANO hardware, with the lid closed for 300 seconds there were 10 dark wakes and the screen never lit up; with the screen off, pressing the power button turns it on, and opening the lid turns the screen on.
-**Known issue**: pressing the keyboard while the screen is off may not wake the screen (the module has already dropped the `KEY_WAKEUP` before the key press that woke the machine reaches Android). This is a known issue and is not fixed in v0.2.1; use the power button or open and close the lid.
+**Known issue**: pressing the keyboard while the screen is off may not wake the screen (the module has already dropped the `KEY_WAKEUP` before the key press that woke the machine reaches Android). This is a known issue on the earlier image and is not fixed in v0.2.1. On October 29, KANO with opt-in 16658739 and experimental drain passed a keep-data update and retention comparisons within the recorded scope; it stayed asleep without screen self-wake for about 33 minutes after timeout, then woke from the keyboard. S0ix, the power button, lid sleep/wake, audio, and returning after a successful update remain unverified for this candidate; see [verification](docs/VERIFICATION-v0.3.0.md) (Chinese).
 
 **Hardware verification was done on only one KANO (`8086:46a6`, an Alder Lake-P K0 engineering sample)**: of the 12 iGPU IDs in `profiles/kano`, 7 map to retail KANO SKUs, and 5 (`46a3`, `46b2`, `a721`, `a7ac`, `a7ad`) are platform candidates (members of the ADL-P/RPL-U macros) whose KANO mapping is not confirmed; see [docs/COMPATIBILITY.en.md](docs/COMPATIBILITY.en.md). The retail mapping is in STATUS-KANO and COMPATIBILITY (Acer retail models and the coreboot KANO list). It covers ADL-P/U on the 12th-gen CP714-1WN and RPL-U on the 13th-gen CP714-2WN/Zydron, including single-channel variants; it is a subset of `adl_p_desc` (no `*`) plus the ADL/RPL SOF firmware, but apart from the `46a6` engineering sample, none of the production SKUs has been tested on hardware yet (for each SKU's status and what is left to test, see [docs/STATUS-KANO.md](docs/STATUS-KANO.md) (Chinese) and [docs/FIRMWARE.md](docs/FIRMWARE.md) (Chinese)). Since v0.2 there is also an experimental `profiles/generic-x86`, for
 x86-64 UEFI computers whose GPU has no driver in the Googlebook kernel (for example AMD; the CPU must be Intel 12th gen or AMD Zen 5 and newer, and older ones are expected not to boot, see [docs/COMPATIBILITY.en.md](docs/COMPATIBILITY.en.md) "Minimum CPU"): it uses the firmware's display output (GOP framebuffer) plus CPU rendering (SwiftShader) and boots to the setup wizard in QEMU (`-cpu host`), with no
@@ -103,13 +103,16 @@ Paths given to `docker-install.sh` (the repo, `--work`, `--zip`, and so on) must
 
 `install.sh` does not need root. In order, it does the following:
 
-1. Downloads the official recovery zip from Google and checks its SHA-256. Only the verified lapis build `16452207` (`CL3B.260622.271.R1`) is accepted.
+1. Downloads the official recovery zip from Google and checks its SHA-256. The default lapis build is `16452207` (`CL3B.260622.271.R1`); the separately pinned `16658739` (`CL3B.260622.276.R4`) is also selectable (see [upgrade](docs/UPGRADE.md)).
 2. `base/build-base.sh` rebuilds the base image (an intermediate artifact that cannot boot directly), swaps in software KeyMint/Gatekeeper, and re-signs it with **your own newly generated AVB key**
    (`~/gbos-work/base/keys/vbmeta.pem`). otatools and two APEXes come from public builds on ci.android.com.
 3. `builder/fetch-inputs.sh` fetches the KANO firmware and audio configuration from linux-firmware, sof-bin and ChromiumOS board-overlays.
    The KANO ACPI charger driver `ac.ko` is built by `builder/kmod/build-ac.sh` from pinned kernel source and a pinned toolchain (an extra download of about 2.5 GB; about 9 GB of temporary files is deleted after the build),
    and the same kernel tree then builds `gbos_wakefilter.ko` (`builder/kmod/build-gbos_wakefilter.sh`).
 4. `builder/build.sh` produces the KANO image, then boots it in QEMU as a self-test (an Android boot check, and the whole boot chain starting from the image's own ESP).
+   KANO's QEMU has no GPU, so framework boot completion and system_server restart stability are `NOT_RUN` and do not block image completion.
+   The reason appears in `image.log`, `build-info.txt`, and the build summary. Every other check and the partition-wide APK/APEX alignment gate remain mandatory.
+   This does not accept a full Android boot on hardware. QEMU configurations with a GOP display still require both framework checks.
    `docker-install.sh` skips this step on hosts without KVM (for example macOS), or when `--no-selftest` is given, and leaves a `.not-self-tested`
    marker next to the image. **Such an image has not been boot-verified in QEMU**; it has only had the build-time checks.
 
@@ -134,7 +137,9 @@ The output is `~/gbos-work/build/image/googlebook-kano.img`; the `.sha256` next 
 Plug the stick into the KANO and boot; the default entry is **Googlebook KANO quiet**. On a slow USB stick the first boot takes a few minutes, and a "not responding" dialog may appear (choose "Wait").
 This file has no maintenance system and cannot be used to install to the internal disk. To install to the internal NVMe, do step 4 below.
 
-Update to later versions with `install/update.sh --work ~/gbos-work --disk /dev/disk/by-id/usb-<your-stick>`; `/data` is kept, and the old version stays in the boot menu ("(previous version)"). **Keep `~/gbos-work/keys/`**: updates must use the same AVB key. See [docs/UPGRADE.md](docs/UPGRADE.md) (Chinese).
+Update to later versions with `install/update.sh --work ~/gbos-work --disk /dev/disk/by-id/usb-<your-stick>`; `/data` is kept, and the old version stays in the boot menu ("(previous version)"). **Keep `~/gbos-work/keys/`**: the `apex-keys/` directory next to the AVB key is part of your signing identity; keep it together with the AVB key, back both up, and build every update image with the same pair. If `GBOS_AVB_KEY` points to a copy in a temporary folder, the default keyset directory moves with it and a fresh APEX keyset is generated on every build; point `GBOS_APEX_KEYS_DIR` at a persistent directory instead. `out/build-info.txt` records the two APEX fingerprints (payload public-key SPKI and container certificate SHA-256); compare them across builds — they must stay the same. See [docs/UPGRADE.md](docs/UPGRADE.md) (Chinese).
+
+To find out whether a new version exists, run `install/check-updates.py` (or `--json`) on the build computer. It is read-only: it reads two small public JSON documents (Google's recovery index `production_recovery.json`, for a `lapis-user` build newer than the selected `GBOS_LAPIS_BUILD` (default 16452207), and this project's GitLab releases list, for a `vX.Y.Z` tag newer than this checkout's `docs/RELEASE-NOTES.md`), with a 10 s timeout, a plain User-Agent and no cookies or token, and never downloads an image. A newer Google build needs new pins in `base/builds/` before it can be built. On a network error it prints `could not check` and exits 0. `update.sh` (before building) and the final summary of `install.sh` print one `NOTE (...)` line only when something is newer; `--no-update-check` or `GBOS_NO_UPDATE_CHECK=1` turns it off, and it is silent when `CI` is set.
 
 ### 4. Install to the KANO internal disk (installer stick)
 
@@ -270,6 +275,7 @@ The build script, `amdgpu_linear.c`, and `upstream-delta.patch` under `tools/min
   that a key that is not registered is rejected (`unauthorized`); see SAFETY.md "Data safety trade-offs".
 - `GBOS_DEFAULT_ENTRY=lapis-debug.conf`: makes serial-debug the default (serial console + logcat mirror).
 - `GBOS_LOADER_EDITOR=yes`: allows editing kernel parameters in the boot menu (needed when the harness's `kano-boot.sh` appends parameters).
+- `GBOS_EC=drain`: an experimental KANO-only exclusive option allowing only EC transport modules. Sleep-failure recovery can reset the AP and lose data; about 33 minutes without screen self-wake and a keyboard wake were observed on October 29; S0ix, power-button and lid behavior remain unverified (see [KANO status](docs/STATUS-KANO.md)).
 - `GBOS_EC=sensors,typec,buttons` (you can pick only some of them): allows a set of audited EC drivers, in exchange for auto-rotate, USB3/DP over USB-C, and the side volume keys. The safety guarantees change with it, and you must first confirm that sleep can enter S0ix; see [docs/SAFETY.md](docs/SAFETY.md) (Chinese) "EC feature variants". Not yet verified on hardware.
 
 `install.sh` records these settings and a content digest of `base/`, `builder/` and the model profile (including files that are not committed yet); when a setting or the source changes, it stops instead of reusing the old base or image. For a work directory built by an older `install.sh`, delete its `base/` and `build/` once first.

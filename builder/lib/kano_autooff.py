@@ -73,7 +73,7 @@ service kano_autooff /system/bin/sh /vendor/etc/kano-autooff.sh
     user root
     seclabel u:r:kano_kmsg_logcat:s0
 
-# The functional QEMU self-test never sets sys.boot_completed. class late_start
+# The no-GPU KANO QEMU self-test cannot reach sys.boot_completed. class late_start
 # is started by `class_start late_start` in action nonencrypted (init.rc). There
 # is no late-start event. Start on that action so the nonce gate runs inside the
 # self-test window. boot_completed starts it again on a real boot if the earlier

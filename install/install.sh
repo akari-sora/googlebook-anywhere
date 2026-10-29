@@ -10,7 +10,7 @@
 # Then write it with: sudo install/write-usb.sh <image> /dev/disk/by-id/usb-...
 #
 # usage: install/install.sh --work DIR [--zip recovery.zip] [--key avb-rsa4096.pem] [--adb-pubkey ~/.android/adbkey.pub]
-#                           [--skip-space-check] [--no-selftest] [--update]
+#                           [--skip-space-check] [--no-selftest] [--update] [--no-update-check]
 # A finished base or image in DIR is reused only when everything that made it is the same: the files under base/,
 # builder/ and the profile (also uncommitted ones), the keys, and the settings, including the GBOS_* variables that
 # builder/build.sh reads (GBOS_DEFAULT_ENTRY, GBOS_LOADER_EDITOR, ...). Otherwise it stops and says what to delete.
@@ -18,6 +18,8 @@
 # base build): an installed system can only be updated by images signed with its key, so a rebuilt base uses it again.
 # --update (install/update.sh): a base or build made from other sources or settings is moved to DIR/base.prev or
 # DIR/build.prev instead of stopping, and the new one is built with the kept key.
+# The final summary notes a newer Google build or project release (install/check-updates.py --hint, never fails the
+# install); --no-update-check or GBOS_NO_UPDATE_CHECK=1 skips it, and it is silent when CI is set.
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 die() { echo "install.sh: $*" >&2; exit 2; }
@@ -44,7 +46,8 @@ while [ $# -gt 0 ]; do
         --skip-space-check) SKIP_SPACE=1; shift ;;
         --no-selftest) SELFTEST=0; shift ;;
         --update) UPDATE=1; shift ;;
-        -h|--help) sed -n '2,19p' "$0"; exit 0 ;;
+        --no-update-check) export GBOS_NO_UPDATE_CHECK=1; shift ;;
+        -h|--help) sed -n '2,22p' "$0"; exit 0 ;;
         *) die "unknown argument $1 (see --help)" ;;
     esac
 done
@@ -122,7 +125,9 @@ fi
 
 log "2/4 base image (base/build-base.sh, a few minutes)"
 B="$WORK/base"
-BASE_ID=$(tree_digest "$ROOT/base"); BASE_SOURCES="base-sources $BASE_ID"
+# The selected Google build changes the base even when the source tree is unchanged.
+BASE_ID=$(tree_digest "$ROOT/base")
+BASE_SOURCES="base-sources $BASE_ID build $LAPIS_BUILD"
 KEYS="$WORK/keys"
 keep_key() {  # keep_key <pem>: DIR/keys/vbmeta.pem is the key of everything built in DIR; never replaced silently
     if [ -f "$KEYS/vbmeta.pem" ]; then
@@ -304,6 +309,16 @@ if [ -n "$KMOD_WF" ]; then
     PARAMS="$PARAMS
 kmod-gbos_wakefilter $(sha256sum < "$KMOD_WF" | cut -c1-64)" || die "cannot read $KMOD_WF"
 fi
+# Persistent APEX identities are build inputs too, including on --update/cache reuse.
+# Validate/create the complete keyset before comparing PARAMS; never use disposable build/keys.
+if [ "$(python3 "$ROOT/builder/lib/devprofile.py" get "$PROFILE" cpu_compat.patch_ifma)" = true ]; then
+    export GBOS_APEX_KEYS_DIR="${GBOS_APEX_KEYS_DIR:-$KEYS/apex-keys}"
+    APEX_KEY_INFO=$(GBOS_AVB_KEY="$AVB_KEY" GBOS_OUT="$WORK/build" python3 -c \
+        'import sys; sys.path.insert(0, sys.argv[1]); import ifma; ifma.ensure_apex_keys()' "$ROOT/builder/lib")
+    printf '%s\n' "$APEX_KEY_INFO"
+    PARAMS="$PARAMS
+$APEX_KEY_INFO"
+fi
 IMG="$WORK/build/image/$IMAGE_NAME"
 if [ "$UPDATE" = 1 ] && [ -e "$WORK/build" ] && { [ ! -f "$WORK/build/params" ] || [ "$(cat "$WORK/build/params")" != "$PARAMS" ] \
         || [ "${GBOS_ALLOW_FIRMWARE_DRIFT:-0}" != 0 ]; }; then
@@ -333,6 +348,8 @@ echo
 echo "done: $IMG"
 cat "$IMG.sha256"
 [ ! -f "$IMG.not-self-tested" ] || echo "NOTE: built with --no-selftest; it was not booted in QEMU before release."
+# update notice (read-only, non-blocking); update.sh already printed it before the build
+[ "${GBOS_UPDATE_CHECKED:-0}" = 1 ] || python3 "$ROOT/install/check-updates.py" --hint || true
 echo
 if [ "$UPDATE" = 1 ]; then
     echo "Update a stick that runs Googlebook from this work directory (your data stays):"

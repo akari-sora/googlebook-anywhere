@@ -152,10 +152,27 @@ PY
 }
 cp "$ROOT/install/install.sh" "$R/install/"
 cp "$ROOT"/base/builds/*.sh "$R/base/builds/"
+# A second selectable build with the same fake zip pin; create it before any build so the source tree is unchanged.
+cp "$R/base/builds/16452207.sh" "$R/base/builds/99999999.sh"
 cp "$ROOT/profiles/kano/audio-src.list" "$ROOT/profiles/kano/profile.toml" "$ROOT/profiles/kano/vendor.py" "$R/profiles/kano/"
 cp "$ROOT/profiles/amd-hx370/profile.toml" "$ROOT/profiles/amd-hx370/vendor.py" "$R/profiles/amd-hx370/"
 cp "$ROOT/profiles/_safety.toml" "$R/profiles/"
 cp "$ROOT/builder/lib/devprofile.py" "$R/builder/lib/"     # install.sh reads the image name from the profile
+# stand-in for builder/lib/ifma.py: install.sh's IFMA step (cpu_compat.patch_ifma = true) imports it and puts the
+# key-info line ensure_apex_keys() prints into build/params. Each call is logged; GBOS_TEST_IFMA_KEYINFO changes the line.
+cat > "$R/builder/lib/ifma.py" << 'STUB'
+"""stand-in for builder/lib/ifma.py (install-sh-test.sh)"""
+import os
+
+def ensure_apex_keys():
+    with open(os.path.join(os.environ["STUB_LOG"], "ifma"), "a") as log:
+        log.write(os.environ.get("GBOS_APEX_KEYS_DIR", "") + "\n")
+    print(os.environ.get("GBOS_TEST_IFMA_KEYINFO", "apex-keys stand-in-fingerprint-v1"))
+STUB
+if ! python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import ifma; ifma.ensure_apex_keys' "$R/builder/lib" > /dev/null 2>&1; then
+    bad "the fake repo has no importable builder/lib/ifma.py with ensure_apex_keys(): install.sh's IFMA step (patch_ifma = true) would fail every build"
+    finish
+fi
 echo "# stand-in for base/gbos_base.py" > "$R/base/gbos_base.py"
 echo "# stand-in for builder/vendor.sh" > "$R/builder/vendor.sh"
 echo "# stand-in" > "$R/builder/lib/rebuild.py"
@@ -170,7 +187,7 @@ if [ -n "${KEY:-}" ]; then cp "$KEY" "$OUT/keys/vbmeta.pem"; else head -c 64 /de
 printf '#!/bin/sh\n# stub avbtool: the "public key" is the key file itself\nwhile [ $# -gt 0 ]; do case "$1" in --key) k=$2; shift 2;; --output) o=$2; shift 2;; *) shift;; esac; done\ncp "$k" "$o"\n' \
     > "$OUT/cache/otatools/bin/avbtool"
 chmod +x "$OUT/cache/otatools/bin/avbtool"
-echo base-image > "$OUT/kano-real.img"; echo initrd > "$OUT/initrd.img"
+echo "base-image ${GBOS_LAPIS_BUILD:-16452207}" > "$OUT/kano-real.img"; echo initrd > "$OUT/initrd.img"
 (cd "$OUT" && sha256sum kano-real.img initrd.img > SHA256SUMS)
 echo "public key sha1 $(sha1sum < "${KEY:-$OUT/keys/vbmeta.pem}" | cut -c1-40)" > "$OUT/build-info.txt"
 touch "$OUT/BUILD-DONE"
@@ -236,8 +253,8 @@ iexpect() {  # iexpect <name> <exit> <regex> [VAR=value ...] -- <install.sh args
     shift
     out=$(env -u GBOS_DEFAULT_ENTRY -u GBOS_LOADER_EDITOR -u GBOS_EC -u GBOS_ALLOW_FIRMWARE_DRIFT -u GBOS_IMAGE_NAME -u GBOS_TEST_AUTOOFF \
         -u GBOS_DEV_KERNEL_DIR -u GBOS_RADV -u GBOS_RADV_PROBE -u GBOS_RADV_VKPROP \
-        -u GBOS_GENERIC_PASTEL -u GBOS_GENERIC_KO -u GBOS_PROFILE \
-        PATH="$T/bin:$PATH" STUB_LOG="$T/log" ${envs[@]+"${envs[@]}"} \
+        -u GBOS_GENERIC_PASTEL -u GBOS_GENERIC_KO -u GBOS_PROFILE -u GBOS_LAPIS_BUILD \
+        PATH="$T/bin:$PATH" STUB_LOG="$T/log" GBOS_NO_UPDATE_CHECK=1 ${envs[@]+"${envs[@]}"} \
         bash "$R/install/install.sh" --zip "$Z" --skip-space-check --no-selftest "$@" 2>&1 < /dev/null); rc=$?
     if [ "$rc" = "$code" ] && grep -Eq -- "$re" <<< "$out"; then ok "$name"; else bad "$name (rc=$rc)"; tail -n 6 <<< "$out" | sed 's/^/    /'; fi
 }
@@ -247,10 +264,14 @@ iexpect "GBOS_TEST_AUTOOFF is refused before any build" 2 "developer-only" GBOS_
 check "GBOS_TEST_AUTOOFF creates nothing" '[ ! -e "$W" ] && [ ! -e "$T/log/build" ]'
 iexpect "first run builds base and image" 0 "^done: $W/build/image/googlebook-kano.img" -- --work "$W"
 check "the stubs ran once each" '[ "$(builds)" = 1 ] && [ "$(wc -l < "$T/log/base" | tr -d " ")" = 1 ]'
+ifma_calls() { cat "$T/log/ifma" 2>/dev/null | wc -l | tr -d ' '; }
+check "IFMA (kano: patch_ifma = true): ensure_apex_keys() ran once for the build" '[ "$(ifma_calls)" = 1 ]'
+check "IFMA: its key-info line is recorded in build/params" 'grep -qx "apex-keys stand-in-fingerprint-v1" "$W/build/params"'
+check "IFMA: the stand-in saw the persistent key dir GBOS_APEX_KEYS_DIR=\$W/keys/apex-keys (never build/keys)" '[ "$(sort -u "$T/log/ifma")" = "$W/keys/apex-keys" ]'
 for l in "^sources [0-9a-f]{64}$" "^adb-key none$" "^default-entry lapis-quiet.conf$" "^loader-editor no$" "^ec-features none$" "^selftest 0$" "^firmware-drift 0$"; do
     check "params records: $l" 'grep -Eq -- "$l" "$W/build/params"'
 done
-check "the base records its sources" 'grep -Eq "^base-sources [0-9a-f]{64}$" "$W/base/install-sources"'
+check "the base records its sources" 'grep -Eq "^base-sources [0-9a-f]{64} build 16452207$" "$W/base/install-sources"'
 check "the profile's ac.ko was built once and handed to build.sh" '[ "$(wc -l < "$T/log/kmod" | tr -d " ")" = 1 ] && grep -q "kmod-ac $W/inputs/kmod/ac.ko" "$W/build/image/googlebook-kano.img"'
 check "... its 9 GB work dir removed afterwards" '[ ! -e "$W/inputs/kmod-work" ]'
 check "params records the ac.ko" 'grep -Eq "^kmod-ac [0-9a-f]{64}$" "$W/build/params"'
@@ -260,6 +281,11 @@ iexpect "same sources and settings: the image is reused" 0 "reusing $W/build \(s
 check "... without building again" '[ "$(builds)" = 1 ]'
 check "... nor ac.ko" '[ "$(wc -l < "$T/log/kmod" | tr -d " ")" = 1 ]'
 check "... nor gbos_wakefilter.ko" '[ "$(wc -l < "$T/log/kmod-wf" | tr -d " ")" = 1 ]'
+check "... the IFMA key step still runs (once more) before params are compared" '[ "$(ifma_calls)" = 2 ]'
+iexpect "IFMA key-info line changed: refused (cache invalidated)" 2 "now: apex-keys stand-in-fingerprint-v2" \
+    GBOS_TEST_IFMA_KEYINFO="apex-keys stand-in-fingerprint-v2" -- --work "$W"
+check "... and was: names the recorded key-info line" 'grep -q "was: apex-keys stand-in-fingerprint-v1" <<< "$out"'
+iexpect "IFMA key-info line restored: reused again" 0 "reusing $W/build" -- --work "$W"
 echo not-the-pinned-module > "$W/inputs/kmod/ac.ko"
 iexpect "a cached ac.ko that is not the pinned one: both modules are built again" 0 "does not hold the modules pinned" -- --work "$W"
 check "... once each, and the image is reused (the rebuilt modules are the pinned ones)" \
@@ -335,6 +361,15 @@ check "... with the kept key" 'cmp -s "$W/keys/vbmeta.pem" "$W/base/keys/vbmeta.
 check "... and it says how to update a stick" 'grep -q "write-usb.sh --keep-data" <<< "$out"'
 undo_append "$R/base/gbos_base.py"
 echo "# edited" >> "$R/builder/vendor.sh"
+# Switching Google build must invalidate the base even when all base/ sources are unchanged.
+WS="$T/work-switch"
+iexpect "build-switch: initial build" 0 "^done:" -- --work "$WS"
+cp "$WS/base/install-sources" "$T/build-switch-sources"
+iexpect "build-switch without --update refuses cached base" 2 "other base/ sources" GBOS_LAPIS_BUILD=99999999 -- --work "$WS"
+check "... cached base still identifies its original build" 'cmp -s "$T/build-switch-sources" "$WS/base/install-sources"'
+iexpect "build-switch --update moves base and rebuilds" 0 "moving it to $WS/base.prev" GBOS_LAPIS_BUILD=99999999 -- --work "$WS" --update
+check "... records the new build and preserves the previous base" 'grep -Eq "^base-sources [0-9a-f]{64} build 99999999$" "$WS/base/install-sources" && cmp -s "$T/build-switch-sources" "$WS/base.prev/install-sources" && grep -qx "base-image 99999999" "$WS/base/kano-real.img" && grep -qx "base-image 16452207" "$WS/base.prev/kano-real.img"'
+iexpect "build-switch with unchanged selection reuses base and image" 0 "reusing $WS/build" GBOS_LAPIS_BUILD=99999999 -- --work "$WS"
 iexpect "--update with changed builder sources: build moved to build.prev and rebuilt" 0 "moving it to $W/build.prev" -- --work "$W" --update
 check "... a new image was built" 'grep -q "^build$" "$T/log/build" && [ -d "$W/build.prev" ] && [ -f "$W/build/image/googlebook-kano.img" ]'
 undo_append "$R/builder/vendor.sh"
@@ -384,6 +419,26 @@ for pair in \
 done
 iexpect "amd-hx370 default inputs restored: reused again" 0 "reusing $W3/build" \
     GBOS_PROFILE="$R/profiles/amd-hx370" GBOS_DEV_KERNEL_DIR="$T/devk-test" -- --work "$W3"
+# The update notice in the final summary (install/check-updates.py --hint), offline: fixture documents, CI unset.
+cp "$ROOT/install/check-updates.py" "$R/install/"; mkdir -p "$R/docs"; cp "$ROOT/docs/RELEASE-NOTES.md" "$R/docs/"
+UFX="$ROOT/tests/update/fixtures/updcheck"
+UNEW=("GBOS_NO_UPDATE_CHECK=" "CI=" "GBOS_UPDCHECK_GOOGLE_URL=file://$UFX/recovery-newer.json" "GBOS_UPDCHECK_RELEASES_URL=file://$UFX/releases-newer.json")
+iexpect "update notice: a newer Google build and release are noted after the image" 0 "^NOTE \(google\): newer Google build available: 16471258" "${UNEW[@]}" -- --work "$W"
+check "... the project notice too, after the done: line" 'grep -q "^NOTE (project): newer release available: v9.0.0" <<< "$out" && [ "$(grep -n "^done: " <<< "$out" | cut -d: -f1)" -lt "$(grep -n "^NOTE (google)" <<< "$out" | cut -d: -f1)" ]'
+iexpect "update notice: --no-update-check prints none" 0 "^done: " "${UNEW[@]}" -- --work "$W" --no-update-check
+check "... no NOTE line" '! grep -q "^NOTE (" <<< "$out"'
+iexpect "update notice: none after update.sh already checked (GBOS_UPDATE_CHECKED=1)" 0 "^done: " "${UNEW[@]}" GBOS_UPDATE_CHECKED=1 -- --work "$W"
+check "... no NOTE line" '! grep -q "^NOTE (" <<< "$out"'
+iexpect "update notice: a network error does not fail the install" 0 "^done: " "GBOS_NO_UPDATE_CHECK=" "CI=" "GBOS_UPDCHECK_GOOGLE_URL=http://127.0.0.1:9/x" "GBOS_UPDCHECK_RELEASES_URL=http://127.0.0.1:9/x" -- --work "$W"
+check "... and prints nothing about it" '! grep -q "^NOTE (\|could not check" <<< "$out"'
+# A profile with cpu_compat.patch_ifma = false (every shipped profile has true): a copy of kano made here, after the
+# cases above, so it does not change their source identity.
+cp -R "$R/profiles/kano" "$R/profiles/kano-noifma"
+sed -i.bak -e 's/^patch_ifma = true$/patch_ifma = false/' -e 's/^id = "kano"$/id = "kano-noifma"/' "$R/profiles/kano-noifma/profile.toml"; rm -f "$R/profiles/kano-noifma/profile.toml.bak"
+check "the kano-noifma copy says patch_ifma = false" '[ "$(python3 "$R/builder/lib/devprofile.py" get "$R/profiles/kano-noifma" cpu_compat.patch_ifma)" = false ]'
+i0=$(ifma_calls); export i0   # the eval use on the next check line is invisible to the linter (SC2034), same as k0 below
+iexpect "patch_ifma = false builds" 0 "^done: " GBOS_PROFILE="$R/profiles/kano-noifma" -- --work "$T/work-noifma"
+check "... without calling ensure_apex_keys()" '[ "$(ifma_calls)" = "$i0" ] && [ -f "$T/work-noifma/build/params" ] && ! grep -q "^apex-keys" "$T/work-noifma/build/params"'
 mkdir -p "$T/noinc/openssl"; touch "$T/noinc/gelf.h" "$T/noinc/openssl/opensslv.h"   # libelf and OpenSSL, no libdw
 k0=$(cat "$T/log/kmod" 2>/dev/null | wc -l | tr -d ' '); export k0
 iexpect "no dwarf.h on the host: refused before the kernel build, with the libdw-dev hint" 2 \

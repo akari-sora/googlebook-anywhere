@@ -26,10 +26,11 @@ WARNINGS=()
 # GBOS_LAPIS_BUILD selects one, default 16452207).
 LAPIS_BUILD=${GBOS_LAPIS_BUILD:-16452207}
 [[ $LAPIS_BUILD =~ ^[0-9]+$ ]] && [ -f "$HERE/builds/$LAPIS_BUILD.sh" ] || die "no pins for Google build '$LAPIS_BUILD' in $HERE/builds"
+export GBOS_LAPIS_BUILD="$LAPIS_BUILD"
 declare -A EXPECT=() EXPECT_REFKEY=()   # filled by the build file
 # shellcheck source=builds/16452207.sh
 . "$HERE/builds/$LAPIS_BUILD.sh"
-for v in ZIP_URL ZIP_SHA256 ZIP_MEMBER BIN_SHA256 BIN_SIZE REF_PUBKEY_SHA1 VENDOR_PART_SIZE SYSEXT_PART_SIZE; do
+for v in ZIP_URL ZIP_SHA256 ZIP_MEMBER BIN_SHA256 BIN_SIZE REF_PUBKEY_SHA1 VENDOR_PART_SIZE SYSEXT_PART_SIZE VBMETA_ROLLBACK_INDEX; do
   [ -n "${!v:-}" ] || die "base/builds/$LAPIS_BUILD.sh does not set $v"
 done
 [ "${#EXPECT[@]}" -gt 0 ] && [ "${#EXPECT_REFKEY[@]}" -gt 0 ] || die "base/builds/$LAPIS_BUILD.sh has no expected intermediates"
@@ -263,7 +264,7 @@ log "AVB public key sha1 $PUBKEY_SHA1 (reference key: $([ $REFKEY = 1 ] && echo 
 # ---------------------------------------------------------------- step 1: official image
 log "step 1: verify zip and extract $ZIP_MEMBER"
 ZIP_GOT=$(sha256sum "$ZIP" | cut -d' ' -f1)
-[ "$ZIP_GOT" = "$ZIP_SHA256" ] || die "zip sha256 $ZIP_GOT != $ZIP_SHA256 (this pipeline is pinned to lapis 16452207)"
+[ "$ZIP_GOT" = "$ZIP_SHA256" ] || die "zip sha256 $ZIP_GOT != $ZIP_SHA256 (this pipeline is pinned to lapis $LAPIS_BUILD)"
 BIN_GOT=$(py unzip-bin "$ZIP" "$ZIP_MEMBER" "$IMG")
 [ "$BIN_GOT" = "$BIN_SHA256" ] || die "extracted image sha256 $BIN_GOT != $BIN_SHA256"
 [ "$(stat -c %s "$IMG")" = "$BIN_SIZE" ] || die "extracted image size"
@@ -278,6 +279,8 @@ for n in kernel.efi vendor_platform.cpio vendor_dlkm.cpio init_boot.cpio vendor_
          vendor_cmdline.txt vbmeta_a.orig.img; do
   check "$n" "$W/boot/$n"
 done
+avbtool info_image --image "$W/boot/vbmeta_a.orig.img" >/dev/null
+py check-vbmeta-rollback "$W/boot/vbmeta_a.orig.img" "$VBMETA_ROLLBACK_INDEX"
 read -r ORIG_DIGEST ORIG_VBSIZE < <(py vbmeta-digest "$W/boot/vbmeta_a.orig.img")
 [ -n "${ORIG_VBSIZE:-}" ] || die "cannot read the stock vbmeta digest"
 BOOT_UUID=$BOOT_GUID
@@ -294,7 +297,11 @@ log "step 4: ESP (FAT32: milestone E create, G replace loader files, M in-place 
 py loader-confs "$W/boot/vendor_cmdline.txt" "$W/loader" strict >/dev/null
 ESPIMG="$W/esp.img"
 truncate -s "$ESP_SIZE" "$ESPIMG"
-SOURCE_DATE_EPOCH=$ESP_EPOCH_E_MKFS mkfs.fat -F 32 -n "$ESP_LABEL" -i "$ESP_SERIAL" "$ESPIMG" >/dev/null
+# Ubuntu mkfs.fat 4.2 leaves the volume-label entry timestamps on wall clock
+# despite SOURCE_DATE_EPOCH. Pin every time-based field for the new Google build.
+ESP_MKFS_ARGS=()
+if [ "$LAPIS_BUILD" = 16658739 ]; then ESP_MKFS_ARGS+=(--invariant); fi
+SOURCE_DATE_EPOCH=$ESP_EPOCH_E_MKFS mkfs.fat "${ESP_MKFS_ARGS[@]}" -F 32 -n "$ESP_LABEL" -i "$ESP_SERIAL" "$ESPIMG" >/dev/null
 export SOURCE_DATE_EPOCH=$ESP_EPOCH_E
 mmd -i "$ESPIMG" ::/EFI ::/EFI/BOOT ::/loader ::/loader/entries
 mcopy -i "$ESPIMG" "$SDBOOT" ::/EFI/BOOT/BOOTX64.EFI
@@ -353,10 +360,10 @@ rebuild_erofs system_ext /system_ext "$SYSEXT_PART_SIZE" edit-system-ext
 log "step 8: re-sign vbmeta_a (vendor, then system_ext descriptor)"
 avbtool update_partition_descriptor --image "$W/boot/vbmeta_a.orig.img" \
   --partition_image "$W/vendor.img" --output "$W/vbmeta.step1.img" \
-  --algorithm SHA256_RSA4096 --key "$KEY" --rollback_index 1339
+  --algorithm SHA256_RSA4096 --key "$KEY" --rollback_index "$VBMETA_ROLLBACK_INDEX"
 avbtool update_partition_descriptor --image "$W/vbmeta.step1.img" \
   --partition_image "$W/system_ext.img" --output "$W/vbmeta.new.img" \
-  --algorithm SHA256_RSA4096 --key "$KEY" --rollback_index 1339
+  --algorithm SHA256_RSA4096 --key "$KEY" --rollback_index "$VBMETA_ROLLBACK_INDEX"
 read -r NEW_DIGEST NEW_VBSIZE < <(py vbmeta-digest "$W/vbmeta.new.img")
 [ "${NEW_VBSIZE:-}" = 6720 ] || die "unexpected vbmeta size $NEW_VBSIZE"
 if [ $REFKEY = 1 ]; then
@@ -389,7 +396,10 @@ log "step 11: final hashes"
 IMG_SHA=$(sha256sum "$IMG" | cut -d' ' -f1)
 if [ $REFKEY = 1 ]; then
   EXPECT[kano-real.img]=${EXPECT_REFKEY[kano-real.img]}
-  [ "$IMG_SHA" = "${EXPECT[kano-real.img]}" ] && log "  ok   kano-real.img $IMG_SHA (byte-identical to the 2026-10-11 image)" \
+  if [ "$LAPIS_BUILD" = 16658739 ] && [ "$ALLOW_DRIFT" != 1 ] && [ "$IMG_SHA" != "${EXPECT[kano-real.img]}" ]; then
+    die "kano-real.img sha256 $IMG_SHA != expected ${EXPECT[kano-real.img]}"
+  fi
+  [ "$IMG_SHA" = "${EXPECT[kano-real.img]}" ] && log "  ok   kano-real.img $IMG_SHA (pinned reference image)" \
     || warn "kano-real.img $IMG_SHA differs from the reference ${EXPECT[kano-real.img]}"
 fi
 INITRD_SHA=$(sha256sum "$W/initrd.img" | cut -d' ' -f1)

@@ -950,9 +950,19 @@ EDITED_SHA = {
 }
 
 
+# The build-specific edited-file pin preserves exact checking across Google builds.
+EDITED_BUILD_PROP_SHA = {
+    "16452207": EDITED_SHA["build.prop"],
+    "16658739": "b3c5bf14d093dc12ccca3dc3a5c586bb4667a5af824c1cbc460c29ef2624d843",
+}
+
+
 def check_edited(root, rel, key=None):
     got = sha256_file(Path(root) / rel)
-    want = EDITED_SHA[key or rel]
+    build = os.environ.get("GBOS_LAPIS_BUILD", "16452207")
+    if build not in EDITED_BUILD_PROP_SHA:
+        die(f"unsupported lapis build for edited-file pins: {build}")
+    want = EDITED_BUILD_PROP_SHA[build] if (key or rel) == "build.prop" else EDITED_SHA[key or rel]
     if got != want:
         die(f"{rel}: sha256 {got} differs from kano-real ({want})")
 
@@ -1093,6 +1103,18 @@ def cmd_vbmeta_digest(img):
     print(f"{sha256_bytes(s)} {len(s)}")
 
 
+def cmd_check_vbmeta_rollback(img, expected):
+    if not re.fullmatch(r"[0-9]+", expected):
+        die("invalid pinned vbmeta rollback index")
+    b = Path(img).read_bytes()
+    if len(b) < 256 or b[:4] != b"AVB0":
+        die("invalid vbmeta header")
+    got = struct.unpack_from(">Q", b, 112)[0]
+    if got != int(expected):
+        die(f"stock rollback index {got} differs from pinned {expected}")
+    print(f"vbmeta rollback index {got}: ok")
+
+
 # ---------------------------------------------------------------- main
 
 
@@ -1121,6 +1143,7 @@ def main():
         "footer-props": lambda: cmd_footer_props(*r),
         "splice": lambda: cmd_splice(*r),
         "vbmeta-digest": lambda: cmd_vbmeta_digest(*r),
+        "check-vbmeta-rollback": lambda: cmd_check_vbmeta_rollback(*r),
     }
     if c not in table:
         die("unknown subcommand " + c)

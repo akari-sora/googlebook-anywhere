@@ -61,7 +61,7 @@ loader.conf, the top-level README and docs are other owners'). No disk, LAN devi
 | File | Change |
 |---|---|
 | `install/stick/gbos-install.sh` | Rewritten flow: lockdown + `efi=noruntime` gate; full pre-write verification before the serial prompt; `set -Eeuo pipefail` + ERR trap into `die`; tee log; read-back after every write; final whole-result verification; stick menu default |
-| `install/stick/gbos-install.entry.template` (new) | The XBOOTLDR installer entry, single source for setup-stick.sh and the QEMU test |
+| `install/stick/gbos-install.entry.template` (new) | The XBOOTLDR installer entry, single source for setup-stick.sh and the QEMU test; includes the drain image's six extra EC blocks (gpio_cros_ec, cros_ec_hwmon, cros_ec_wdt, rtc_cros_ec, cros_ec_uart, cros_ec_rpmsg), retaining the default image's blocks and allowing nvme |
 | `install/stick/setup-stick.sh` | Renders the template; built-in-module and blacklist-superset checks; reuses the installer's verifier; conditional menu default; `auto-firmware no`; read-backs |
 | `install/stick/make-pristine.py` | Validates the image's MBR/GPT CRCs and backup position, refuses names the manifest cannot carry, `zstd -t` on every output, manifest written atomically |
 | `install/stick/README.md` | New order of checks, what the entry blocks and what it does not, setup and test notes, no "same blocks" claim, no JOURNAL pointer |
