@@ -197,9 +197,12 @@ class Watch(HarnessCase):
 
     def test_only_the_last_module_blacklist_counts(self):
         # the kernel keeps the last module_blacklist=; a short one after the full one replaces it
-        self.writer([cmdline(extra=" module_blacklist=cros_ec_lpcs"), "[    2.000000] x\n"], then_idle=False)
+        # start from the good typec line, so only the short trailing module_blacklist= can cut power
+        self.writer([cmdline(modules=typec_modules(), extra=" module_blacklist=cros_ec_lpcs"), "[    2.000000] x\n"],
+                    then_idle=False)
         r = self.watch(30, *FAST)
         self.assertEqual(r.returncode, 3, self.explain(r))
+        self.reason("module_blacklist entry", r.stdout)
 
     def test_spi_intel_option_cuts_power(self):
         self.writer([cmdline(extra=" spi-intel.writeable=1"), "[    2.000000] x\n"], then_idle=False)
