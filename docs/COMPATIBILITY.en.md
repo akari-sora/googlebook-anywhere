@@ -1,4 +1,4 @@
-# Compatibility (Googlebook Anywhere v0.3.0, unreleased)
+# Compatibility (Googlebook Anywhere v0.3.0)
 
 This document describes which machines the Googlebook Anywhere v0.3.0 image
 can be installed on, the current support level for each model, and what has

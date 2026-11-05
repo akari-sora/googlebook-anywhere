@@ -38,7 +38,7 @@
 - **症狀**：第一次開機的設定精靈要求連 Wi-Fi。連上之後它找到系統更新、開始下載，然後回到同一步，可以一直重複。v0.2.3 的 KANO 映像有人這樣回報（issue #6，ASUS CX34）。
 - **可能原因**：Google 的 OTA 簽章檢查會過（映像沒有更換 `/system/etc/security/otacerts.zip`），但推測（未實機驗證）這個映像完成不了那次更新：增量包會核對實際讀到的來源區塊，而 vendor 一定被改過，啟用 IFMA 修補時 system 與 system_ext 也改過；完整包寫完後要經由被封鎖的 boot-control／crossystem 切換開機 slot，而開機選單不會跟著 Google boot-control 的 slot 切換。伺服器還是提供同一份更新，精靈就再做一次。Google OTA 和這個專案自己的 `install/gbos-update.py` 會爭用 inactive slot。
 - **怎麼辦**：
-  - **v0.3.0 加入停止服務的設定，實機效果仍待驗證。** vendor 帶 `etc/init/gbos-no-ota.rc`：在 `update_engine.rc` 啟用 `update_engine` 的同一個觸發條件（`ro.boot.slot_suffix=*`）之後，由 init 執行 `stop update_engine`。已驗證的只有 QEMU：vendor action 有執行，`update_engine` 從未啟動。
+  - **v0.3.0 加入停止服務的設定，已有一次實機停止狀態讀回。** vendor 帶 `etc/init/gbos-no-ota.rc`：在 `update_engine.rc` 啟用 `update_engine` 的同一個觸發條件（`ro.boot.slot_suffix=*`）之後，由 init 執行 `stop update_engine`。QEMU 已驗證 vendor action 有執行、`update_engine` 從未啟動；2026-10-29 KANO 保留資料更新後，在 uptime 65 分鐘時讀到 `stopped`，僅證明當時的服務狀態，見 [v0.3.0 驗收紀錄](VERIFICATION-v0.3.0.md)。
   - v0.3.0 映像已帶 `gbos-no-ota.rc`，但不能保證實機不再卡住。v0.2.3（含）以前：預設映像沒有 adb（只有建置時另外給公鑰才會開），不靠 adb 沒有已知解法。
   - 還沒有在實機上驗證（未實機測試）：`update_engine` 在裝置上完全不會執行、精靈之後會走完、GMS 怎麼反應。QEMU 沒有網路，也看不到 Google 實際提供更新的那一段。
 

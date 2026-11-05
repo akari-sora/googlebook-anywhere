@@ -1,6 +1,8 @@
 # v0.3.0 軟體與 KANO 驗收紀錄
 
-日期：2026-10-29。狀態：unreleased。候選為修正 APK／APEX 對齊後的 `f17069da`（產品來源 `fee74fe`，基於 `dd647e8`），本次在 `release/next` 更新文件；最終來源、公開匯出 commit 與 tag 尚未確定。本次沒有連線至遠端、建置完整映像、接觸硬體或發布。
+發布狀態更正（2026-11-05）：[v0.3.0 已發布](https://gitlab.com/aa22396584/googlebook-anywhere/-/releases/v0.3.0)，公開 tag 指向 `4322c087df71386c6c017c1259799308e7dc4546`。下文保留 2026-10-29 發布前的驗收與文件工作紀錄；其中「本輪」、「unreleased」與 `NOT_RUN` 均指當時的工作範圍，不能當成目前發布狀態。後續硬體結果與未完成驗收見 [KANO 狀態](STATUS-KANO.md)；R6、R8 是尚未發布的後續候選。
+
+原紀錄日期：2026-10-29。當時狀態：unreleased。候選為修正 APK／APEX 對齊後的 `f17069da`（產品來源 `fee74fe`，基於 `dd647e8`），當時在 `release/next` 更新文件；最終來源、公開匯出 commit 與 tag 尚未確定。該次文件工作沒有連線至遠端、建置完整映像、接觸硬體或發布。
 
 ## 軟體驗證
 
@@ -71,6 +73,6 @@
 
 ## 發布狀態與限制
 
-使用者於 2026-10-29 決定發布 v0.3.0；本輪只完成文件與本機 gates，notes 維持 `unreleased`，交由 lead 完成最終合併與發布。16658739 與 drain 仍須明確選用；drain 仍為實驗選項。載入 EC transport 後，休眠失敗復原可能重設 AP 並造成資料遺失；先決條件與限制見 [安全說明](SAFETY.md)。
+2026-10-29 文件工作結束時：使用者已決定發布 v0.3.0；當次只完成文件與本機 gates，notes 當時維持 `unreleased`，交由 lead 完成最終合併與發布。正式發布狀態已在本文開頭更正。16658739 與 drain 仍須明確選用；drain 仍為實驗選項。載入 EC transport 後，休眠失敗復原可能重設 AP 並造成資料遺失；先決條件與限制見 [安全說明](SAFETY.md)。
 
-最終來源／公開樹 Linux CI、封裝、checksum、release 與鏡像下載讀回，本輪均 **NOT_RUN**（禁止網路、push、tag、MR 與 release）。正式發布前由 lead 核對 issue #17 合併及移除 notes 旁的合併提醒。發行工具與規則見原始碼中的 `tools/release/README.md`；更新方法見 [更新說明](UPGRADE.md)，硬體範圍見 [KANO 狀態](STATUS-KANO.md)。
+最終來源／公開樹 Linux CI、封裝、checksum、release 與鏡像下載讀回，在上述 2026-10-29 文件工作中均 **NOT_RUN**（該次禁止網路、push、tag、MR 與 release）；這個歷史結果不表示後續沒有發布。當時交接要求 lead 在正式發布前核對 issue #17 合併及移除 notes 旁的合併提醒。發行工具與規則見原始碼中的 `tools/release/README.md`；更新方法見 [更新說明](UPGRADE.md)，硬體範圍見 [KANO 狀態](STATUS-KANO.md)。

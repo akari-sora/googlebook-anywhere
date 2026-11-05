@@ -1,4 +1,4 @@
-# 相容性（Googlebook Anywhere v0.3.0，未發布）
+# 相容性（Googlebook Anywhere v0.3.0）
 
 本文說明 Googlebook Anywhere v0.3.0 映像可以裝在哪些機器上、每台機型目前
 的支援程度，以及**還沒實機驗證**的項目。

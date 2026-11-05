@@ -1,6 +1,8 @@
 # Googlebook Anywhere v0.3.0 發行計畫
 
-日期：2026-10-29。本文件是後續操作計畫，這次只準備文件與本機測試，沒有執行下列遠端／硬體步驟。現在的發行說明維持 `unreleased`；有阻擋項目就停在發布之前。標為「公開／不可逆」的操作會讓內容離開本機，不能靠刪除 ref 收回已被下載的內容。
+文件狀態更新（2026-11-05）：[v0.3.0 已發布](https://gitlab.com/aa22396584/googlebook-anywhere/-/releases/v0.3.0)，公開 tag 指向 `4322c087df71386c6c017c1259799308e7dc4546`。第 1–6 節保留 2026-10-29 的發布前計畫與當時的 refs、路徑及命令，不能直接拿來重發同一版本；末節記錄實際發布經驗。新版本應依目前原始碼、[發行工具規則](tools/release/README.md)及[KANO 狀態](docs/STATUS-KANO.md)重新核對；R6、R8 後續候選尚未發布。
+
+原計畫日期：2026-10-29。該次只準備文件與本機測試，沒有執行下列遠端／硬體步驟；當時的發行說明維持 `unreleased`，有阻擋項目就停在發布之前。標為「公開／不可逆」的操作會讓內容離開本機，不能靠刪除 ref 收回已被下載的內容。
 
 ## 版號、來源與公開差異
 
@@ -263,3 +265,12 @@ cmp "$WORK/published.tar" "$WORK/local.tar"
 同時讀回 release asset 的兩個 URL，確認指向上述 canonical registry，並逐項審核 tar 成員只含普通檔案／目錄、已釘選 PNG，沒有磁碟映像、韌體、金鑰或私有筆記；核對封存包 notes 與 tag 完全一致。macOS 與 CI gzip bytes 可能不同，published checksum 要驗 published bytes，重現比較用解壓後 tar bytes 與 metadata，不能混用兩份 checksum。這是額外重現檢查；若 Git／tar 版本或環境造成 tar 不同，保留差異，逐項比較成員內容與 metadata，不能單憑跨平台 tar byte 不同就斷言來源不同。最後記錄私有來源 SHA、公開 SHA、tag 物件／目標、七項 job 結果、下載 checksum、description 與鏡像 refs 的讀回結果；清理已驗證的暫存副本，保留小型證據。
 
 任何 KANO 待填項目、Linux gate 未跑完／失敗、個資命中、簽章身分不一致、候選來源不可追溯、公開分支有遺漏修正，都必須在公開 push／tag 之前解決。本次停在本機準備、提交與報告。
+
+## v0.3.0 實際發布的經驗（2026-10-29／30）
+
+- **notes 狀態要在 MR 之前翻成 `released`。** 這次 release/next 合併後才發現 notes 還是 `unreleased`，又開了一個只改兩行的 MR（!3），公開匯出與 CI 都重做一次。下次應依當時版本調整發行說明的狀態，並通過當前的 package notes gate，再開 MR；不要直接重跑本計畫寫死 v0.3.0 的腳本。
+- **公開 clone 要關掉換行轉換。** Mac 的全域 `core.autocrlf=input` 會把含 CRLF 的測試資料（`tests/builder/fixtures/vendor-init-lines-build10.txt`）改成 LF，公開 blob 就和私有來源不同。公開 clone 先 `git config core.autocrlf false`，提交前逐檔比對公開 blob 與私有 `SOURCE`（只有 `tools/release/PUBLIC-EXPORT` 可以不同）。這個 fixture 本來就含 CR，`git diff --cached --check` 會把它列成 trailing whitespace，屬預期。
+- **zsh 的 refspec 要加大括號。** `"$PUBLIC_SHA:refs/heads/main"` 會被 zsh 當成 `:r` 修飾符；一律寫 `"${PUBLIC_SHA}:refs/heads/main"`。
+- **CI 名額與時限（當時紀錄）。** 共享 runner 的併發限制與排隊會延遲 pipeline；當時重負載下 builder 約 55–70 分鐘、stick 約 40–66 分鐘，曾超過 1 小時上限（`job_execution_timeout`），公開專案當時將 `build_timeout` 調為 7200。後續執行須重新讀取當前設定與失敗原因，不能直接沿用這些時長。合併後自動觸發的重複 pipeline，只有確認是同一棵樹且不需各自保留驗證時才取消。
+- **GitHub 鏡像會自動帶上 tag。** 只鏡像 protected branches 的 GitLab push mirror 也在幾分鐘內鏡像了 `v0.3.0` tag；第 5 節的 GitHub tag push 先用 `git ls-remote` 確認，已存在就不用推。
+- **Runner `/tmp` tmpfs 空間與高負載子行程逾時（2026-10-30／31 修正，`86de24d`／`e0656c0`）。** Docker runner 的 `/tmp` 若為 4 GB tmpfs，`tests/update/selftest.py` 先前把 16 個測試段落的一次性合成 `.img` 檔留到結束才隨外層目錄刪除（峰值約 2.6 GB），接著跑 `mutate.py -j 2` 就會觸發 `No space left on device`。現已改為各獨立段落結束後立即 `drop(...)` 刪除合成映像並註冊 `atexit` 清理 `W`（峰值降至約 818 MB、結束殘留 0 B，`stick` job 縮短至約 7–10 分鐘）；`tests/builder/ifma-initramfs-r4-tests.py` 的負向逾時測試也改用 `/bin/sh` 取代高負載下啟動較慢的 Python 子行程。
