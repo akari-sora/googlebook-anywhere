@@ -1414,7 +1414,7 @@ def run_ifma_checks(check):
                 f"IMG={stage_img}\nTMP={tmp_d}\nWORK={wdir}\n"
                 f"VBMETA_OFF={vb_off}\nESP_OFF=0\n"
                 f"KEY={bkeys1['payload_key']}\nSTANDALONE={standalone_in}\n"
-                f"PATCH_IFMA={patch_ifma_flag}\n"
+                f"PATCH_IFMA={patch_ifma_flag}\nPATCH_MODEL=false\n"
                 f"VBMETA_ROLLBACK_INDEX=1339\n"  # 16452207 fixture's stock rollback index
                 + script_slice
             )

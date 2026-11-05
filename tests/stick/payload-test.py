@@ -113,6 +113,52 @@ check(
     {"gpio_cros_ec", "cros_ec_hwmon", "cros_ec_wdt", "rtc_cros_ec",
      "cros_ec_uart", "cros_ec_rpmsg"} <= set(names),
 )
+# R3's debug entry blocks the keyboard-backlight module. Both validators must
+# accept the template and continue to reject a template missing that module.
+r3_entry = "options module_blacklist=cros_kbd_led_backlight\n"
+old_names = [name for name in names if name != "cros_kbd_led_backlight"]
+try:
+    mod.check_entry_blacklists([("lapis-debug.conf", r3_entry)], names)
+    r3_payload_accepts = True
+except mod.PayloadError:
+    r3_payload_accepts = False
+try:
+    mod.check_entry_blacklists([("lapis-debug.conf", r3_entry)], old_names)
+    r3_payload_refuses = False
+except mod.PayloadError as err:
+    r3_payload_refuses = "cros_kbd_led_backlight" in str(err)
+check("R3 backlight module is required by payload validation",
+      r3_payload_accepts and r3_payload_refuses)
+r3_fixture = W / "r3-debug.conf"
+r3_fixture.write_text(r3_entry)
+r3_shell = subprocess.run(
+    ["bash", "-c", bfun.group(0) + '\nblacklist "$1"', "bash", str(r3_fixture)],
+    capture_output=True, text=True, env={"LC_ALL": "C", "PATH": "/usr/bin:/bin"},
+)
+r3_missing = set(r3_shell.stdout.split()) - set(shell.stdout.split())
+check("R3 backlight module passes setup-stick blacklist comparison",
+      r3_shell.returncode == 0 and not r3_missing
+      and set(r3_shell.stdout.split()) - set(old_names) == {"cros_kbd_led_backlight"})
+
+# An unknown builtin remains a hard failure until its real initcall is known.
+r3_root = W / "r3-builtin-root"
+r3_builtin = r3_root / "usr/lib/modules" / KVER / "modules.builtin"
+r3_builtin.parent.mkdir(parents=True)
+r3_builtin.write_text("kernel/drivers/leds/cros_kbd_led_backlight.ko\n")
+try:
+    mod.check_builtin_coverage(str(r3_root), KVER, covered, names)
+    r3_builtin_refused = False
+except mod.PayloadError as err:
+    r3_builtin_refused = "cros_kbd_led_backlight" in str(err)
+check("built-in backlight without verified initcall is refused", r3_builtin_refused)
+r3_builtin.write_text("")
+check("backlight absent from builtins passes coverage",
+      bool(mod.check_builtin_coverage(str(r3_root), KVER, covered, names)))
+install_entry, update_entry = mod.render_pair(template, PART, initcalls)
+check("R3 rendered install and update command lines fit the limit",
+      all(len(next(line for line in entry.splitlines() if line.startswith("options "))) + 1 < 1900
+          for entry in (install_entry, update_entry)))
+
 check(
     "module_blacklist matches setup-stick.sh",
     shell.returncode == 0 and shell.stdout.split() == names and names == sorted(set(names)),

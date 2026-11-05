@@ -19,5 +19,5 @@
     "apex/com.android.hardware.audio.desktop.apex": "e389e98363f0be67dd5dae28da111ee0e464880736a2b3ee3270a0f4d43a1d9c",
     "apex/com.android.hardware.fingerprint.crosfp.apex": "296b8e1881f1668f6fda928a06ade40a30516d3ac848dedf42ccbe5a60f0b3e7"
   },
-  "manifest_sha256": "48b75cd4944d027514ac93d69f3453fe23bd9161ca3295087a487501c6c5b0c2"
+  "manifest_sha256": "adcbc9d38760e9808ebaaa6933577cdba017a28f851c240f4586d1e831f9e386"
 }

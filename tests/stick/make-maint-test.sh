@@ -883,10 +883,14 @@ expect "assemble refuses a root with no initramfs and no mkinitcpio" 2 "no boot/
 absent "missing initramfs" "$T/out-noinit"
 expect "assemble refuses a mkinitcpio symlink" 2 "mkinitcpio is not an executable file" -- bash "$MM" assemble --cache "$T/acache" --out "$T/out-mklink" --file "$T/mklink.pins"
 absent "mkinitcpio symlink" "$T/out-mklink"
+mkdir -p "$T/host tools"
+printf '#!/bin/sh\nexit 0\n' > "$T/host tools/chroot"
+chmod +x "$T/host tools/chroot"
+export PATH="$T/host tools:$PATH"
 cat > "$T/bin/unshare" << 'EOF'
 #!/bin/sh
 set -eu
-if [ "$#" -ne 9 ] || [ "$1" != "-U" ] || [ "$2" != "-r" ] || [ "$3" != "-m" ] \
+if [ "$#" -ne 10 ] || [ "$1" != "-U" ] || [ "$2" != "-r" ] || [ "$3" != "-m" ] \
         || [ "$4" != "-p" ] || [ "$5" != "--fork" ]; then
     echo "fake unshare: unexpected arguments" >&2
     exit 1
@@ -895,11 +899,16 @@ helper=$6
 root=$7
 kver=$8
 tool=$9
+host_chroot=${10}
 case "$tool" in
     /*) ;;
     *) echo "fake unshare: tool is not absolute" >&2; exit 1 ;;
 esac
-printf '%s\n' "$helper" "$root" "$kver" "$tool" >> "${GBOS_UNSHARE_LOG:?}"
+case "$host_chroot" in
+    /*) [ -f "$host_chroot" ] && [ -x "$host_chroot" ] || exit 1 ;;
+    *) echo "fake unshare: host chroot is not absolute" >&2; exit 1 ;;
+esac
+printf '%s\n' "$helper" "$root" "$kver" "$tool" "$host_chroot" >> "${GBOS_UNSHARE_LOG:?}"
 GBOS_MAINT_ROOT=$root
 export GBOS_MAINT_ROOT
 exec /bin/sh "${root}${tool}" -k "$kver" -g /boot/initramfs-linux.img -c /etc/mkinitcpio-gbos.conf
@@ -911,6 +920,7 @@ expect "assemble builds an initramfs with the root mkinitcpio" 0 "^initramfs 15$
 helper_line=$(sed -n '1p' "$T/unshare.log")
 kver_line=$(sed -n '3p' "$T/unshare.log")
 tool_line=$(sed -n '4p' "$T/unshare.log")
+chroot_line=$(sed -n '5p' "$T/unshare.log")
 case "$helper_line" in
     *initramfs-mount.sh) helper_ok=1 ;;
     *) helper_ok=0 ;;
@@ -918,6 +928,7 @@ esac
 if [ "$helper_ok" = 1 ] \
         && [ "$kver_line" = "7.2.3-arch1-3" ] \
         && [ "$tool_line" = "/usr/bin/mkinitcpio" ] \
+        && [ "$chroot_line" = "$T/host tools/chroot" ] \
         && [ "$(cat "$T/tree-initrd/root/boot/initramfs-linux.img")" = "initramfs-bytes" ] \
         && grep -F 'HOOKS=(base systemd modconf block fsck)' "$T/tree-initrd/root/etc/mkinitcpio-gbos.conf" >/dev/null \
         && grep -F 'MODULES=(usb_storage uas vfat)' "$T/tree-initrd/root/etc/mkinitcpio-gbos.conf" >/dev/null \

@@ -9,7 +9,7 @@ metadata (three metadata slots, groups for a and b, system_b holding "system_oth
 kernel.efi, an initrd ending in a bootconfig, loader.conf and the three entries, a vbmeta with an AVB public key.
 Every case checks the result byte for byte; every refusal checks that the disk did not change at all.
 """
-import hashlib, os, random, shutil, struct, subprocess, sys, uuid, zlib
+import atexit, hashlib, os, random, shutil, struct, subprocess, sys, uuid, zlib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -27,6 +27,7 @@ if MISSING_MTOOLS:
         + ", ".join(MISSING_MTOOLS)
     )
 W.mkdir(parents=True, exist_ok=True)
+atexit.register(shutil.rmtree, W, True)
 ENV = dict(os.environ, MTOOLS_SKIP_CHECK="1", GBOS_UPDATE_TEST="1", PYTHONDONTWRITEBYTECODE="1")
 MIB = 1 << 20
 RESULTS = []
@@ -47,6 +48,12 @@ def sh(*cmd, data=None):
 
 def rnd(seed, n):
     return random.Random(seed).randbytes(n)
+
+
+def drop(*paths):
+    for p in paths:
+        for f in (Path(p), Path(str(p) + ".sha256")):
+            f.unlink(missing_ok=True)
 
 
 # ------------------------------------------------------------------ fake release images
@@ -297,6 +304,7 @@ make_release(W / "model.img", vendor="v2", model="OTHER"); refused("another mode
 make_release(W / "old.img", vendor="v2", build=16452100); refused("an older Google build", W / "old.img")
 make_release(W / "km.img", vendor="v2", keymint="other"); refused("another KeyMint selection", W / "km.img")
 make_release(W / "lay.img", vendor="v2", super_mib=48); refused("another partition layout", W / "lay.img")
+drop(W / "key2.img", W / "model.img", W / "old.img", W / "km.img", W / "lay.img")
 make_release(W / "big.img", vendor="v2", big=20); refused("a release that does not fit in super", W / "big.img")
 make_release(W / "newdyn.img", vendor="v2", new_dyn="odm"); refused("a release with a new dynamic partition", W / "newdyn.img", want="new dynamic partition")
 Dgrp = W / "grp.img"; make_release(Dgrp, vendor="v1", group_mib=8)
@@ -315,6 +323,7 @@ with open(W / "bad.img", "r+b") as f:
     f.seek(info_n1["start"]["vendor_boot_a"] + 5); f.write(b"X")
 refused("a release that fails its .sha256", W / "bad.img")
 os.unlink(str(W / "bad.img") + ".sha256"); refused("a release without .sha256", W / "bad.img")
+drop(W / "big.img", W / "newdyn.img", Dgrp, Dbpb, W / "bad.img")
 b = sha(D); rc, out = run("apply", D, "--image", N1)
 ok(rc == 2 and sha(D) == b, "refuses apply without --mode")
 
@@ -417,6 +426,7 @@ rc, out = run("inspect", D3)
 ok(rc == 0 and "current slot b" in out and "previous slot on the menu: a" in out, "... inspect: current b, previous a")
 rc, out = run("rollback", D3)
 ok(rc == 0 and "ROLLBACK OK: slot a" in out and not esp_has(D3, E, "/loader/entries/lapis.conf"), "... rollback to slot a works without lapis.conf")
+drop(D3, N3)
 
 # NVMe mode with the installer stick's boot partition
 shutil.copy(N, D)
@@ -472,12 +482,14 @@ for stop in ("stickprep:", "removed:", "dynamic:", "physical:", "metadata:", "bo
     ok(all(esp_has(Xw, 0, x) for n in ("gbos-nvme.conf", "gbos-nvme-prev.conf") for x in files_of(Xw, 0, n))
        and esp_read(Xw, 0, "/gbos-nvme/b/initrd.img") == esp_read(Dn1, E, "/gbos/b/initrd.img"),
        f"... the stick keeps an exact copy of slot b's files for its previous-version entry")
+drop(Dw, Xw)
 # rollback with the stick: both menus swap
 shutil.copy(Dn1, W / "rb.img"); shutil.copy(Xn1, W / "rbx.img")
 rc, out = run("rollback", W / "rb.img", "--stick-boot", W / "rbx.img")
 dm, xm = menu_slots(W / "rb.img", E), menu_slots(W / "rbx.img", 0)
 ok(rc == 0 and dm.get("lapis-quiet.conf") == "a" and xm.get("gbos-nvme.conf") == "a" and xm.get("gbos-nvme-prev.conf") == "b"
    and xm.get("gbos-nvme-debug.conf") == "a", "rollback --stick-boot: the disk's and the stick's menus start a, previous version b")
+drop(W / "rb.img", W / "rbx.img")
 # two installer sticks: a stick's own copy of the running slot can be older than what the slot now holds (another
 # stick updated the disk since); the copy for 'previous version' comes from the internal disk
 Dts, Xold, Xnew = W / "two.img", W / "two-x1.img", W / "two-x2.img"
@@ -502,6 +514,7 @@ ok(r1 == 0 and r2 == 0 and xm.get("gbos-nvme-prev.conf") == "a" and xm.get("gbos
    and esp_read(Xold, 0, "/gbos-nvme/a/initrd.img") == esp_read(Dts, E, "/gbos/a/initrd.img")
    and esp_read(Xn1, 0, "/gbos-nvme/a/initrd.img") != esp_read(Dts, E, "/gbos/a/initrd.img"),
    "a stick with an older copy of the running slot: its 'previous version' gets what the internal disk's slot holds")
+drop(Dts, Xold, Xnew, Dc, Yc, Xc, W / "n7.img", W / "n6.img")
 # internal disk + installer stick on an ESP without room for both versions (a Google build with a new kernel): stop
 # inside the window, rerun with the same stick: the running version's files are gone from the disk, its copy comes
 # from the stick (review round 2, N3 X1)
@@ -526,6 +539,7 @@ ok(r1 == 1 and "cannot start Googlebook now" in o1 and "installer stick" in o1 a
    and r2 == 0 and menu_slots(Dw2, Ew2).get("lapis-quiet.conf") == "b" and xm2.get("gbos-nvme.conf") == "b"
    and xm2.get("gbos-nvme-prev.conf") == "a" and esp_read(Xw2, 0, "/gbos-nvme/a/initrd.img") == a_initrd,
    "internal disk + stick, window: stopped after the old files went (stick still starts a), the rerun takes slot a's copy from the stick")
+drop(Dw2, S1n, Xw2)
 # a stick whose FAT claims more than its partition: refused before mtools touches either disk (N3 X5)
 Xbpb = W / "xbpb.img"; shutil.copy(Xn1, Xbpb); Dbs = W / "nvme-bpb.img"; shutil.copy(Dn1, Dbs)
 with open(Xbpb, "r+b") as fh:
@@ -534,6 +548,7 @@ b1, b2 = sha(Dbs), sha(Xbpb)
 rc, out = run("apply", Dbs, "--image", N2b, "--mode", "nvme", "--stick-boot", Xbpb)
 ok(rc == 2 and "its FAT says" in out and sha(Dbs) == b1 and sha(Xbpb) == b2,
    "refuses an installer stick whose FAT reaches past its partition; neither disk changed")
+drop(Xbpb, Dbs)
 # rollback --stick-boot: a stick whose entries are the other way round, and one whose copy has another kernel (N3 X3, N4)
 Drb, Xrb = W / "rb2.img", W / "rbx2.img"
 shutil.copy(Dn1, Drb); shutil.copy(Xn1, Xrb)
@@ -550,6 +565,7 @@ b1, b2 = sha(Drb), sha(Xrb)
 rc, out = run("rollback", Drb, "--stick-boot", Xrb)
 ok(rc == 2 and "starts other boot files" in out and sha(Drb) == b1 and sha(Xrb) == b2,
    "rollback --stick-boot refuses a stick whose copy has another kernel than the disk's; nothing written")
+drop(Drb, Xrb)
 # a stick that has no room for the internal disk's files (review I2: M8)
 Xt = W / "xtiny.img"
 with open(Xt, "wb") as fh:
@@ -558,6 +574,7 @@ sh("mformat", "-i", Xt, "-v", "XT", "-T", 2048, "-h", 2, "-s", 32, "::")
 sh("mmd", "-i", Xt, "::/loader"); sh("mmd", "-i", Xt, "::/loader/entries")
 b = sha(Dn1); rc, out = run("apply", Dn1, "--image", N2b, "--mode", "nvme", "--stick-boot", Xt)
 ok(rc == 2 and "no room" in out and sha(Dn1) == b, "refuses a stick without room for the internal disk's boot files; nothing written")
+drop(Xt, Dn1, Xn1, N2b, X, N2)
 # rollback across Google builds needs --allow-build-change
 Db = W / "build.img"; shutil.copy(N, Db)
 make_release(W / "newbuild.img", vendor="v6", build=16452300)
@@ -567,6 +584,7 @@ ok(rc == 0 and rr == 2 and "--allow-build-change" in ro and menu_slots(Db, E).ge
    "rollback to an older Google build is refused without --allow-build-change")
 rr, ro = run("rollback", Db, "--allow-build-change")
 ok(rr == 0 and menu_slots(Db, E).get("lapis-quiet.conf") == "a", "... and done with it")
+drop(Db, W / "newbuild.img")
 
 # no room for both versions on the ESP
 Dsmall = W / "small.img"; info_s = make_release(Dsmall, vendor="v1", esp_mib=8, kernel_kib=3900)
@@ -598,6 +616,7 @@ for stops in (("bootfiles",), ("oldremoved", "removed"), ("oldremoved", "dynamic
     rc, out = run("apply", Dsmall, "--image", W / "small1.img", "--mode", "stick", "--without-fallback")
     ok(all(said) and rc == 0 and menu_slots(Dsmall, Es).get("lapis-quiet.conf") == "b",
        f"window: a stop after {' then '.join(stops)} says the disk's own menu starts nothing (no stick named); the rerun finishes")
+drop(Dsmall, W / "small1.img")
 # new files first: the ESP has room for the new files next to the old ones, but not for a previous version
 Dnf = W / "newfirst.img"; shutil.copy(N, Dnf)
 for stop in ("bootfiles", None):
@@ -618,6 +637,7 @@ try:
     g.pwrite(512, b"x"); ok(False, "write guard")
 except gbu.Failed:
     ok(True, "write guard: a write into a forbidden range fails before it happens")
+drop(Dnf, D, N, N1, W / "esp-build.img", W / "f")
 
 bad = [w for c, w in RESULTS if not c]
 print(f"{len(RESULTS) - len(bad)}/{len(RESULTS)} passed")

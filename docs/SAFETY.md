@@ -158,6 +158,19 @@ overlay 裡的自動亮度、power_profile 等設定也會一起消失。
 電源鍵維持 ACPI Power Button，`cros_ec_buttons` 的電源鍵沒有對應（`usr/keylayout/cros_ec_buttons.kl`），所以不會按一下觸發兩次。
 `thunderbolt` 仍封鎖，所以 TBT／USB4 的 PCIe 通道與 TBT 底座不能用。
 
+## 開發用背光 USB 試跑映像
+
+`GBOS_USB_SMOKE=1` 僅供 `builder/build.sh` 使用：要求 KANO 的 `gbos_kbd_backlight` 候選設定、16658739、
+`GBOS_EC=drain`、已登記的 ADB 公鑰、原廠核心、quiet 預設項與禁止選單編輯，並強制執行兩段 QEMU 測試。
+`install.sh` 與 `docker-install.sh` 拒絕任何非空值，避免快取或參數轉送產生普通映像。
+
+建置會重新產生 GPT GUID，將 initrd bootconfig 綁定到新的 boot 分割區，並檢查兩個選單項目的 NVMe 與 EC 限制。
+這是建置階段的防護，不能取代實機隔離驗證。QEMU 的零 NVMe 寫入紀錄只證明該測試未寫入模擬 NVMe；
+序列紀錄沒有 NVMe 訊息，也不等於裝置不可見或從未被讀取。
+
+真機試跑仍須由另行審查的流程核對當前內建碟 GPT、指定測試 USB 的身分與回讀、系統及資料的底層設備來源，
+以及執行期 NVMe 可見性；讀不到必要證據即為未驗證。此選項本身不構成實機隔離、背光修復或可安裝內建碟的驗收。
+
 ## 沒有涵蓋的範圍
 
 - **韌體與開機程式自己的 EFI 變數寫入**：`efi=noruntime` 只約束 Linux。UEFI 韌體本身會更新 `Boot####`、`BootOrder` 等變數；

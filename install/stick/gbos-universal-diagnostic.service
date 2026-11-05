@@ -1,0 +1,15 @@
+[Unit]
+Description=Googlebook shared medium read-only diagnostics
+After=local-fs.target systemd-sysusers.service systemd-tmpfiles-setup.service systemd-random-seed.service systemd-update-done.service ldconfig.service systemd-logind.service
+Wants=systemd-sysusers.service systemd-tmpfiles-setup.service systemd-random-seed.service systemd-update-done.service ldconfig.service systemd-logind.service
+RequiresMountsFor=/run/gbos-payload /var
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /opt/googlebook/install/stick/universal-diagnostic.py
+StandardInput=null
+StandardOutput=journal+console
+StandardError=journal+console
+
+[Install]
+WantedBy=multi-user.target

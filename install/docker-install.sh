@@ -13,6 +13,9 @@ DOCKER=${GBOS_DOCKER:-docker}
 TAG=googlebook-anywhere-builder:1
 die() { echo "$*"; exit 2; }
 # Developer-only. Refused before Docker: a set value must not be dropped and then built as a normal image.
+if [ -n "${GBOS_USB_SMOKE:-}" ]; then
+    die "GBOS_USB_SMOKE is unsupported by docker-install.sh; use builder/build.sh directly"
+fi
 if [ -n "${GBOS_TEST_AUTOOFF:-}" ]; then
     die "GBOS_TEST_AUTOOFF is developer-only (TEST images); docker-install.sh does not accept it"
 fi

@@ -1,7 +1,6 @@
-# 相容性（Googlebook Anywhere v0.3.0）
+# 相容性（Googlebook Anywhere）
 
-本文說明 Googlebook Anywhere v0.3.0 映像可以裝在哪些機器上、每台機型目前
-的支援程度，以及**還沒實機驗證**的項目。
+本文說明各機型的支援程度，以及**還沒實機驗證**的項目。v0.3.1 的軟體檢查、候選映像與未完成實機驗收見 [驗收紀錄](VERIFICATION-v0.3.1.md)；以下保留較早映像的硬體證據，不代表新候選已通過實測。
 
 - 唯一在實機上驗證過的機器是 Acer Chromebook Spin 714（代號 KANO）的
   **Alder Lake-P 工程樣機**（iGPU `8086:46a6`）。
@@ -12,7 +11,7 @@
 
 > English version: `COMPATIBILITY.en.md`.
 
-v0.3.0 的 16658739 pins 與 Microdroid IFMA pins 不代表實機驗收；新映像的結果見 [驗收紀錄](VERIFICATION-v0.3.0.md)。以下實機結果屬較早映像。
+v0.3.0 的 16658739 pins 與 Microdroid IFMA pins 不代表實機驗收；該版結果見 [v0.3.0 驗收紀錄](VERIFICATION-v0.3.0.md)。以下實機結果屬較早映像。
 
 ## 已驗證的機器
 

@@ -39,7 +39,7 @@ if [ "$(uname -s)" = Linux ] && [ -r /dev/kvm ] && [ -w /dev/kvm ]; then kvm=1; 
 dexpect() {  # dexpect <bash> <name> <exit> <regex or ''> <docker-install args...>; output in $out, docker calls in $T/dl
     local sh=$1 name=$2 code=$3 re=$4 rc; shift 4
     rm -rf "$T/dl"; mkdir -p "$T/dl"
-    out=$(cd "$T" && env -u GBOS_TEST_AUTOOFF DOCKER_LOG="$T/dl" GBOS_DOCKER="$T/fake/docker" GBOS_DOCKER_USER="$DUSER" "$sh" "$ROOT/install/docker-install.sh" "$@" 2>&1 < /dev/null); rc=$?
+    out=$(cd "$T" && env -u GBOS_TEST_AUTOOFF -u GBOS_USB_SMOKE DOCKER_LOG="$T/dl" GBOS_DOCKER="$T/fake/docker" GBOS_DOCKER_USER="$DUSER" "$sh" "$ROOT/install/docker-install.sh" "$@" 2>&1 < /dev/null); rc=$?
     if [ "$rc" = "$code" ] && { [ -z "$re" ] || grep -Eq -- "$re" <<< "$out"; }; then ok "[$sh] $name"
     else bad "[$sh] $name (rc=$rc)"; tail -n 5 <<< "$out" | sed 's/^/    /'; fi
 }
@@ -66,6 +66,17 @@ for sh in "${BASHES[@]}"; do
     rm -rf "$T/w2"
     dexpect "$sh" "refuses a missing --zip before calling docker" 2 "not a file" --work "$T/w2" --zip "$T/nope.zip"
     check "[$sh] ... and creates nothing" '[ "$(calls)" = 0 ] && [ ! -e "$T/w2" ]'
+    for value in 1 invalid; do
+        rm -rf "$T/usb-work" "$T/dl"; mkdir -p "$T/dl"
+        out=$(cd "$T" && env -u GBOS_TEST_AUTOOFF GBOS_USB_SMOKE="$value" DOCKER_LOG="$T/dl" GBOS_DOCKER="$T/fake/docker" GBOS_DOCKER_USER="$DUSER" \
+            "$sh" "$ROOT/install/docker-install.sh" --work "$T/usb-work" 2>&1 < /dev/null); rc=$?
+        check "[$sh] USB smoke $value refused before docker and workdir" \
+            '[ "$rc" = 2 ] && grep -q "GBOS_USB_SMOKE is unsupported" <<< "$out" && [ "$(calls)" = 0 ] && [ ! -e "$T/usb-work" ]'
+    done
+    rm -rf "$T/usb-work" "$T/dl"; mkdir -p "$T/dl"
+    out=$(cd "$T" && env -u GBOS_TEST_AUTOOFF GBOS_USB_SMOKE='' DOCKER_LOG="$T/dl" GBOS_DOCKER="$T/fake/docker" GBOS_DOCKER_USER="$DUSER" \
+        "$sh" "$ROOT/install/docker-install.sh" --work "$T/usb-work" --no-selftest 2>&1 < /dev/null); rc=$?
+    check "[$sh] empty USB smoke calls docker" '[ "$rc" = 0 ] && [ "$(calls)" = 2 ] && [ -d "$T/usb-work" ]'
     rm -rf "$T/w4" "$T/dl"; mkdir -p "$T/dl"
     out=$(cd "$T" && DOCKER_LOG="$T/dl" GBOS_DOCKER="$T/fake/docker" GBOS_DOCKER_USER="$DUSER" GBOS_TEST_AUTOOFF=2400 \
         "$sh" "$ROOT/install/docker-install.sh" --work "$T/w4" 2>&1 < /dev/null); rc=$?
@@ -80,7 +91,7 @@ for sh in "${BASHES[@]}"; do
     echo zip > "$T/c:d.zip"
     dexpect "$sh" "refuses an input file path with ':'" 2 "must not contain ':'" --work "$T/w 1" --zip "$T/c:d.zip"
     check "[$sh] ... without calling docker" '[ "$(calls)" = 0 ]'
-    out=$(cd "$T" && env -u GBOS_TEST_AUTOOFF DOCKER_LOG="$T/dl" GBOS_DOCKER="$T/fake/docker" GBOS_DOCKER_USER=0:0 "$sh" "$ROOT/install/docker-install.sh" --work "$T/w3" 2>&1); rc=$?
+    out=$(cd "$T" && env -u GBOS_TEST_AUTOOFF -u GBOS_USB_SMOKE DOCKER_LOG="$T/dl" GBOS_DOCKER="$T/fake/docker" GBOS_DOCKER_USER=0:0 "$sh" "$ROOT/install/docker-install.sh" --work "$T/w3" 2>&1); rc=$?
     check "[$sh] refuses to run the container as root, before creating the work dir" \
         '[ "$rc" = 2 ] && grep -q "normal user" <<< "$out" && [ ! -e "$T/w3" ]'
     out=$(cd "$T" && env -u GBOS_TEST_AUTOOFF GBOS_DOCKER="$T/fake/docker" GBOS_DOCKER_USER=me "$sh" "$ROOT/install/docker-install.sh" --work "$T/w3" 2>&1); rc=$?
@@ -154,6 +165,8 @@ cp "$ROOT/install/install.sh" "$R/install/"
 cp "$ROOT"/base/builds/*.sh "$R/base/builds/"
 # A second selectable build with the same fake zip pin; create it before any build so the source tree is unchanged.
 cp "$R/base/builds/16452207.sh" "$R/base/builds/99999999.sh"
+# The model-option cache test uses the same tiny fake zip for the newer build.
+cp "$R/base/builds/16452207.sh" "$R/base/builds/16658739.sh"
 cp "$ROOT/profiles/kano/audio-src.list" "$ROOT/profiles/kano/profile.toml" "$ROOT/profiles/kano/vendor.py" "$R/profiles/kano/"
 cp "$ROOT/profiles/amd-hx370/profile.toml" "$ROOT/profiles/amd-hx370/vendor.py" "$R/profiles/amd-hx370/"
 cp "$ROOT/profiles/_safety.toml" "$R/profiles/"
@@ -253,13 +266,17 @@ iexpect() {  # iexpect <name> <exit> <regex> [VAR=value ...] -- <install.sh args
     shift
     out=$(env -u GBOS_DEFAULT_ENTRY -u GBOS_LOADER_EDITOR -u GBOS_EC -u GBOS_ALLOW_FIRMWARE_DRIFT -u GBOS_IMAGE_NAME -u GBOS_TEST_AUTOOFF \
         -u GBOS_DEV_KERNEL_DIR -u GBOS_RADV -u GBOS_RADV_PROBE -u GBOS_RADV_VKPROP \
-        -u GBOS_GENERIC_PASTEL -u GBOS_GENERIC_KO -u GBOS_PROFILE -u GBOS_LAPIS_BUILD \
+        -u GBOS_GENERIC_PASTEL -u GBOS_GENERIC_KO -u GBOS_PROFILE -u GBOS_LAPIS_BUILD -u GBOS_USB_SMOKE -u GBOS_KMOD_KBD_BACKLIGHT -u GBOS_ANDROID_MODEL \
         PATH="$T/bin:$PATH" STUB_LOG="$T/log" GBOS_NO_UPDATE_CHECK=1 ${envs[@]+"${envs[@]}"} \
         bash "$R/install/install.sh" --zip "$Z" --skip-space-check --no-selftest "$@" 2>&1 < /dev/null); rc=$?
     if [ "$rc" = "$code" ] && grep -Eq -- "$re" <<< "$out"; then ok "$name"; else bad "$name (rc=$rc)"; tail -n 6 <<< "$out" | sed 's/^/    /'; fi
 }
 builds() { cat "$T/log/build" 2>/dev/null | wc -l | tr -d ' '; }
 W="$T/work"
+for value in 1 0 invalid; do
+    iexpect "USB smoke $value refused before cache/build" 2 "GBOS_USB_SMOKE is unsupported" GBOS_USB_SMOKE="$value" -- --work "$W"
+    check "USB smoke $value creates nothing" '[ ! -e "$W" ] && [ ! -e "$T/log/build" ]'
+done
 iexpect "GBOS_TEST_AUTOOFF is refused before any build" 2 "developer-only" GBOS_TEST_AUTOOFF=2400 -- --work "$W"
 check "GBOS_TEST_AUTOOFF creates nothing" '[ ! -e "$W" ] && [ ! -e "$T/log/build" ]'
 iexpect "first run builds base and image" 0 "^done: $W/build/image/googlebook-kano.img" -- --work "$W"
@@ -268,7 +285,7 @@ ifma_calls() { cat "$T/log/ifma" 2>/dev/null | wc -l | tr -d ' '; }
 check "IFMA (kano: patch_ifma = true): ensure_apex_keys() ran once for the build" '[ "$(ifma_calls)" = 1 ]'
 check "IFMA: its key-info line is recorded in build/params" 'grep -qx "apex-keys stand-in-fingerprint-v1" "$W/build/params"'
 check "IFMA: the stand-in saw the persistent key dir GBOS_APEX_KEYS_DIR=\$W/keys/apex-keys (never build/keys)" '[ "$(sort -u "$T/log/ifma")" = "$W/keys/apex-keys" ]'
-for l in "^sources [0-9a-f]{64}$" "^adb-key none$" "^default-entry lapis-quiet.conf$" "^loader-editor no$" "^ec-features none$" "^selftest 0$" "^firmware-drift 0$"; do
+for l in "^sources [0-9a-f]{64}$" "^adb-key none$" "^default-entry lapis-quiet.conf$" "^loader-editor no$" "^ec-features none$" "^android-model none$" "^selftest 0$" "^firmware-drift 0$"; do
     check "params records: $l" 'grep -Eq -- "$l" "$W/build/params"'
 done
 check "the base records its sources" 'grep -Eq "^base-sources [0-9a-f]{64} build 16452207$" "$W/base/install-sources"'
@@ -278,10 +295,12 @@ check "params records the ac.ko" 'grep -Eq "^kmod-ac [0-9a-f]{64}$" "$W/build/pa
 check "the profile's gbos_wakefilter.ko was built once, in the same work dir, and handed to build.sh" '[ "$(wc -l < "$T/log/kmod-wf" | tr -d " ")" = 1 ] && grep -q "kmod-wf $W/inputs/kmod/gbos_wakefilter.ko" "$W/build/image/googlebook-kano.img"'
 check "params records the gbos_wakefilter.ko" 'grep -Eq "^kmod-gbos_wakefilter [0-9a-f]{64}$" "$W/build/params"'
 iexpect "same sources and settings: the image is reused" 0 "reusing $W/build \(same sources and settings\)" -- --work "$W"
+iexpect "USB smoke cannot reuse ordinary cache" 2 "GBOS_USB_SMOKE is unsupported" GBOS_USB_SMOKE=1 -- --work "$W"
+iexpect "empty USB smoke reuses ordinary cache" 0 "reusing $W/build" GBOS_USB_SMOKE= -- --work "$W"
 check "... without building again" '[ "$(builds)" = 1 ]'
 check "... nor ac.ko" '[ "$(wc -l < "$T/log/kmod" | tr -d " ")" = 1 ]'
 check "... nor gbos_wakefilter.ko" '[ "$(wc -l < "$T/log/kmod-wf" | tr -d " ")" = 1 ]'
-check "... the IFMA key step still runs (once more) before params are compared" '[ "$(ifma_calls)" = 2 ]'
+check "... the IFMA key step still runs (once more) before params are compared" '[ "$(ifma_calls)" = 3 ]'
 iexpect "IFMA key-info line changed: refused (cache invalidated)" 2 "now: apex-keys stand-in-fingerprint-v2" \
     GBOS_TEST_IFMA_KEYINFO="apex-keys stand-in-fingerprint-v2" -- --work "$W"
 check "... and was: names the recorded key-info line" 'grep -q "was: apex-keys stand-in-fingerprint-v1" <<< "$out"'
@@ -444,4 +463,50 @@ k0=$(cat "$T/log/kmod" 2>/dev/null | wc -l | tr -d ' '); export k0
 iexpect "no dwarf.h on the host: refused before the kernel build, with the libdw-dev hint" 2 \
     "missing \(to build ac.ko\): dwarf.h$|missing \(to build ac.ko\): dwarf.h;" GBOS_HOST_INCLUDE="$T/noinc" -- --work "$T/work-nodw"
 check "... the hint names libdw-dev for Debian/Ubuntu, and ac.ko was not built" 'grep -q "apt install .*libdw-dev" <<< "$out" && [ "$(cat "$T/log/kmod" 2>/dev/null | wc -l | tr -d " ")" = "$k0" ]'
+# Selected backlight module bytes are validated and recorded before a cache hit.
+mkdir -p "$T/kbd-profile"
+cp -R "$R/profiles/kano" "$T/kbd-profile/kano"
+python3 - "$T/kbd-profile/kano/profile.toml" <<'PYKBD'
+import sys
+from pathlib import Path
+p = Path(sys.argv[1]); s = p.read_text()
+s = s.replace('kmods = ["ac", "gbos_wakefilter"]', 'kmods = ["ac", "gbos_wakefilter", "gbos_kbd_backlight"]')
+s = s.replace('modules = ["cros_ec_debugfs"', 'modules = ["cros_kbd_led_backlight", "cros_ec_debugfs"')
+s = s.replace('allow = ["cros_ec_proto", "cros_kbd_led_backlight"]', 'allow = ["cros_ec_proto"]')
+p.write_text(s)
+PYKBD
+echo pinned-backlight > "$T/kbd.ko"
+KBD_SHA=$(sha256sum < "$T/kbd.ko" | cut -c1-64)
+printf 'KBD_BACKLIGHT_KO_SHA=%s\n' "$KBD_SHA" > "$R/builder/kmod/build-gbos_kbd_backlight.sh"
+KBENV=(GBOS_PROFILE="$T/kbd-profile/kano" GBOS_EC=drain GBOS_KMOD_KBD_BACKLIGHT="$T/kbd.ko")
+iexpect "selected pinned backlight builds" 0 '^done:' "${KBENV[@]}" -- --work "$T/work-kbd"
+check "selected module hash recorded in cache identity" 'grep -qx "kmod-gbos_kbd_backlight $KBD_SHA" "$T/work-kbd/build/params"'
+iexpect "same backlight bytes reuse cache" 0 'reusing .*build' "${KBENV[@]}" -- --work "$T/work-kbd"
+echo changed > "$T/kbd.ko"
+iexpect "changed backlight bytes cannot reuse cache" 2 'must be the pinned module' "${KBENV[@]}" -- --work "$T/work-kbd"
+KBD_NEW_SHA=$(sha256sum < "$T/kbd.ko" | cut -c1-64)
+printf 'KBD_BACKLIGHT_KO_SHA=%s\n' "$KBD_NEW_SHA" > "$R/builder/kmod/build-gbos_kbd_backlight.sh"
+iexpect "new pinned backlight invalidates old cache" 2 'made with other settings' "${KBENV[@]}" -- --work "$T/work-kbd"
+check "cache diff records both backlight hashes" 'grep -q "was: kmod-gbos_kbd_backlight $KBD_SHA" <<< "$out" && grep -q "now: kmod-gbos_kbd_backlight $KBD_NEW_SHA" <<< "$out"'
+iexpect "unselected backlight module rejected" 2 'profile does not list' GBOS_KMOD_KBD_BACKLIGHT="$T/kbd.ko" -- --work "$T/work-kbd"
+iexpect "invalid model option rejected before cache reuse" 2 'GBOS_ANDROID_MODEL must be empty or profile' GBOS_ANDROID_MODEL=invalid -- --work "$W"
+iexpect "model option refuses unsupported build" 2 'requires the pinned KANO profile and Google build 16658739' GBOS_ANDROID_MODEL=profile -- --work "$W"
+python3 - "$W/build/params" << 'PYMODEL'
+from pathlib import Path
+import sys
+p = Path(sys.argv[1])
+s = p.read_text()
+assert s.count('android-model none\n') == 1
+p.write_text(s.replace('android-model none\n', 'android-model profile\n'))
+PYMODEL
+iexpect "model option change cannot reuse candidate cache" 2 'now: android-model none' -- --work "$W"
+check "cache mismatch reports prior model option" 'grep -q "was: android-model profile" <<< "$out"'
+MW="$T/work-model"
+iexpect "model candidate builds with pinned build" 0 '^done:' GBOS_LAPIS_BUILD=16658739 GBOS_ANDROID_MODEL=profile -- --work "$MW"
+check "candidate model flag recorded in cache identity" 'grep -qx "android-model profile" "$MW/build/params"'
+iexpect "same model flag reuses candidate cache" 0 'reusing .*build' GBOS_LAPIS_BUILD=16658739 GBOS_ANDROID_MODEL=profile -- --work "$MW"
+iexpect "turning model flag off refuses candidate cache" 2 'now: android-model none' GBOS_LAPIS_BUILD=16658739 -- --work "$MW"
+iexpect "turning model flag off with update rebuilds" 0 'moving it to .*build.prev' GBOS_LAPIS_BUILD=16658739 -- --work "$MW" --update
+check "updated cache records model disabled" 'grep -qx "android-model none" "$MW/build/params"'
+iexpect "turning model flag on refuses disabled cache" 2 'now: android-model profile' GBOS_LAPIS_BUILD=16658739 GBOS_ANDROID_MODEL=profile -- --work "$MW"
 finish

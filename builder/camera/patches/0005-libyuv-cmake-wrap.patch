@@ -1,0 +1,9 @@
+--- a/subprojects/libyuv.wrap
++++ b/subprojects/libyuv.wrap
+@@ -3,5 +3,6 @@
+ [wrap-git]
+ directory = libyuv
++method = cmake
+ url = https://chromium.googlesource.com/libyuv/libyuv.git
+ revision = 500f45652c459cfccd20f83f297eb66cb7b015cb
+ diff_files = libyuv/0004-CMakeLists.txt-Do-not-enable-NEON-for-armel-armhf.patch

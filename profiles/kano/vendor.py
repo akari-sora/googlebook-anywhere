@@ -206,6 +206,13 @@ def kbd_backlight(ctx):
     it = idc.read_text()
     if it.count("device.additionalSysfsLedsNode = " + KB_OLD + "/chromeos::kbd_backlight") != 1:
         raise SystemExit("keyboard idc not as expected")
+    # The inherited custom values end at 54 on a 0..255 scale; Android adds
+    # 255, creating a large final jump. Use Android's evenly spaced defaults.
+    levels = list(re.finditer(r"(?m)^[ \t]*keyboard\.backlight\.brightnessLevels[ \t]*=[^\r\n]*(?:\r?\n|$)", it))
+    if len(levels) > 1:
+        raise SystemExit("keyboard brightness levels not unique")
+    if levels:
+        it = it[:levels[0].start()] + it[levels[0].end():]
     idc.write_text(it.replace(KB_OLD, KB_NEW))
     ue = tree / f"etc/ueventd/ueventd.{ctx.prof['model']['id']}.rc"
     ue.write_text(f"# {ID}: keyboard backlight LED (GOOG0002 under the EC node GOOG0004)\n" + KB_NEW + "/* brightness 0660 system system\n")
@@ -372,6 +379,13 @@ def camera(ctx, overlay):
     is replaced. Every file is checked against the overlay's SHA256SUMS first."""
     import hashlib
     tree, vmap = ctx.tree, ctx.vmap
+    policy = tree / "etc/selinux/vendor_sepolicy.cil"
+    rule = "(allow hal_camera_default udmabuf_device (chr_file (open read write ioctl)))"
+    if policy.is_symlink() or not policy.is_file():
+        raise SystemExit("camera policy missing or not a regular file")
+    policy_text = policy.read_text()
+    if rule in policy_text:
+        raise SystemExit("camera udmabuf policy already present")
     sums = {}
     for line in (overlay.parent / "SHA256SUMS").read_text().splitlines():
         h, rel = line.split("  ", 1)
@@ -410,13 +424,15 @@ def camera(ctx, overlay):
         raise SystemExit("init.fatcat.rc camera line not as expected")
     fr.write_text(ft.replace(old, "    # KANO: upstream libcamera HAL (IPU6 + OV2740); lapis' libcamera_hal_base is IPU7-only\n"
                                   "    setprop ro.hardware.camera kano\n"))
+    # libcamera v0.7.2 dma_buf_allocator.cpp: O_RDWR + UDMABUF_CREATE ioctl.
+    policy.write_text(policy_text.rstrip("\n") + "\n;; KANO camera: udmabuf allocator\n" + rule + "\n")
     print("camera:", len(files), "files from", overlay)
 
 
 def camera_expected(overlay, old):
     """(new paths, changed paths) the camera() hook adds to the vendor tree (old: the paths of the stock tree)."""
     new = [p.relative_to(overlay).as_posix() for p in overlay.rglob("*")]
-    return sorted(x for x in new if x not in old), ["etc/init/init.fatcat.rc"]
+    return sorted(x for x in new if x not in old), ["etc/init/init.fatcat.rc", "etc/selinux/vendor_sepolicy.cil"]
 
 
 def ec_expected(features):

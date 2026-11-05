@@ -88,6 +88,11 @@ EC 在 AP suspend／resume 時也會自己重新驅動 `EC_KB_BL_EN_L`。
 舊指令的名稱不分大小寫；新增形狀的名稱必須是小寫。參數維持原本的大小寫。EC 本身接受唯一前綴縮寫，所以前綴一律不放行。
 pyserial 只在真的開序列埠時才載入。
 `ap-send`、`ap-type`、`ap-keys`、`ap-spam` 寫到 AP UART（韌體、bootloader 選單、維護 shell），**沒有過濾**，送什麼就執行什麼。
+`ap-keys-preserve-rx HEX` 是 Linux 上明確選用的 AP 按鍵傳送方式，接受 1–8 bytes，單次寫入，
+不清空接收佇列、不讀取，也不修改 TTY 設定。它要求已設定的 raw 8N1、無流量控制及 115200；
+僅在已開啟裝置的 sysfs 驅動與模組分別精確符合 Google USB serial 驅動及 `usb_serial_simple` 時，
+接受輸入與輸出均為 9600 的設定值，這個值可能只是驅動的佔位值，不能據此認定實際線路速率。
+呼叫端仍須先持有 hardware lock，並確認 logger 與選單狀態；部分寫入或寫入失敗會回報錯誤，不重試。
 `menu` 只把真正的倒數狀態列（`Boot in <n> s.`，單獨占一列）當成選單的結尾，所以標題裡含「Boot in」（例如
 「Boot into Linux」）不會截斷選單、讓標題的歧義被漏掉。
 

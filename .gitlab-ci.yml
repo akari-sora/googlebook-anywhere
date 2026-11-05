@@ -1,4 +1,4 @@
-# Fast checks on every push (seconds to minutes, no network inputs, no images, never a real disk), and the installer
+# Fast checks (seconds to minutes, no network inputs, no images, never a real disk), and the installer
 # archive on tags. The containers have no loop devices, so tests/install/run.sh skips its fake-disk cases here; those run
 # on a Linux developer host. The full build (official zip -> image -> QEMU) needs about 80 GB, KVM and 7.7 GB of download, so it
 # runs on a developer host (tests/builder/e2e.sh) and its result is recorded in the release notes.
@@ -7,6 +7,31 @@
 #   gitlab-ci: qemu-install.py real boot (no KVM); tests/builder/e2e.sh; tests/install/run.sh pretend-disk cases (install-tools still runs and prints each SKIP)
 #   macos: qemu-install.py real boot; tests/builder/e2e.sh; tests/install/run.sh Linux guard section
 #   linux-dev: none of those three
+# One pipeline per branch. Merge request pipelines replace the branch push pipeline while an MR is open.
+# Docs-only diffs (root and nested *.md, and everything under docs/) do not create a pipeline, except on the
+# default branch and on tags. Schedules and web, api, and trigger-token pipelines always run.
+workflow:
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - if: $CI_COMMIT_TAG
+    - if: $CI_PIPELINE_SOURCE == "schedule"
+    - if: $CI_PIPELINE_SOURCE == "web"
+    - if: $CI_PIPELINE_SOURCE == "api"
+    - if: $CI_PIPELINE_SOURCE == "trigger"
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      changes:
+        regexp: '\A(?!docs/).*(?<!\.md)\z'
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      when: never
+    - if: $CI_COMMIT_BRANCH && $CI_OPEN_MERGE_REQUESTS
+      when: never
+    - if: $CI_COMMIT_BRANCH
+      changes:
+        regexp: '\A(?!docs/).*(?<!\.md)\z'
+        compare_to: refs/heads/main
+    - if: $CI_COMMIT_BRANCH
+      when: never
+
 stages: [test, package, release]
 
 default:
@@ -37,9 +62,40 @@ lint:
 builder:
   stage: test
   <<: *deps
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - if: $CI_COMMIT_TAG
+    - if: $CI_PIPELINE_SOURCE == "schedule"
+    - if: $CI_PIPELINE_SOURCE == "web"
+    - if: $CI_PIPELINE_SOURCE == "api"
+    - if: $CI_PIPELINE_SOURCE == "trigger"
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      changes: &builder_paths
+        - builder/**/*
+        - tests/builder/**/*
+        - tests/probe/**/*
+        - tests/report/**/*
+        - tests/install/**/*
+        - tests/update/fixtures/**/*
+        - tests/stick/public-export-test.py
+        - base/**/*
+        - profiles/**/*
+        - install/**/*
+        - tools/**/*
+        - docs/images/**/*
+        - docs/STATUS-KANO.md
+        - docs/RELEASE-NOTES.md
+        - research/amd/lapis-kernel.config
+        - .gitlab-ci.yml
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      when: never
+    - if: $CI_COMMIT_BRANCH
+      changes:
+        paths: *builder_paths
+        compare_to: refs/heads/main
   script:
-    # profile-test host-compiles the YV12 helper. gcc is the smallest Debian C compiler; libc6-dev provides stdint.h.
-    - apt-get install -y -qq --no-install-recommends gcc libc6-dev > /dev/null
+    # profile-test compiles the YV12 helper; camera-test applies the pinned libyuv wrap patch.
+    - apt-get install -y -qq --no-install-recommends gcc libc6-dev patch > /dev/null
     # Docker is root; the report and autooff tests assume a normal user (root may follow its own symlinks and read mode 000).
     - useradd -m tester && chown -R tester:tester "$CI_PROJECT_DIR"
     - runuser -u tester -- bash tests/builder/run.sh
@@ -49,6 +105,41 @@ builder:
 stick:
   stage: test
   <<: *deps
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - if: $CI_COMMIT_TAG
+    - if: $CI_PIPELINE_SOURCE == "schedule"
+    - if: $CI_PIPELINE_SOURCE == "web"
+    - if: $CI_PIPELINE_SOURCE == "api"
+    - if: $CI_PIPELINE_SOURCE == "trigger"
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      changes: &stick_paths
+        - tests/stick/**/*
+        - tests/update/**/*
+        - tests/builder/**/*
+        - tests/install/**/*
+        - tests/probe/**/*
+        - tests/report/**/*
+        - tests/harness/**/*
+        - install/**/*
+        - tools/**/*
+        - base/**/*
+        - builder/**/*
+        - profiles/**/*
+        - docs/**/*
+        - .gitlab-ci.yml
+        - .gitlab/**/*
+        - .gitignore
+        - README.md
+        - README.en.md
+        - LICENSE
+        - RELEASE-PLAN.md
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      when: never
+    - if: $CI_COMMIT_BRANCH
+      changes:
+        paths: *stick_paths
+        compare_to: refs/heads/main
   script:
     - df -h "${TMPDIR:-/tmp}"
     - df -i "${TMPDIR:-/tmp}"
@@ -64,6 +155,14 @@ stick:
         trap 'rm -rf -- "$T"' EXIT
         python3 tests/update/selftest.py "$T/w"
       )
+    - python3 tests/update/fat-fd-test.py       # mtools must use the held target descriptor
+    - python3 tests/update/shared-block-engine-test.py  # no block devices; sealed target and operation contracts
+    - python3 tests/stick/fresh-core-test.py  # pure GPT and boot preparation; no devices or root
+    - python3 tests/stick/shared-qemu-guest-test.py  # control and test-only driver activation; no devices
+    - python3 tests/stick/shared-qemu-lp-test.py  # independent miniature LP readback
+    - python3 tests/stick/shared-qemu-host-pure-test.py  # owned targets, firmware and refusal contracts
+    - python3 tests/update/fat-block-loop-test.py  # cleanup regressions only; real loop requires explicit root opt-in
+    - python3 tests/update/preview-bounds-test.py  # bounded read-only planning
     - python3 tests/update/mutate.py -j 1      # each listed guard of gbos-update.py reverted in a copy must turn the self-test red
     # Docker is root. This suite is the normal-user path (no network, no disk), same python entry as the lines above.
     - useradd -m tester && chown -R tester:tester "$CI_PROJECT_DIR"
@@ -86,6 +185,29 @@ install-tools:
 harness:
   stage: test
   <<: *deps
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - if: $CI_COMMIT_TAG
+    - if: $CI_PIPELINE_SOURCE == "schedule"
+    - if: $CI_PIPELINE_SOURCE == "web"
+    - if: $CI_PIPELINE_SOURCE == "api"
+    - if: $CI_PIPELINE_SOURCE == "trigger"
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      changes: &harness_paths
+        - tests/harness/**/*
+        - tools/**/*
+        - install/**/*
+        - profiles/**/*
+        - builder/image.py
+        - builder/lib/devprofile.py
+        - builder/lib/rebuild.py
+        - .gitlab-ci.yml
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      when: never
+    - if: $CI_COMMIT_BRANCH
+      changes:
+        paths: *harness_paths
+        compare_to: refs/heads/main
   script:
     - useradd -m tester && chown -R tester:tester "$CI_PROJECT_DIR"
     - runuser -u tester -- bash tests/harness/run.sh

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Static-only synthetic ELF regressions for the selected GKI module checker."""
 from pathlib import Path
+import hashlib
 import struct
 import subprocess
 import sys
@@ -24,14 +25,15 @@ def extended(records):
 
 
 def elf(versions=legacy(GOOD), ext=None, legacy_flags=2, ext_flags=2,
-        imports=("foo",), tail=TAIL, extra=(), signature=False):
+        imports=("foo",), tail=TAIL, extra=(), signature=False, modname=None, modinfo_extra=b""):
     strings = b"\0"
     symbols = bytes(24)
     for name in imports:
         symbols += struct.pack("<IBBHQQ", len(strings), 0x10, 0, 0, 0, 0)
         strings += name.encode() + b"\0"
     sections = [("", b"", 0, 0, 0), (".shstrtab", b"", 3, 0, 0),
-                (".modinfo", b"vermagic=short-release " + tail.encode() + b"\0", 1, 2, 0),
+                (".modinfo", b"vermagic=short-release " + tail.encode() + b"\0"
+                 + (b"name=" + modname.encode() + b"\0" if modname is not None else b"") + modinfo_extra, 1, 2, 0),
                 (".strtab", strings, 3, 0, 0), (".symtab", symbols, 2, 0, 3)]
     if versions is not None:
         sections.append(("__versions", versions, 1, legacy_flags, 0))
@@ -72,7 +74,7 @@ passed = failed = 0
 with tempfile.TemporaryDirectory(prefix="gbos-check-ko-") as td:
     root = Path(td)
 
-    def expect(name, code, why="", symvers=None, **kwargs):
+    def expect(name, code, why="", symvers=None, provider=None, **kwargs):
         global passed, failed
         module = root / "module.ko"
         module.write_bytes(elf(**kwargs))
@@ -80,7 +82,20 @@ with tempfile.TemporaryDirectory(prefix="gbos-check-ko-") as td:
         exports.write_text(symvers if symvers is not None else
                            "0x11111111 foo\n0x22222222 module_layout\n")
         optimize = ["-O"] if sys.flags.optimize else []
-        result = subprocess.run([sys.executable, *optimize, "-I", "-B", str(CHECK), str(module), str(exports), TAIL],
+        check = CHECK
+        options = []
+        if provider is not None:
+            # Test-only copy pins synthetic bytes; production has no override.
+            good_provider = b"synthetic-reviewed-provider"
+            fake_sha = hashlib.sha256(good_provider).hexdigest()
+            check = root / "check-ko-test-copy.py"
+            source = CHECK.read_text().replace(
+                "5ddce2fcfe24e9f1451783bb42d7bbdb23b99955fae211c8bc1ae8f32098ad48", fake_sha)
+            check.write_text(source)
+            provider_file = root / "provider.ko"
+            provider_file.write_bytes(good_provider if provider == "good" else b"wrong-provider")
+            options = ["--kano-backlight-provider", str(provider_file)]
+        result = subprocess.run([sys.executable, *optimize, "-I", "-B", str(check), str(module), str(exports), TAIL, *options],
                                 capture_output=True, text=True)
         good = result.returncode == code and (not why or why in result.stdout)
         print(("PASS " if good else "FAIL ") + name + ("" if good else
@@ -88,6 +103,41 @@ with tempfile.TemporaryDirectory(prefix="gbos-check-ko-") as td:
         passed += good
         failed += not good
 
+    provider_symbol = "cros_ec_cmd_xfer_status"
+    provider_crc = 0x53f88a75
+    provider_versions = legacy([(provider_symbol, provider_crc), ("module_layout", LAYOUT)])
+    expect("vendor import accepted only with vetted provider", 0, provider="good", modname="gbos_kbd_backlight",
+           imports=(provider_symbol,), versions=provider_versions)
+    expect("vendor import denied without opt-in", 1, "not exported by the GKI", modname="gbos_kbd_backlight",
+           imports=(provider_symbol,), versions=provider_versions)
+    expect("unrecognized provider rejected", 1, "unrecognized backlight provider", provider="wrong",
+           modname="gbos_kbd_backlight", imports=(provider_symbol,), versions=provider_versions)
+    expect("wrong module rejected", 1, "requires exact unique module name", provider="good", modname="other",
+           imports=(provider_symbol,), versions=provider_versions)
+    expect("duplicate module names rejected", 1, "requires exact unique module name", provider="good",
+           modname="gbos_kbd_backlight", modinfo_extra=b"name=gbos_kbd_backlight\0",
+           imports=(provider_symbol,), versions=provider_versions)
+    expect("duplicate modinfo sections rejected", 1, "exactly one .modinfo section", provider="good",
+           modname="gbos_kbd_backlight", imports=(provider_symbol,), versions=provider_versions,
+           extra=((".modinfo", b"name=gbos_kbd_backlight\0", 1, 2, 0),))
+    expect("vendor import CRC must match", 1, "CRC of cros_ec_cmd_xfer_status", provider="good",
+           modname="gbos_kbd_backlight", imports=(provider_symbol,),
+           versions=legacy([(provider_symbol, 3), ("module_layout", LAYOUT)]))
+    expect("protected import still rejected", 1, "comes from GKI module", provider="good",
+           modname="gbos_kbd_backlight", imports=(provider_symbol, "foo"),
+           versions=legacy([(provider_symbol, provider_crc), ("foo", FOO), ("module_layout", LAYOUT)]),
+           symvers="0x11111111\tfoo\tprotected_module\tEXPORT_SYMBOL\n0x22222222\tmodule_layout\tvmlinux\tEXPORT_SYMBOL\n")
+    expect("other unknown vendor import still rejected", 1, "not exported by the GKI", provider="good",
+           modname="gbos_kbd_backlight", imports=(provider_symbol, "unknown"),
+           versions=legacy([(provider_symbol, provider_crc), ("unknown", 1), ("module_layout", LAYOUT)]))
+    expect("provider symbol collision rejected", 1, "duplicate export record", provider="good",
+           modname="gbos_kbd_backlight", imports=(provider_symbol,), versions=provider_versions,
+           symvers="0x53f88a75 cros_ec_cmd_xfer_status\n0x22222222 module_layout\n")
+    expect("duplicate symvers records rejected", 1, "duplicate export record foo",
+           symvers="0x11111111 foo\n0x11111111 foo\n0x22222222 module_layout\n")
+    expect("duplicate provider CRC records rejected", 1, "duplicate", provider="good",
+           modname="gbos_kbd_backlight", imports=(provider_symbol,),
+           versions=legacy([(provider_symbol, provider_crc), (provider_symbol, provider_crc), ("module_layout", LAYOUT)]))
     expect("valid legacy versions with non-imported module_layout", 0)
     expect("module_layout CRC mismatch is checked separately", 1, "CRC of module_layout",
            versions=legacy([("foo", FOO), ("module_layout", 0x99999999)]))

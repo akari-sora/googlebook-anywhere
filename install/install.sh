@@ -23,6 +23,8 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 die() { echo "install.sh: $*" >&2; exit 2; }
+# This installer cache does not support the isolated USB trial. Use builder/build.sh directly.
+[ -z "${GBOS_USB_SMOKE:-}" ] || die "GBOS_USB_SMOKE is unsupported by install.sh; use builder/build.sh directly"
 # Developer-only. A release install never powers itself off; pass this only to builder/build.sh for a TEST image.
 if [ -n "${GBOS_TEST_AUTOOFF:-}" ]; then
     die "GBOS_TEST_AUTOOFF is developer-only (TEST images); install.sh does not accept it"
@@ -190,6 +192,15 @@ fi
 log "3/4 device firmware and audio configuration of the profile ($PROFILE)"
 bash "$ROOT/builder/fetch-inputs.sh" "$WORK/inputs" "$PROFILE"
 MODEL_ID=$(python3 "$ROOT/builder/lib/devprofile.py" get "$PROFILE" model.id) || die "the device profile $PROFILE is not valid"
+case "${GBOS_ANDROID_MODEL:-}" in
+    '') ;;
+    profile)
+        [ "$MODEL_ID" = kano ] && [ "$LAPIS_BUILD" = 16658739 ] && \
+        [ "$(python3 "$ROOT/builder/lib/devprofile.py" get "$PROFILE" model.android_model)" = 'Acer Chromebook Spin 714' ] \
+            || die "GBOS_ANDROID_MODEL=profile requires the pinned KANO profile and Google build 16658739"
+        ;;
+    *) die "GBOS_ANDROID_MODEL must be empty or profile" ;;
+esac
 DISPLAY_STACK=$(python3 "$ROOT/builder/lib/devprofile.py" get "$PROFILE" display.stack) || die "the device profile $PROFILE is not valid"
 if [ "$DISPLAY_STACK" = gop-swiftshader ] || [ "$MODEL_ID" = amd-hx370 ]; then
     # machines with GOP framebuffer + SwiftShader (profiles/generic-x86, and amd-hx370's safe default entry):
@@ -200,6 +211,16 @@ fi
 # gbos_wakefilter = keeps dark resumes dark (both from the same pinned kernel tree, so they are built together)
 KMOD_AC=${GBOS_KMOD_AC:-}; KMOD_WF=${GBOS_KMOD_WAKEFILTER:-}
 KMODS=$(python3 "$ROOT/builder/lib/devprofile.py" kmods "$PROFILE") || die "the device profile $PROFILE is not valid"
+# Validate the optional module before deciding whether a cached image may be reused.
+python3 - "$ROOT/builder/lib" "$PROFILE" "$ROOT/builder" <<'PYKBD' || die "invalid keyboard backlight module input"
+import os, sys
+sys.path.insert(0, sys.argv[1])
+import devprofile
+try:
+    devprofile.check_kbd_backlight_inputs(devprofile.load(sys.argv[2]), os.environ.get("GBOS_EC", ""), os.environ, sys.argv[3])
+except (ValueError, OSError) as exc:
+    sys.exit(str(exc))
+PYKBD
 WANT_WF=0; printf '%s\n' "$KMODS" | grep -qx gbos_wakefilter && [ -z "$KMOD_WF" ] && WANT_WF=1
 [ "$WANT_WF" = 0 ] || KMOD_WF="$WORK/inputs/kmod/gbos_wakefilter.ko"
 WANT_AC=0; printf '%s\n' "$KMODS" | grep -qx ac && [ -z "$KMOD_AC" ] && WANT_AC=1
@@ -259,11 +280,16 @@ qemu-seconds ${GBOS_QEMU_SECONDS:-200}
 default-entry ${GBOS_DEFAULT_ENTRY:-lapis-quiet.conf}
 loader-editor ${GBOS_LOADER_EDITOR:-no}
 ec-features ${GBOS_EC:-none}
+android-model ${GBOS_ANDROID_MODEL:-none}
 image-name $IMAGE_NAME
 profile $PROFILE
 firmware ${GBOS_FIRMWARE:-$WORK/inputs/firmware}
 audio-src ${GBOS_AUDIO_SRC:-$WORK/inputs/audio-src}
 firmware-drift ${GBOS_ALLOW_FIRMWARE_DRIFT:-0}"
+if printf '%s\n' "$KMODS" | grep -qx gbos_kbd_backlight; then
+    PARAMS="$PARAMS
+kmod-gbos_kbd_backlight $(sha256sum < "$GBOS_KMOD_KBD_BACKLIGHT" | cut -c1-64)" || die "cannot read $GBOS_KMOD_KBD_BACKLIGHT"
+fi
 if [ -n "$KMOD_AC" ]; then
     PARAMS="$PARAMS
 kmod-ac $(sha256sum < "$KMOD_AC" | cut -c1-64)" || die "cannot read $KMOD_AC"

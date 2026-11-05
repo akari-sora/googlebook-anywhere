@@ -24,7 +24,8 @@
 # platform configuration and trigger a BitLocker recovery prompt; Suspend-BitLocker is only an optional convenience with
 # a protection gap, not a substitute for the recovery key, and ProtectionStatus should be verified / resumed after
 # returning to Windows).
-# DMI is empty until a machine is probed. Do not put 1002:1681 in pci_stub_ids: that ID is
+# Windows SMBIOS reported these model-family fields; Linux sysfs spelling is not yet verified.
+# Do not put 1002:1681 in pci_stub_ids: that ID is
 # Yellow Carp (Rembrandt), not Radeon 890M. Strix Point matches CHIP_IP_DISCOVERY.
 schema = 1
 kmods = []
@@ -34,7 +35,7 @@ id = "amd-hx370"
 name = "AMD Ryzen AI 9 HX 370 (Strix Point, Radeon 890M)"
 status = "experimental"              # verified | experimental | probe-only
 image_name = "googlebook-amd-hx370.img"
-dmi = {}
+dmi = { sys_vendor = "ONE-NETBOOK", product_name = "ONEXPLAYER X1Pro", board_vendor = "ONE-NETBOOK", board_name = "ONEXPLAYER X1Pro" }
 
 [entries]
 quiet = "Googlebook AMD HX370 safe"

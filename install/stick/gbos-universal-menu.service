@@ -1,0 +1,19 @@
+[Unit]
+Description=Googlebook shared maintenance menu
+Requires=gbos-universal-diagnostic.service
+After=gbos-universal-diagnostic.service getty@tty1.service
+Conflicts=getty@tty1.service
+ConditionPathExists=/dev/tty1
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /opt/googlebook/install/stick/universal-menu.py
+StandardInput=tty
+StandardOutput=tty
+StandardError=journal+console
+TTYPath=/dev/tty1
+TTYReset=yes
+TTYVHangup=yes
+
+[Install]
+WantedBy=multi-user.target

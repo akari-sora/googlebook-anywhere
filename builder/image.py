@@ -13,9 +13,16 @@ if not __debug__:
     sys.exit("builder/image.py checks the safety options with assert: run it without python -O / PYTHONOPTIMIZE")
 sys.path.insert(0, str(Path(__file__).resolve().parent / "lib"))
 import devprofile
+import build_record
+import usb_smoke
+from qemu_write_trace import nvme_trace_safe, userdata_write_bytes
 GBOS_OUT = Path(os.environ["GBOS_OUT"])
 SRC = GBOS_OUT / "vendor/stage-vendor.img"
-PROF = devprofile.load(os.environ.get("GBOS_PROFILE") or Path(__file__).resolve().parent.parent / "profiles/kano")
+PROFILE_DIR = Path(os.environ.get("GBOS_PROFILE") or Path(__file__).resolve().parent.parent / "profiles/kano")
+PROFILE_BYTES = (PROFILE_DIR / "profile.toml").read_bytes()
+PROF = devprofile.load(PROFILE_DIR)
+if (PROFILE_DIR / "profile.toml").read_bytes() != PROFILE_BYTES:
+    sys.exit("profile changed during selection")
 DROP = devprofile.first_stage_drop(PROF)  # stage-1 modules the final initrd drops (QEMU self-test below)
 if PROF["model"]["status"] != "verified":
     print(f"WARNING: profile {PROF['model']['id']} is {PROF['model']['status']!r}, not verified on its hardware "
@@ -36,6 +43,11 @@ DEFAULT_ENTRY = os.environ.get("GBOS_DEFAULT_ENTRY", "lapis-quiet.conf")
 EDITOR = os.environ.get("GBOS_LOADER_EDITOR", "no")
 ADB = bool(os.environ.get("GBOS_ADB_PUBKEY"))
 SKIP_SELFTEST = os.environ.get("GBOS_SKIP_SELFTEST") == "1"
+USB_SMOKE = os.environ.get("GBOS_USB_SMOKE", "") == "1"
+try:
+    usb_smoke.validate_options(PROF, os.environ)
+except (ValueError, OSError) as exc:
+    sys.exit(str(exc))
 GENERIC = PROF["display"]["stack"] == "gop-swiftshader"   # GOP framebuffer + SwiftShader (profiles/generic-x86)
 AMD_HX370 = PROF["model"]["id"] == "amd-hx370"
 # Both generic-x86 and amd-hx370's safe default entry use the GOP framebuffer + SwiftShader path in QEMU self-tests.
@@ -69,13 +81,18 @@ def parse_gbos_ec(raw, model_id):
 # audited set of ChromeOS EC kernel drivers (docs/SAFETY.md, "EC 功能變體"). drain is not a feature: it releases only
 # cros_ec and cros_ec_lpcs. The EC userspace channels and every EC writer stay blocked in every variant. KANO only.
 EC_FEATURES = parse_gbos_ec(os.environ.get("GBOS_EC", ""), PROF["model"]["id"])
+try:
+    devprofile.check_kbd_backlight_inputs(PROF, os.environ.get("GBOS_EC", ""), os.environ, Path(__file__).resolve().parent)
+except (ValueError, OSError) as exc:
+    sys.exit(str(exc))
+KMOD_KBD_BACKLIGHT = "gbos_kbd_backlight" in PROF["kmods"]
 KMOD_AC = "ac" in PROF["kmods"]   # vendor carries ac.ko (builder/kmod/build-ac.sh; builder/vendor.sh checks the pin)
 KMOD_WAKEFILTER = "gbos_wakefilter" in PROF["kmods"]   # vendor carries gbos_wakefilter.ko (build-gbos_wakefilter.sh)
 # Developer-only. Empty = no auto-off service (install.sh refuses a non-empty value). When set, QEMU has no
 # /data/kano-autooff.nonce, so the serial log must show the rc parsed, the nonce gate staying on, and the
 # oneshot exited 0. When empty, the serial log must not mention the service.
 TEST_AUTOOFF = os.environ.get("GBOS_TEST_AUTOOFF", "")
-if FINAL.exists():
+if any(os.path.lexists(str(FINAL) + suffix) for suffix in ("", ".sha256", ".build-record.json", ".not-self-tested")) :
     sys.exit(f"refusing: {FINAL} already exists")
 ENTRIES = ("lapis-debug.conf", "lapis-quiet.conf")
 assert DEFAULT_ENTRY in ENTRIES, DEFAULT_ENTRY
@@ -112,8 +129,18 @@ def mtype(img, path):
 # initrd: drop the LPSS UART drivers from first-stage modules.load, keep the bootconfig as built
 IMG.unlink(missing_ok=True)
 run("cp", "--reflink=auto", SRC, IMG)
+if USB_SMOKE:
+    # Work on the private staged copy, never on the caller's base image.
+    # A separate pre-write verifier must still compare the result to live NVMe.
+    old_parts = PARTS
+    run("sgdisk", "--randomize-guids", IMG)
+    run("sgdisk", "--verify", IMG)
+    PARTS = usb_smoke.validate_gpt_rewrite(old_parts, gpt(IMG))
+    USERDATA = PARTS["userdata"]
 run("mcopy", "-o", "-i", f"{IMG}{ESP}", "::/initrd.img", OUT / "src-initrd.img")
 src = (OUT / "src-initrd.img").read_bytes()
+if USB_SMOKE:
+    src = usb_smoke.rebind_bootconfig(src, old_parts["boot_a"]["guid"], PARTS["boot_a"]["guid"])
 assert src.endswith(b"#BOOTCONFIG\n")
 size, _ = struct.unpack("<II", src[-20:-12]); bc = src[-20 - size:]; body = src[:-20 - size]
 digest = (GBOS_OUT / "vendor/logs/vbmeta.digest.txt").read_text().split()[0]
@@ -131,6 +158,8 @@ while off < len(body):
     nxt = (nend + fs + 3) & ~3
     if name == "lib/modules/modules.load":
         data = devprofile.stage2_modules_load(data.decode(), PROF).encode()
+        if USB_SMOKE and any("nvme" in x.lower() for x in data.decode().splitlines()):
+            sys.exit("USB smoke first-stage modules.load contains NVMe")
         h[54:62] = b"%08X" % len(data); changed += 1
         out += h + body[off+110:nend] + data + b"\0" * ((-len(data)) % 4)
         if not STUB:
@@ -280,8 +309,11 @@ for name, o in (("debug", debug), ("quiet", quiet)):
         assert set(PROF["blacklist"]["quiet_add"]) <= set(bls), (name, PROF["blacklist"]["quiet_add"])
     assert "efi=noruntime" in o and not any(x.startswith("spi-intel.") for x in o), name
     assert [x for x in o if x.startswith("efi=")] == ["efi=noruntime"], name
-(OUT / "lapis-quiet.conf").write_text(entry(PROF["entries"]["quiet"], quiet))
-(OUT / "lapis-debug.conf").write_text(entry(PROF["entries"]["debug"], debug))
+if USB_SMOKE:
+    usb_smoke.validate_entries(debug, quiet, EC_EXTRA_BLOCK, EC_NEVER,
+                               devprofile.cmdline_within_limit, devprofile.boot_cmdline_len)
+(OUT / "lapis-quiet.conf").write_text(entry(usb_smoke.QUIET_TITLE if USB_SMOKE else PROF["entries"]["quiet"], quiet))
+(OUT / "lapis-debug.conf").write_text(entry(usb_smoke.DEBUG_TITLE if USB_SMOKE else PROF["entries"]["debug"], debug))
 # editor no (default): the menu cannot edit an entry's options, so the blacklist cannot be removed by a stray key;
 # auto-firmware no: no "Reboot Into Firmware" menu item (it sets the OsIndications EFI variable)
 (OUT / "loader.conf").write_text(f"default {DEFAULT_ENTRY}\ntimeout 5\neditor {EDITOR}\nauto-firmware no\n")
@@ -401,6 +433,8 @@ if DEV_KERNEL_DIR:
     )
 else:
     run("mcopy", "-o", "-i", f"{IMG}{ESP}", "::/kernel.efi", OUT / "kernel.efi")
+if KMOD_KBD_BACKLIGHT and hashlib.sha256((OUT / "kernel.efi").read_bytes()).hexdigest() != "7816c5d5b3500093e597b7362ecab103d5a32141b100d3eb7a8b33221fce7f41":
+    sys.exit("stock kernel.efi readback does not match pinned GKI")
 if PROF.get("gralloc"):
     readback_gralloc(IMG, PROF, OUT / "gralloc-readback", _extract_vendor_gralloc)
 print("ESP free:", subprocess.run(["mdir", "-i", f"{IMG}{ESP}", "::/"], capture_output=True, text=True).stdout.strip().splitlines()[-1])
@@ -440,6 +474,11 @@ def ac_ssdt(path):
 def qemu(tag, extra, probe_token=None):
     serial, sock, vars_fd = OUT / f"{tag}-serial.log", QMP_DIR / f"{tag}.qmp", OUT / f"{tag}-vars.fd"
     for p in (serial, sock): p.unlink(missing_ok=True)
+    trace, events = OUT / f"{tag}-write.trace", QMP_DIR / f"{tag}-trace-events"
+    if tag == "chain" or USB_SMOKE:
+        trace.unlink(missing_ok=True)
+        events.write_text("scsi_disk_dma_command_WRITE\nblk_co_pwritev\n" +
+                          ("pci_nvme_io_cmd\npci_nvme_admin_cmd\n" if USB_SMOKE else ""))
     shutil.copy(OVMF_VARS, vars_fd)
     cmd = [QEMU, "-machine", "q35,accel=kvm", "-cpu", "host", "-m", "8192",
            "-smp", "4", "-no-reboot", "-vga", "none", "-display", "none",
@@ -451,7 +490,8 @@ def qemu(tag, extra, probe_token=None):
            "-drive", f"file={IMG},if=none,id=usbdisk,format=raw,snapshot=on",
            "-device", "usb-storage,bus=xhci.0,drive=usbdisk,bootindex=1",
            "-drive", f"file={blank},if=none,id=nv,format=raw", "-device", "nvme,drive=nv,serial=BLANKNVME,bus=pcie.0,addr=0x2",
-           "-serial", f"file:{serial}", "-monitor", "none", "-qmp", f"unix:{sock},server=on,wait=off"] + extra
+           "-serial", f"file:{serial}", "-monitor", "none", "-qmp", f"unix:{sock},server=on,wait=off",
+           *(["-trace", f"events={events},file={trace}"] if tag == "chain" or USB_SMOKE else [])] + extra
     env = {k: v for k, v in os.environ.items() if k != "LD_LIBRARY_PATH"}
     if QEMU_LIB: env["LD_LIBRARY_PATH"] = QEMU_LIB
     print("+", " ".join(map(str, cmd)), flush=True)
@@ -474,20 +514,74 @@ def qemu(tag, extra, probe_token=None):
     probe_age = None if last_probe is None else time.monotonic() - last_probe
     if probe_token:
         print("functional device probe age at end:", probe_age, flush=True)
-    alive, stats = p.poll() is None, None
+    alive, stats, chain_blocks, chain_count, chain_trace = p.poll() is None, None, None, None, None
     if alive:
         try:
             # GOP framebuffer: capture the screen first, on the same QMP connection
             shot = [("screendump", {"filename": str(OUT / f"{tag}-screen.png"), "format": "png", "device": "gfx"})] if GOP else []
-            res = qmp_query(sock, *shot, "query-blockstats")
-            if GOP: print(tag, "screendump", res[0])
-            r = res[-1]["return"]
-            stats = next(d["stats"] for d in r if d.get("device") == "usbdisk" or d.get("qdev", "").endswith("usbdisk"))
+            if tag == "chain":
+                # Pausing vCPUs does not complete outstanding I/O. Reconcile the
+                # full request trace with completed QMP counters, then reconcile
+                # again after QEMU exits so later completions cannot grant a pass.
+                res = qmp_query(sock, *shot, "stop")
+                if GOP: print(tag, "screendump", res[0])
+                if "return" not in res[-1]: raise ValueError("QMP stop failed")
+                deadline = time.monotonic() + 5
+                while True:
+                    r = qmp_query(sock, "query-blockstats")[-1]["return"]
+                    try:
+                        chain_count = userdata_write_bytes(trace, r, USERDATA["start"], USERDATA["end"], IMG.stat().st_size)
+                        chain_blocks = r
+                        chain_trace = trace.read_bytes()
+                        break
+                    except ValueError as exc:
+                        if time.monotonic() >= deadline:
+                            print(tag, "write trace did not reconcile:", exc)
+                            break
+                        time.sleep(0.2)
+            else:
+                if USB_SMOKE:
+                    res = qmp_query(sock, *shot, "stop")
+                    if GOP: print(tag, "screendump", res[0])
+                    if "return" not in res[-1]: raise ValueError("QMP stop failed")
+                    res = qmp_query(sock, "query-blockstats")
+                    chain_trace = trace.read_bytes()
+                else:
+                    res = qmp_query(sock, *shot, "query-blockstats")
+                    if GOP: print(tag, "screendump", res[0])
+                r = res[-1]["return"]
+            usb_stats = [d["stats"] for d in r if d.get("device") == "usbdisk" or
+                         (tag != "chain" and d.get("qdev", "").endswith("usbdisk"))]
+            if len(usb_stats) != 1: raise ValueError("USB block stats missing or ambiguous")
+            stats = dict(usb_stats[0])
+            if USB_SMOKE:
+                nvme_stats = [d["stats"] for d in r if d.get("device") == "nv"]
+                nv = nvme_stats[0] if len(nvme_stats) == 1 else {}
+                # Never publish the zero-write claim until after QEMU exits and
+                # the complete trace has been checked, for either boot path.
+                stats["usb_smoke_nvme_wr_bytes"] = None
         except Exception as e:
             print(tag, "QMP query failed:", e)
         p.terminate()
         try: p.wait(30)
         except subprocess.TimeoutExpired: p.kill(); p.wait()
+        if tag == "chain" and stats is not None and chain_count is not None:
+            try:
+                final_count = userdata_write_bytes(trace, chain_blocks, USERDATA["start"], USERDATA["end"], IMG.stat().st_size)
+                if final_count != chain_count or trace.read_bytes() != chain_trace:
+                    raise ValueError("trace changed after QMP snapshot")
+                stats["chain_userdata_write_bytes"] = final_count
+            except ValueError as exc:
+                print(tag, "final write trace refused:", exc)
+        if USB_SMOKE and stats is not None and chain_trace is not None:
+            try:
+                nvme_trace_safe(trace)
+                if trace.read_bytes() != chain_trace: raise ValueError("trace changed after QMP snapshot")
+                if all(type(nv.get(k)) is int and nv[k] == 0 for k in
+                       ("wr_bytes", "wr_operations", "failed_wr_operations", "invalid_wr_operations")):
+                    stats["usb_smoke_nvme_wr_bytes"] = 0
+            except (ValueError, OSError) as exc:
+                print(tag, "final NVMe trace refused:", exc)
     print(tag, "QEMU", "ran the full", QEMU_SECONDS, "s" if alive else f"exited early with {p.returncode}", "usbdisk", stats)
     log = serial.read_text(errors="replace") if serial.exists() else ""
     return alive, stats, log, probe_age
@@ -550,15 +644,26 @@ def vendor_rc_rejections(log):
     rc = r"\b(?:kano-services|kano-audiotest|kano-hw|kano-diag|kano-adb|kano-autooff|kano-bootfix|kano-logcat|amd-hx370-graphics|gbos-efifb|gbos-no-ota)\.rc\b"
     bad = r"(?i)(error|invalid|fail|not allowed|unexported|overrides another service|treble boundary|unable to)"
     return [ln for ln in log.splitlines() if "init: " in ln and re.search(rc, ln) and re.search(bad, ln)]
+def publish_record(digest, status, not_run):
+    record = {"schema": 1, "profile": PROF["model"]["id"],
+              "profile_sha256": hashlib.sha256(PROFILE_BYTES).hexdigest(),
+              "declared_build_id": os.environ.get("GBOS_LAPIS_BUILD", "16452207"),
+              "build_id_basis": "selected_pins", "image": {"basename": FINAL.name,
+              "size": IMG.stat().st_size, "sha256": digest}, "selftest": status,
+              "not_run": sorted(not_run), "options": {"entry": DEFAULT_ENTRY, "editor": EDITOR,
+              "ec": EC_FEATURES, "adb": ADB, "usb_smoke": USB_SMOKE,
+              "model_override": os.environ.get("GBOS_ANDROID_MODEL") == "profile"},
+              "pristine": "NOT_PROVEN", "input_coverage": "INCOMPLETE",
+              "authority": "UNSIGNED_BUILDER_SELF_REPORT"}
+    if os.environ.get("GBOS_SETUP_PIN_SKIP") == "1":
+        record["options"]["setup_pin_skip"] = True
+    build_record.publish(IMG, FINAL, digest, record, True)
+
 checks = {}
 if SKIP_SELFTEST:
     print("SKIP QEMU self-tests (GBOS_SKIP_SELFTEST=1): this image is NOT self-tested")
     after = before
-    tmp_sum = OUT / (FINAL.name + ".sha256.partial")
-    tmp_sum.write_text(f"{after}  {FINAL.name}\n")
-    (OUT / (FINAL.name + ".not-self-tested")).write_text("built with GBOS_SKIP_SELFTEST=1: never booted in QEMU before release\n")
-    tmp_sum.replace(OUT / (FINAL.name + ".sha256"))
-    IMG.replace(FINAL)
+    publish_record(after, "skipped", ["functional QEMU", "boot chain QEMU"])
     shutil.rmtree(QMP_DIR, ignore_errors=True)
     print(FINAL.name, "sha256", after)
     print("IMAGE OK (NOT SELF-TESTED)", FINAL)
@@ -578,7 +683,7 @@ else:
     q = [o for o in debug if not o.startswith(("console=", "earlycon="))] + ["console=ttyS0,115200n8", "earlycon=uart8250,io,0x3f8,115200n8"]
 probe_token = uuid.uuid4().hex
 q.append("androidboot.gbos_qemu_nonce=" + probe_token)
-def ec_ssdt():
+def ec_ssdt(kbd_backlight=False):
     """GBOS_EC self-test only: an SSDT with the KANO's EC ACPI devices (\\_SB.CREC = GOOG0004 with GOOG0014, GOOG0007 and
     GOOG0003 below it) and no EC behind them, so ueventd loads the released drivers under this kernel and they must
     give up cleanly. Plain AML, assembled here (no iasl)."""
@@ -589,7 +694,7 @@ def ec_ssdt():
     def hid(h): return b"\x08_HID\x0d" + h.encode() + b"\x00"
     def dev(seg, body): return b"\x5b\x82" + pkg(seg + body)
     crec = dev(b"CREC", hid("GOOG0004") + b"\x08_UID\x01" + dev(b"TYPC", hid("GOOG0014")) + dev(b"CKSC", hid("GOOG0007"))
-               + dev(b"USBC", hid("GOOG0003")))
+               + dev(b"USBC", hid("GOOG0003")) + (dev(b"KBLT", hid("GOOG0002")) if kbd_backlight else b""))
     aml = b"\x10" + pkg(b"\\_SB_" + crec)
     t = bytearray(struct.pack("<4sIBB6s8sI4sI", b"SSDT", 36 + len(aml), 2, 0, b"GBOS  ", b"ECVARNT ", 1, b"GBOS", 1) + aml)
     t[9] = -sum(t) & 0xFF
@@ -599,7 +704,11 @@ if KMOD_AC:
     ac_ssdt(OUT / "ac-ssdt.aml"); extra_acpi = ["-acpitable", f"file={OUT / 'ac-ssdt.aml'}"]
 if EC_FEATURES:
     (OUT / "ec-ssdt.aml").write_bytes(ec_ssdt()); extra_acpi += ["-acpitable", f"file={OUT / 'ec-ssdt.aml'}"]
+if KMOD_KBD_BACKLIGHT:
+    (OUT / "ec-ssdt.aml").write_bytes(ec_ssdt(True))
 alive, _stats, log, probe_age = qemu("functional", ["-kernel", OUT / "kernel.efi", "-initrd", OUT / "initrd.img", "-append", " ".join(q)] + extra_acpi, probe_token)
+if USB_SMOKE:
+    checks["USB smoke functional: QEMU NVMe received no writes"] = (_stats or {}).get("usb_smoke_nvme_wr_bytes") == 0
 boot_completed = serial_boot_completed(log, probe_token, probe_age)
 print("functional device getprop sys.boot_completed:", "1" if boot_completed else "not confirmed", flush=True)
 has = lambda p: re.search(p, log) is not None
@@ -677,7 +786,7 @@ checks.update({
     "QEMU still running at the end (functional)": alive,
     "init second stage": has(r"init second stage started"),
     "no vbmeta mismatch": not has(r"(?i)vbmeta digest (error|mismatch)"),
-    "no nvme controller": not has(r"nvme nvme\d"),
+    "serial log has no nvme controller pattern": not has(r"nvme nvme\d"),
     "system_server running": has(r"u:r:system_server:s0"),
     "keymint HAL present": has(r"IKeyMintDevice/default"),
     "fwupd never started": not has(r"starting service 'fwupd"),
@@ -739,6 +848,25 @@ if DEV_KERNEL_DIR:
             and has(r"gbos-dev-modules: .*\bsnd_sof_amd_acp70\b")
             and has(r"gbos-dev-modules: .*\bsimpledrm\b")
         )
+def kbd_module_log_checks(log):
+    """An explicit /proc/modules snapshot proves presence and fail-closed absence.
+
+    modprobe succeeds without ueventd's 'Loaded kernel module' message. QEMU has
+    no EC, so module presence here does not establish a bound, working driver.
+    """
+    snapshots = re.findall(r"gbos-kbd-modules: new=([01]) stock=([01])\r?$", log, re.M)
+    stock_loaded = re.search(r"Loaded kernel module [^\n]*/cros[-_]kbd[-_]led[-_]backlight\.ko", log)
+    return {
+        "kbd: module loaded": bool(snapshots) and any(new == "1" for new, _ in snapshots),
+        "kbd: stock module not loaded": bool(snapshots) and all(stock == "0" for _, stock in snapshots) and not stock_loaded,
+    }
+
+if KMOD_KBD_BACKLIGHT:
+    checks.update({
+        "kbd: EC protocol modprobe exited 0": has(r"Service 'exec \d+ \(/vendor/bin/modprobe --dirname=/vendor/lib/modules cros-ec-proto\)' \(pid \d+\) exited with status 0"),
+        "kbd: backlight modprobe exited 0": has(r"Service 'exec \d+ \(/vendor/bin/modprobe --dirname=/vendor/lib/kano gbos_kbd_backlight\)' \(pid \d+\) exited with status 0"),
+    })
+    checks.update(kbd_module_log_checks(log))
 if KMOD_AC:
     checks.update({
         "ac.ko modprobe ran (profile kmods: ac)": has(r"Service 'exec \d+ \(/vendor/bin/modprobe --dirname=/vendor/lib/kano ac\)' \(pid \d+\) exited with status 0"),
@@ -831,14 +959,16 @@ checks.update(no_ota_log_checks(log))
 # UART log of the debug entry.
 if DEFAULT_ENTRY == "lapis-quiet.conf":
     alive, stats, clog, _probe_age = qemu("chain", [])
-    wrote = (stats or {}).get("wr_bytes", 0); top = (stats or {}).get("wr_highest_offset", 0)
+    wrote = (stats or {}).get("chain_userdata_write_bytes")
     checks["QEMU still running at the end (chain)"] = alive
+    if USB_SMOKE:
+        checks["USB smoke chain: QEMU NVMe received no writes"] = (stats or {}).get("usb_smoke_nvme_wr_bytes") == 0
     checks["chain: default entry keeps the serial console silent"] = "Linux version" not in clog and "Boot in" in clog
     if GOP:
         cshot = OUT / "chain-screen.png"
         checks["chain (generic): non-blank GOP screendump (PNG over 20 KB)"] = cshot.exists() and cshot.stat().st_size > 20000
-    checks["chain: Android wrote /data (>= 16 MiB, into userdata)"] = wrote >= (16 << 20) and USERDATA["start"] <= top <= USERDATA["end"]
-    print("chain: usbdisk wr_bytes", wrote, "wr_highest_offset", top, "userdata", USERDATA["start"], "-", USERDATA["end"])
+    checks["chain: Android wrote /data (>= 16 MiB, into userdata)"] = wrote is not None and wrote >= (16 << 20)
+    print("chain: confirmed usbdisk userdata write bytes", wrote, "userdata", USERDATA["start"], "-", USERDATA["end"])
     template = Path(OVMF_VARS).read_bytes(); after_vars = (OUT / "chain-vars.fd").read_bytes()
     print("chain: OVMF variable store bytes changed in QEMU (firmware boot entries; info only):",
           sum(a != b for a, b in zip(template, after_vars)))
@@ -852,11 +982,7 @@ if not all(checks.values()):
     print(f"image left at {IMG} (not renamed: a check failed)")
     shutil.rmtree(QMP_DIR, ignore_errors=True)
     sys.exit(1)
-# checksum first, then the image: a name that looks finished always comes with its checksum
-tmp_sum = OUT / (FINAL.name + ".sha256.partial")
-tmp_sum.write_text(f"{after}  {FINAL.name}\n")
-tmp_sum.replace(OUT / (FINAL.name + ".sha256"))
-IMG.replace(FINAL)
+publish_record(after, "passed", [name + ": " + reason for name, reason in not_run.items()] + ([] if DEFAULT_ENTRY == "lapis-quiet.conf" else ["boot chain QEMU"]))
 shutil.rmtree(QMP_DIR, ignore_errors=True)
 print(FINAL.name, "sha256", after)
 print("IMAGE OK", FINAL)

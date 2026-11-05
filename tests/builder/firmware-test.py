@@ -1418,7 +1418,7 @@ class FirmwareTests(unittest.TestCase):
             block = script[start:stop] + block
         # Replace only EROFS extraction. The real checker, profile loader, trees,
         # initrd and shell set -e are used; a removed checker lets PUBLISHED run.
-        setup = "set -euo pipefail\n"
+        setup = "set -euo pipefail\nPATCH_MODEL=false\n"
         for key, value in (("HERE", ROOT / "builder"), ("TMP", self.root),
                            ("IMG", self.root / "stage-vendor.img"), ("GBOS_PROFILE", self.profile),
                            ("GBOS_OUT", self.out)):

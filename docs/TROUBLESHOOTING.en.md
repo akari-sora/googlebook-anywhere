@@ -1,4 +1,4 @@
-# Troubleshooting (Googlebook Anywhere v0.3.0)
+# Troubleshooting (Googlebook Anywhere)
 
 This document describes known boot and usage problems in a
 **symptom → likely cause → what to do** format. It covers only items with a
@@ -24,7 +24,7 @@ For firmware flashing, writing the USB, and safety trade-offs, see `FIRMWARE.md`
   initialized in the background; you just could not see anything.
 - **What to do**:
   - This is why **v0.2.0 worked on only the one `46a6` machine**.
-  - **Since v0.2.1, `xe.force_probe` covers 12 iGPU PCI IDs** (ADL-P/U and RPL-U) and is expected to fix this, but each SKU is still "untested on hardware" — retry with this (v0.3.0) image and report the result (see the end of this document).
+  - **Since v0.2.1, `xe.force_probe` covers 12 iGPU PCI IDs** (ADL-P/U and RPL-U) and is expected to fix this, but each SKU is still "untested on hardware". These SKUs were also untested in v0.3.0; see the [v0.3.1 verification record](VERIFICATION-v0.3.1.md) for later evidence.
   - To find which SKU / iGPU your machine is, see the KANO family table in
     `COMPATIBILITY.md`.
 
@@ -99,8 +99,7 @@ For firmware flashing, writing the USB, and safety trade-offs, see `FIRMWARE.md`
 - **What to do**:
   - The matching audio needs `intel/sof/community/sof-rpl.ri` and
     `intel/sof-tplg/sof-rpl-max98373-nau8825.tplg`.
-  - This path is **untested on hardware**; test it with this (v0.3.0) image and
-    report back.
+  - This path was **untested on hardware** in v0.3.0; v0.3.1 adds no hardware evidence for this SKU.
   - The 12th-gen KANO (ADL-P/U, `8086:51c8` → `sof-adl.ri`) has working speakers
     on the verified unit.
 
@@ -114,7 +113,7 @@ For firmware flashing, writing the USB, and safety trade-offs, see `FIRMWARE.md`
   `gbos_wakefilter.ko` has already dropped its `KEY_WAKEUP`.
 - **What to do**:
   - **Use the power button or open/close the lid** to wake it.
-  - This is a known issue, not fixed in this release (v0.3.0). Use the power button or open/close the lid.
+  - This known issue was not fixed in v0.3.0; complete sleep/wake testing for v0.3.1 is still pending. Use the power button or open/close the lid.
 
 ### The screen wakes on its own (v0.1 stealth wake)
 
@@ -204,7 +203,7 @@ Support and limits depend on the image and machine; see each record below:
 | Feature | Status |
 |---|---|
 | Auto-rotate, ambient light sensor | Android listed no available sensors on the tested configuration; this does not establish that the hardware is absent |
-| Keyboard backlight control | Backlight control remains limited in the published v0.3.0; an unreleased R6 USB candidate verified control endpoints and on/off, but its brightness curve has a defect. See [KANO status](STATUS-KANO.md). |
+| Keyboard backlight control | Backlight control remains limited in v0.3.0. R6 verified control endpoints and on/off, but had a brightness-curve defect; v0.3.1 changes the source curve without hardware verification of the new curve. See [KANO status](STATUS-KANO.md). |
 | Built-in camera | In development, **off by default** |
 | Touchscreen, stylus | Detected, but **no actual click test yet** (untested on hardware) |
 | Wi-Fi, audio (`generic-x86`) | Needs machine firmware, which the generic image mostly does not ship, so usually unavailable |

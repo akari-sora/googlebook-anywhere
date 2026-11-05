@@ -4,6 +4,7 @@
 # usage: sudo install/write-usb.sh <googlebook-kano.img> /dev/disk/by-id/usb-...
 #        By default /data (userdata) is grown to fill the stick (see wusb_py write); --no-grow keeps the image's own
 #            userdata size, as before.
+#        --skip-identical --no-grow compares existing bytes and writes only differing chunks on equal-size media.
 #        install/write-usb.sh --check-only <image> <disk>   every check, nothing written. --check-only runs the same
 #            re-check that follows the serial prompt in a real run (without the prompt). As a normal user it skips the
 #            one probe that needs root (the exclusive open) and says so.
@@ -32,29 +33,33 @@
 # vanished node can never become a regular file), checks with fstat that it is the confirmed block device, writes, fsyncs,
 # drops the page cache and compares a read-back of the whole range with the image. Through the same exclusive
 # descriptor it then moves the backup GPT to the end of the disk (what sgdisk -e does) and reads the new GPT back.
+# --skip-identical instead uses O_RDWR|O_EXCL to compare and read back through that same owned descriptor; it
+# requires --no-grow and an image exactly as large as the disk. Full byte comparison and checksum remain mandatory.
 # Finally the identity is read again and sgdisk -v (read-only) has to find no problems before PASS.
 # Exit: 0 PASS (or CHECKS OK), 1 failed (sha256 mismatch, no confirmation, or the disk is partially written),
 #       2 refused (nothing written), 3 image written and verified but the backup GPT step or its check failed.
 # Test hook: GBOS_WUSB_TEST_SYSFS=<dir> stands in for /sys. It is honoured only together with --check-only (anything
 # else refuses), so it can never steer a write. tests/install/run.sh uses it.
 set -euo pipefail
-USAGE="usage: sudo write-usb.sh [--no-grow | --keep-data [--without-fallback]] <googlebook-kano.img> /dev/disk/by-id/usb-...   or   write-usb.sh --check-only <image> <disk>"
+USAGE="usage: sudo write-usb.sh [--skip-identical] [--no-grow | --keep-data [--without-fallback]] <googlebook-kano.img> /dev/disk/by-id/usb-...   or   write-usb.sh --check-only <image> <disk>"
 PHASE=
 refuse() { echo "refusing${PHASE:+ ($PHASE)}: $*"; exit 2; }
 
-CHECK_ONLY=0 KEEP=0 NOFALLBACK=0 GROW=grow
+CHECK_ONLY=0 KEEP=0 NOFALLBACK=0 GROW=grow SKIP_IDENTICAL=0
 while [ $# -gt 2 ]; do
     case "$1" in
         --check-only) CHECK_ONLY=1; shift ;;
         --keep-data) KEEP=1; shift ;;
         --without-fallback) NOFALLBACK=1; shift ;;
         --no-grow) GROW=nogrow; shift ;;
+        --skip-identical) SKIP_IDENTICAL=1; shift ;;
         *) break ;;
     esac
 done
 if [ $# -ne 2 ]; then echo "$USAGE"; exit 2; fi
 [ "$NOFALLBACK" = 0 ] || [ "$KEEP" = 1 ] || { echo "--without-fallback goes with --keep-data"; exit 2; }
 [ "$GROW" = grow ] || [ "$KEEP" = 0 ] || { echo "--no-grow is for a fresh write; --keep-data never changes the GPT"; exit 2; }
+[ "$SKIP_IDENTICAL" = 0 ] || { [ "$KEEP" = 0 ] && [ "$GROW" = nogrow ]; } || { echo "--skip-identical requires --no-grow and cannot be combined with --keep-data"; exit 2; }
 if [ "$KEEP" = 1 ]; then GROW=nogrow; fi
 case ${BASH_SOURCE[0]} in */*) HERE=${BASH_SOURCE[0]%/*} ;; *) HERE=. ;; esac
 ENGINE=$HERE/gbos-update.py
@@ -175,7 +180,9 @@ write <image> <sha256> <device> <major:minor> <device bytes> <sysfs device path>
     descriptor and compare it with the image and the sha256. Then, still through the exclusive descriptor, move the
     backup GPT to the end of the disk exactly as `sgdisk -e` does (backup entries and header at the end, primary header
     and protective MBR updated, the old backup left where it was), drop the cache again and read all of it back. The
-    exclusive descriptor stays open until that last comparison is done. With grow (what write-usb.sh passes unless
+    exclusive descriptor stays open until that last comparison is done. In skip-identical mode, use one exclusive
+    O_RDWR descriptor for byte comparisons, writes and cache-invalidated readback; it requires equal sizes and nogrow.
+    With grow (what write-usb.sh passes unless
     --no-grow), the same step also gives userdata the free space at the end of the disk: if userdata is the last
     partition it is extended in place, otherwise its entry moves to the first 1 MiB boundary after the last partition
     and runs to the last usable sector (as the installer stick does on the internal disk). Its type, unique GUID,
@@ -312,6 +319,79 @@ def copy(ifd, wfd, size, sha, dev):
     prog.show(done, final=True)
     if h.hexdigest() != sha:
         raise Stop("the image changed while it was being written (its sha256 is now %s)" % h.hexdigest())
+
+
+def read_exact(fd, n, what, offset):
+    try:
+        data = os.read(fd, n)
+    except OSError as e:
+        raise Stop("reading %s failed at byte %d: %s" % (what, offset, e.strerror))
+    if len(data) != n:
+        raise Stop("short read of %s at byte %d" % (what, offset))
+    return data
+
+
+def pread_exact(fd, n, offset, what):
+    try:
+        data = os.pread(fd, n, offset)
+    except OSError as e:
+        raise Stop("reading %s failed at byte %d: %s" % (what, offset, e.strerror))
+    if len(data) != n:
+        raise Stop("short read of %s at byte %d" % (what, offset))
+    return data
+
+
+def compare_write_exact(fd, data, offset, what):
+    """Compare and, only when different, write once through the exclusive FD."""
+    global started
+    if pread_exact(fd, len(data), offset, what) == data:
+        return 0
+    started = True  # a short write or interrupted syscall may already have changed the disk
+    try:
+        n = os.pwrite(fd, data, offset)
+    except OSError as e:
+        raise Stop("writing %s failed at byte %d: %s" % (what, offset, e.strerror))
+    if n != len(data):
+        raise Stop("short write of %s at byte %d" % (what, offset))
+    return n
+
+
+def copy_skipping(ifd, wfd, size, sha, dev):
+    h = hashlib.sha256()
+    prog = Progress("compared", size)
+    done = synced = 0
+    while done < size:
+        buf = read_exact(ifd, min(CHUNK, size - done), "the image", done)
+        h.update(buf)
+        compare_write_exact(wfd, buf, done, dev)
+        done += len(buf)
+        if done - synced >= SYNC_EVERY or done == size:
+            try:
+                os.fsync(wfd)
+            except OSError as e:
+                raise Stop("flushing %s failed below byte %d: %s" % (dev, done, e.strerror))
+            synced = done
+        prog.show(done)
+    prog.show(done, final=True)
+    if h.hexdigest() != sha:
+        raise Stop("the image changed while it was being written (its sha256 is now %s)" % h.hexdigest())
+
+
+def drop_owned_cache(fd, dev):
+    """Invalidate cache for readback using the same exclusive O_RDWR descriptor."""
+    dropped = False
+    try:
+        fcntl.ioctl(fd, BLKFLSBUF)
+        dropped = True
+    except OSError:
+        pass
+    try:
+        os.posix_fadvise(fd, 0, 0, os.POSIX_FADV_DONTNEED)
+        dropped = True
+    except (AttributeError, OSError):
+        pass
+    if not dropped:
+        raise Stop("could not drop the page cache of %s, so a read-back could not prove what the disk holds" % dev)
 
 
 def open_uncached(wfd, dev, rdev):
@@ -494,14 +574,15 @@ def gpt_write(wfd, plan, what):
             raise Stop("flushing %s failed after writing LBA %d: %s" % (what, lba, e.strerror))
 
 
-def gpt_check(rfd, plan, what):
+def gpt_check(rfd, plan, what, strict=False):
     """Read the protective MBR and both GPTs back and compare them with the plan, byte for byte."""
     n, t = plan["n"], plan["t"]
+    read = pread_exact if strict else pread_full
     tbytes = len(plan["table"])
     for name, lba, want in (("protective MBR", 0, plan["mbr"]), ("primary GPT header", 1, plan["primary"]),
                             ("primary GPT entries", 2, plan["table"]), ("backup GPT entries", n - 1 - t, plan["table"]),
                             ("backup GPT header", n - 1, plan["backup"])):
-        if pread_full(rfd, len(want), lba * 512, what) != want:
+        if read(rfd, len(want), lba * 512, what) != want:
             raise Stop("%s: the %s at LBA %d did not read back as written" % (what, name, lba))
     h = gpt_header(plan["primary"], 1, what)
     b = gpt_header(plan["backup"], n - 1, what)
@@ -509,20 +590,24 @@ def gpt_check(rfd, plan, what):
             or b["ecrc"] != h["ecrc"]:
         raise Stop("%s: the new GPT is inconsistent" % what)
     g = plan.get("grow")
-    if g and pread_full(rfd, GROW_ZERO, g["new"][0] * 512, what) != bytes(GROW_ZERO):
+    if g and read(rfd, GROW_ZERO, g["new"][0] * 512, what) != bytes(GROW_ZERO):
         raise Stop("%s: the start of the new userdata did not read back as zeros" % what)
 
 
-def verify(ifd, wfd, dev, rdev, size, sha):
-    rfd = open_uncached(wfd, dev, rdev)
+def verify(ifd, wfd, dev, rdev, size, sha, owned=False):
+    if owned:
+        drop_owned_cache(wfd, dev)
+        rfd = wfd
+    else:
+        rfd = open_uncached(wfd, dev, rdev)
     h = hashlib.sha256()
     prog = Progress("read back and compared", size)
     os.lseek(ifd, 0, os.SEEK_SET)
     done = 0
     while done < size:
         n = min(CHUNK, size - done)
-        want = read_full(ifd, n, "the image", done)
-        got = read_full(rfd, n, dev, done)
+        want = read_exact(ifd, n, "the image", done) if owned else read_full(ifd, n, "the image", done)
+        got = pread_exact(rfd, n, done, dev) if owned else read_full(rfd, n, dev, done)
         if got != want:
             first = next(i for i in range(n) if got[i] != want[i])
             raise Stop("the read-back of %s differs from the image at byte %d" % (dev, done + first))
@@ -530,12 +615,15 @@ def verify(ifd, wfd, dev, rdev, size, sha):
         done += n
         prog.show(done)
     prog.show(done, final=True)
-    os.close(rfd)
+    if not owned:
+        os.close(rfd)
     if h.hexdigest() != sha:
         raise Stop("the read-back sha256 %s is not the image's %s" % (h.hexdigest(), sha))
 
 
-def write(img, sha, dev, rdev_text, devbytes_text, syspath, grow="nogrow"):
+def write(img, sha, dev, rdev_text, devbytes_text, syspath, grow="nogrow", mode="full"):
+    if mode not in ("full", "skip-identical"):
+        raise Stop("bad write mode")
     rdev = parse_rdev(rdev_text)
     if len(sha) != 64 or sha.strip("0123456789abcdef"):
         raise Stop("bad sha256 %r" % sha)
@@ -550,9 +638,14 @@ def write(img, sha, dev, rdev_text, devbytes_text, syspath, grow="nogrow"):
         raise Stop("%s must be a non-empty regular file of whole 512-byte sectors" % img)
     if size > devbytes:
         raise Stop("the image (%d bytes) is larger than the disk (%d bytes)" % (size, devbytes))
+    if mode == "skip-identical" and (grow != "nogrow" or size != devbytes):
+        raise Stop("skip-identical requires --no-grow and image size equal to disk size")
     plan = gpt_plan(ifd, size, devbytes, grow=grow_flag(grow))  # a malformed image GPT is refused before anything is written
+    if mode == "skip-identical" and (plan["n"] != plan["img_n"] or plan.get("grow")):
+        raise Stop("skip-identical requires an unchanged full-size GPT")
     check_node(dev, rdev)
-    wfd = open_dev(dev, os.O_WRONLY | os.O_EXCL, rdev)
+    flags = (os.O_RDWR if mode == "skip-identical" else os.O_WRONLY) | os.O_EXCL
+    wfd = open_dev(dev, flags, rdev)
     # the number still belongs to the disk that was confirmed: same sysfs device, size and sector size
     real = os.path.realpath("/sys/dev/block/" + rdev_str(rdev))
     if real != syspath:
@@ -564,16 +657,25 @@ def write(img, sha, dev, rdev_text, devbytes_text, syspath, grow="nogrow"):
     lbs = struct.unpack("i", fcntl.ioctl(wfd, BLKSSZGET, b"\0\0\0\0"))[0]
     if lbs != 512:
         raise Stop("%s reports %d-byte logical sectors; the image needs 512" % (dev, lbs))
-    copy(ifd, wfd, size, sha, dev)
-    verify(ifd, wfd, dev, rdev, size, sha)
+    if mode == "skip-identical":
+        copy_skipping(ifd, wfd, size, sha, dev)
+        verify(ifd, wfd, dev, rdev, size, sha, owned=True)
+    else:
+        copy(ifd, wfd, size, sha, dev)
+        verify(ifd, wfd, dev, rdev, size, sha)
     global gpt_phase
     gpt_phase = True
     print("== %s reads back identical to the image; moving the backup GPT to the end of the disk (%d -> %d sectors)"
           % (dev, plan["img_n"], plan["n"]), file=sys.stderr)
-    gpt_write(wfd, plan, dev)
-    rfd = open_uncached(wfd, dev, rdev)
-    gpt_check(rfd, plan, dev)
-    os.close(rfd)
+    if mode == "skip-identical":
+        gpt_write(wfd, plan, dev)
+        drop_owned_cache(wfd, dev)
+        gpt_check(wfd, plan, dev, strict=True)
+    else:
+        gpt_write(wfd, plan, dev)
+        rfd = open_uncached(wfd, dev, rdev)
+        gpt_check(rfd, plan, dev)
+        os.close(rfd)
     print("== GPT read back: protective MBR, primary and backup GPT as planned (backup at LBA %d)" % (plan["n"] - 1),
           file=sys.stderr)
     describe_grow(plan, sys.stderr)
@@ -625,7 +727,7 @@ def main(argv):
             os.close(open_dev(argv[1], os.O_RDONLY | os.O_EXCL, rdev))
         elif len(argv) in (3, 4) and argv[0] == "gptcheck":
             gptcheck(*argv[1:])
-        elif len(argv) in (7, 8) and argv[0] == "write":
+        elif len(argv) in (7, 8, 9) and argv[0] == "write":
             write(*argv[1:])
         else:
             raise Stop("usage: probe <device> <major:minor> | gptcheck <image> <device bytes> [grow|nogrow] | "
@@ -660,6 +762,7 @@ identity || refuse "$WHY"
 not_root_disk
 [ "$I_LBS" = 512 ] || refuse "$I_NODE has $I_LBS-byte logical sectors; the image's GPT is laid out for 512-byte sectors"
 [ "$I_BYTES" -ge "$SIZE" ] || refuse "$I_NODE ($I_BYTES bytes) is smaller than the image ($SIZE bytes)"
+[ "$SKIP_IDENTICAL" = 0 ] || [ "$I_BYTES" -eq "$SIZE" ] || refuse "--skip-identical requires the image and USB disk to be the same size"
 [ -n "$I_SERIAL" ] || refuse "$I_NODE reports no serial number to confirm against"
 in_use
 RM=$(sysread "$SYS/block/$I_NAME/removable") || RM=unknown
@@ -750,7 +853,9 @@ if [ "$KEEP" = 1 ]; then
     exit 0
 fi
 echo "== writing $SIZE bytes to $I_NODE"
-if wusb_py write "$IMG" "$SHA" "$I_NODE" "$I_RDEV" "$I_BYTES" "$I_SYSPATH" "$GROW"; then :; else
+WUSB_MODE_ARGS=()
+if [ "$SKIP_IDENTICAL" = 1 ]; then WUSB_MODE_ARGS=(skip-identical); fi
+if wusb_py write "$IMG" "$SHA" "$I_NODE" "$I_RDEV" "$I_BYTES" "$I_SYSPATH" "$GROW" ${WUSB_MODE_ARGS[@]+"${WUSB_MODE_ARGS[@]}"}; then :; else
     rc=$?
     if [ "$rc" = 2 ]; then echo "nothing was written to $I_NODE"; exit 2; fi
     if [ "$rc" = 3 ]; then

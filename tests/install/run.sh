@@ -102,6 +102,9 @@ wexpect "the image GPT check accepts a good image" 0 "image GPT OK" gptcheck "$T
 cp "$T/x.img" "$T/bad.img"; printf '\001' | dd of="$T/bad.img" bs=1 seek=552 conv=notrunc 2>/dev/null
 wexpect "the image GPT check refuses a damaged GPT header" 2 "CRC" gptcheck "$T/bad.img" $GB
 wexpect "the writer refuses a damaged image GPT before touching the disk" 2 "CRC" write "$T/bad.img" "$SHA" "$T/sdz" 8:16 $GB /sys/x
+if out=$(python3 "$ROOT/tests/install/skip-identical-test.py" 2>&1); then ok "skip-identical on plain files (skip-identical-test.py)"
+else bad "skip-identical on plain files (skip-identical-test.py)"; fi
+printf '%s\n' "$out" | sed 's/^/    /'
 mkdir -p "$T/gpt"
 if out=$(python3 "$ROOT/tests/install/gpt-test.py" "$W" "$T/gpt" 2>&1); then ok "GPT step on plain files (gpt-test.py)"
 else bad "GPT step on plain files (gpt-test.py)"; fi

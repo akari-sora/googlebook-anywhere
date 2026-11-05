@@ -1,0 +1,238 @@
+--- a/src/libcamera/software_isp/debayer_cpu.cpp
++++ b/src/libcamera/software_isp/debayer_cpu.cpp
+@@ -21,6 +21,14 @@
+ #include <libcamera/base/thread.h>
+ 
+ #include <libcamera/formats.h>
++#include <libcamera/color_space.h>
++#include <limits>
++#include <new>
++
++#if HAVE_SOFTISP_LIBYUV
++#include <libyuv/convert_from_argb.h>
++#include <libyuv/planar_functions.h>
++#endif
+ 
+ #include "libcamera/internal/bayer_format.h"
+ #include "libcamera/internal/camera_manager.h"
+@@ -438,6 +446,9 @@
+ 						   formats::BGR888,
+ 						   formats::XBGR8888,
+ 						   formats::ABGR8888 };
++#if HAVE_SOFTISP_LIBYUV
++	outputFormats.push_back(formats::NV12);
++#endif
+ 
+ 	if ((bayerFormat.bitDepth == 8 || bayerFormat.bitDepth == 10 || bayerFormat.bitDepth == 12) &&
+ 	    bayerFormat.packing == BayerFormat::Packing::None &&
+@@ -668,11 +679,23 @@
+ 	}
+ 
+ 	const StreamConfiguration &outputCfg = outputCfgs[0];
++	nv12_ = false;
++	rgbScratch_.reset();
++	uScratch_.reset();
++	vScratch_.reset();
++#if HAVE_SOFTISP_LIBYUV
++	const bool isNv12 = outputCfg.pixelFormat == formats::NV12;
++	if (isNv12 && outputCfg.colorSpace != ColorSpace::Sycc)
++		return -EINVAL;
++#else
++	const bool isNv12 = false;
++#endif
+ 	SizeRange outSizeRange = sizes(inputCfg.pixelFormat, inputCfg.size);
+ 	std::tie(outputConfig_.stride, outputConfig_.frameSize) =
+ 		strideAndFrameSize(outputCfg.pixelFormat, outputCfg.size);
+ 
+-	if (!outSizeRange.contains(outputCfg.size) || outputConfig_.stride != outputCfg.stride) {
++	if (!outSizeRange.contains(outputCfg.size) || outputConfig_.stride != outputCfg.stride ||
++	    (isNv12 && (!outputConfig_.stride || !outputConfig_.frameSize))) {
+ 		LOG(Debayer, Error)
+ 			<< "Invalid output size/stride: "
+ 			<< "\n  " << outputCfg.size << " (" << outSizeRange << ")"
+@@ -680,8 +703,24 @@
+ 		return -EINVAL;
+ 	}
+ 
++	if (isNv12) {
++		const uint64_t pixels = uint64_t(outputCfg.size.width) * outputCfg.size.height;
++		const uint64_t rgbBytes = pixels * 4;
++		if (!pixels || rgbBytes > std::numeric_limits<unsigned int>::max())
++			return -EINVAL;
++		rgbScratch_.reset(new (std::nothrow) uint8_t[rgbBytes]);
++		uScratch_.reset(new (std::nothrow) uint8_t[pixels / 4]);
++		vScratch_.reset(new (std::nothrow) uint8_t[pixels / 4]);
++		if (!rgbScratch_ || !uScratch_ || !vScratch_)
++			return -ENOMEM;
++		nv12Stride_ = outputCfg.stride;
++		nv12InputBytes_ = uint64_t(inputCfg.stride) * inputCfg.size.height;
++		outputConfig_.stride = outputCfg.size.width * 4;
++		nv12_ = true;
++	}
++
+ 	int ret = setDebayerFunctions(inputCfg.pixelFormat,
+-				      outputCfg.pixelFormat,
++				      isNv12 ? formats::XRGB8888 : outputCfg.pixelFormat,
+ 				      ccmEnabled);
+ 	if (ret != 0)
+ 		return -EINVAL;
+@@ -778,6 +817,19 @@
+ {
+ 	DebayerCpu::DebayerOutputConfig config;
+ 
++#if HAVE_SOFTISP_LIBYUV
++	if (outputFormat == formats::NV12) {
++		if (!size.width || !size.height || (size.width & 1) || (size.height & 1) ||
++		    size.width > unsigned(std::numeric_limits<int>::max()) / 4 ||
++		    size.height > unsigned(std::numeric_limits<int>::max()))
++			return { 0, 0 };
++		const uint64_t stride = (uint64_t(size.width) + 7) & ~uint64_t(7);
++		const uint64_t bytes = stride * size.height * 3 / 2;
++		if (bytes > std::numeric_limits<unsigned int>::max())
++			return { 0, 0 };
++		return { static_cast<unsigned int>(stride), static_cast<unsigned int>(bytes) };
++	}
++#endif
+ 	if (getOutputConfig(outputFormat, config) != 0)
+ 		return std::make_tuple(0, 0);
+ 
+@@ -1071,21 +1123,59 @@
+ 
+ 	std::vector<DmaSyncer> dmaSyncers;
+ 
+-	dmaSyncBegin(dmaSyncers, input, output);
+-
+-	updateLookupTables(params);
+-
+ 	/* Copy metadata from the input buffer */
+ 	FrameMetadata &metadata = output->_d()->metadata();
+ 	metadata.status = input->metadata().status;
+ 	metadata.sequence = input->metadata().sequence;
+ 	metadata.timestamp = input->metadata().timestamp;
+ 
++	if (nv12_) {
++		const auto planes = output->planes();
++		if (planes.size() != 2 || metadata.planes().size() != 2 ||
++		    planes[0].fd.get() != planes[1].fd.get() ||
++		    uint64_t(planes[0].offset) + planes[0].length > planes[1].offset) {
++			metadata.status = FrameMetadata::FrameError;
++			for (auto &plane : metadata.planes())
++				plane.bytesused = 0;
++			outputBufferReady.emit(output);
++			inputBufferReady.emit(input);
++			return;
++		}
++		for (const FrameBuffer::Plane &plane : input->planes())
++			dmaSyncers.emplace_back(plane.fd, DmaSyncer::SyncType::Read);
++		/* Both output planes share one dma-buf: synchronize it once. */
++		dmaSyncers.emplace_back(planes[0].fd, DmaSyncer::SyncType::Write);
++	} else {
++		dmaSyncBegin(dmaSyncers, input, output);
++	}
++
++	updateLookupTables(params);
++
+ 	MappedFrameBuffer in(input, MappedFrameBuffer::MapFlag::Read);
+ 	MappedFrameBuffer out(output, MappedFrameBuffer::MapFlag::Write);
+-	if (!in.isValid() || !out.isValid()) {
++	if (!in.isValid() || !out.isValid() || in.planes().empty()) {
+ 		LOG(Debayer, Error) << "mmap-ing buffer(s) failed";
+ 		metadata.status = FrameMetadata::FrameError;
++		if (nv12_) {
++			for (auto &plane : metadata.planes())
++				plane.bytesused = 0;
++			dmaSyncers.clear();
++			outputBufferReady.emit(output);
++			inputBufferReady.emit(input);
++		}
++		return;
++	}
++
++	if (nv12_ && (in.planes()[0].size() < nv12InputBytes_ ||
++		       out.planes().size() != 2 || metadata.planes().size() != 2 ||
++		       out.planes()[0].size() != size_t(nv12Stride_) * window_.height ||
++		       out.planes()[1].size() != size_t(nv12Stride_) * window_.height / 2)) {
++		metadata.status = FrameMetadata::FrameError;
++		for (auto &plane : metadata.planes())
++			plane.bytesused = 0;
++		dmaSyncers.clear();
++		outputBufferReady.emit(output);
++		inputBufferReady.emit(input);
+ 		return;
+ 	}
+ 
+@@ -1098,7 +1188,7 @@
+ 	for (auto &thread : threads_)
+ 		thread->invokeMethod(&DebayerCpuThread::process,
+ 				     ConnectionTypeQueued, frame,
+-				     in.planes()[0].data(), out.planes()[0].data());
++				     in.planes()[0].data(), nv12_ ? rgbScratch_.get() : out.planes()[0].data());
+ 
+ 	{
+ 		MutexLocker locker(workPendingMutex_);
+@@ -1107,7 +1197,25 @@
+ 		});
+ 	}
+ 
+-	metadata.planes()[0].bytesused = out.planes()[0].size();
++#if HAVE_SOFTISP_LIBYUV
++	if (nv12_) {
++		int ret = libyuv::ARGBToJ420(rgbScratch_.get(), outputConfig_.stride,
++			out.planes()[0].data(), nv12Stride_, uScratch_.get(), window_.width / 2,
++			vScratch_.get(), window_.width / 2, window_.width, window_.height);
++		if (!ret) {
++			libyuv::MergeUVPlane(uScratch_.get(), window_.width / 2,
++				vScratch_.get(), window_.width / 2, out.planes()[1].data(),
++				nv12Stride_, window_.width / 2, window_.height / 2);
++			metadata.planes()[0].bytesused = nv12Stride_ * window_.height;
++			metadata.planes()[1].bytesused = nv12Stride_ * window_.height / 2;
++		} else {
++			metadata.status = FrameMetadata::FrameError;
++			metadata.planes()[0].bytesused = 0;
++			metadata.planes()[1].bytesused = 0;
++		}
++	} else
++#endif
++		metadata.planes()[0].bytesused = out.planes()[0].size();
+ 
+ 	dmaSyncers.clear();
+ 
+--- a/src/libcamera/software_isp/debayer_cpu.h
++++ b/src/libcamera/software_isp/debayer_cpu.h
+@@ -154,6 +154,12 @@
+ 	debayerFn debayer2_;
+ 	debayerFn debayer3_;
+ 	Rectangle window_;
++	bool nv12_ = false;
++	unsigned int nv12Stride_ = 0;
++	uint64_t nv12InputBytes_ = 0;
++	std::unique_ptr<uint8_t[]> rgbScratch_;
++	std::unique_ptr<uint8_t[]> uScratch_;
++	std::unique_ptr<uint8_t[]> vScratch_;
+ 	std::unique_ptr<SwStatsCpu> stats_;
+ 	unsigned int xShift_; /* Offset of 0/1 applied to window_.x */
+ 
+--- a/src/libcamera/software_isp/software_isp.cpp
++++ b/src/libcamera/software_isp/software_isp.cpp
+@@ -321,6 +321,10 @@
+ 	if (stream == nullptr)
+ 		return -EINVAL;
+ 
++	const StreamConfiguration &cfg = stream->configuration();
++	if (cfg.pixelFormat == formats::NV12)
++		return dmaHeap_.exportBuffers(count, { cfg.stride * cfg.size.height,
++						  cfg.stride * cfg.size.height / 2 }, buffers);
+ 	return dmaHeap_.exportBuffers(count, { debayer_->frameSize() }, buffers);
+ }
+ 
+--- a/src/libcamera/software_isp/meson.build
++++ b/src/libcamera/software_isp/meson.build
+@@ -38,3 +38,8 @@
+         libglesv2,
+     ]
+ endif
++
++if libyuv_dep.found()
++    config_h.set('HAVE_SOFTISP_LIBYUV', 1)
++    libcamera_deps += [libyuv_dep]
++endif

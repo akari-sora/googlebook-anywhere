@@ -172,7 +172,29 @@ APEX_REQUIRED_SIGNING_BLOCK_IDS = frozenset((
 APEX_ALLOWED_SIGNING_BLOCK_IDS = APEX_REQUIRED_SIGNING_BLOCK_IDS
 
 
-def _manifest_scan_policy(manifest_path):
+PASTEL_VENDOR_CHAIN = [{"kind": "tree_file", "path": "lib64/hw/vulkan.pastel.so"}]
+
+
+def _vendor_has_pastel(prof):
+    if not isinstance(prof, dict):
+        return False
+    display = prof.get("display")
+    model = prof.get("model")
+    return (
+        (isinstance(display, dict) and display.get("stack") == "gop-swiftshader")
+        or (isinstance(model, dict) and model.get("id") == "amd-hx370")
+    )
+
+
+def _is_pastel_vendor_pin(row):
+    return (
+        isinstance(row, dict)
+        and row.get("partition") == "vendor_a"
+        and row.get("container_chain") == PASTEL_VENDOR_CHAIN
+    )
+
+
+def _manifest_scan_policy(manifest_path, *, include_pastel=False):
     manifest = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
     residuals = manifest.get("residuals", [])
     if not isinstance(residuals, list):
@@ -180,6 +202,10 @@ def _manifest_scan_policy(manifest_path):
     known_non_instructions = manifest.get("known_non_instructions", [])
     if not isinstance(known_non_instructions, list):
         raise SystemExit("IFMA manifest known_non_instructions must be a list")
+    if not include_pastel:
+        known_non_instructions = [
+            row for row in known_non_instructions if not _is_pastel_vendor_pin(row)
+        ]
     unsupported_allowlist = manifest.get("unsupported_allowlist", [])
     if not isinstance(unsupported_allowlist, list):
         raise SystemExit("IFMA manifest unsupported_allowlist must be a list")
@@ -199,11 +225,13 @@ def _apex_payload_provenance(apex_rel, partition):
 
 def scan_rebuilt_tree(
     tree, label, otatools=None, scratch_dir=None, *, manifest_path=MANIFEST_PATH,
-    provenance=None, root_kind="tree_file",
+    provenance=None, root_kind="tree_file", include_pastel=False,
 ):
     """Run the mandatory residual-IFMA scanner and print its coverage report."""
     try:
-        residuals, known_non_instructions, unsupported_allowlist = _manifest_scan_policy(manifest_path)
+        residuals, known_non_instructions, unsupported_allowlist = _manifest_scan_policy(
+            manifest_path, include_pastel=include_pastel,
+        )
         report = SCAN_IFMA.scan_tree(
             tree,
             label=label,
@@ -1668,6 +1696,7 @@ def verify_rebuilt_vendor_tree(prof, rebuilt_tree, tmp, otatools=None, keys_dir=
         rebuilt_tree, "vendor_a rebuilt", otatools, tmp / "ifma-scan-vendor-readback",
         manifest_path=manifest_path,
         provenance=_partition_provenance("vendor_a"),
+        include_pastel=_vendor_has_pastel(prof),
     )
     print("ifma vendor readback ok")
     return True

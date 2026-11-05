@@ -1043,6 +1043,19 @@
       "container_chain": [
         {
           "kind": "tree_file",
+          "path": "lib64/hw/vulkan.pastel.so"
+        }
+      ],
+      "sha256": "5232e4829d8e6bba2d81cc0ff64d227504601090d2ac7b9fa105536e38c680a3",
+      "file_offset": "0x17a50ef",
+      "encoding_hex": "c40289b508",
+      "reason": "inside add    $0x2,%r12d at 0x17a50ed in vk_icdGetPhysicalDeviceProcAddr@@Base"
+    },
+    {
+      "partition": "vendor_a",
+      "container_chain": [
+        {
+          "kind": "tree_file",
           "path": "lib64/libclvk.so"
         }
       ],

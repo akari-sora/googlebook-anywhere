@@ -11,6 +11,7 @@ kmods = ["ac", "gbos_wakefilter"]
 [model]
 id = "kano"
 name = "Acer Chromebook Spin 714 (CP714-1WN / CP714-2WN)"
+android_model = "Acer Chromebook Spin 714" # opt-in GBOS_ANDROID_MODEL=profile; pending hardware acceptance
 status = "verified"                  # verified | experimental | probe-only
 # "verified" is the 46a6 Alder Lake-P K0 engineering sample only. Other KANO SKUs are untested
 # (docs/STATUS-KANO.md). image.py warns when status is not verified, so this stays verified for that sample.

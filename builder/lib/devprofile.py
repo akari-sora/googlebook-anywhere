@@ -26,7 +26,7 @@ SAFETY = Path(__file__).resolve().parents[2] / "profiles" / "_safety.toml"
 LSTR = ("list", str)
 SCHEMA = {
     "schema": int,
-    "model": {"id": str, "name": str, "status": str, "image_name": str, "dmi": ("map", str)},
+    "model": {"id": str, "name": str, "status": str, "image_name": str, "android_model": str, "dmi": ("map", str)},
     "entries": {"quiet": str, "debug": str},
     "cmdline": {"stock_drop": LSTR, "add": LSTR, "tail": LSTR, "debug_drop": LSTR, "quiet_drop": LSTR,
                 "pci_stub_ids": LSTR, "first_stage_drop": LSTR},
@@ -73,6 +73,7 @@ def set_lcd_density(text, density):
 # extra kernel modules the builder can build from pinned sources (builder/kmod/build-<name>.sh) and ship in vendor
 KMODS = {"ac": "ACPI AC adapter (ACPI0003): Android sees the charger; reads _PSR only, no EC host command",
          "gbos_efifb": "the UEFI GOP framebuffer as a DRM device (display.stack = gop-swiftshader), from the base's kheaders",
+         "gbos_kbd_backlight": "KANO keyboard backlight via the ChromeOS EC keyboard PWM",
          "gbos_wakefilter": "drops the ACPI power button's resume KEY_WAKEUP when the button did not wake the system "
                             "(input.power_button = acpi): dark resumes stay dark"}
 SAFETY_SCHEMA = {
@@ -360,10 +361,35 @@ def load_safety(path=SAFETY):
     return s
 
 
+def check_kbd_backlight_inputs(prof, ec, env, builder_dir):
+    """Fail closed on the optional, stock-kernel-only keyboard backlight module."""
+    import hashlib
+    enabled = "gbos_kbd_backlight" in prof["kmods"]
+    module = env.get("GBOS_KMOD_KBD_BACKLIGHT", "")
+    if not enabled:
+        if module:
+            raise ValueError("GBOS_KMOD_KBD_BACKLIGHT set but profile does not list gbos_kbd_backlight")
+        return
+    if ec != "drain" or env.get("GBOS_DEV_KERNEL_DIR", ""):
+        raise ValueError("gbos_kbd_backlight requires GBOS_EC=drain and the stock kernel")
+    script = Path(builder_dir) / "kmod/build-gbos_kbd_backlight.sh"
+    try:
+        pins = re.findall(r"^KBD_BACKLIGHT_KO_SHA=(.*)$", script.read_text(), re.MULTILINE)
+    except OSError:
+        pins = []
+    if len(pins) != 1 or not re.fullmatch(r"[0-9a-f]{64}", pins[0]):
+        raise ValueError("gbos_kbd_backlight requires a valid pinned KBD_BACKLIGHT_KO_SHA")
+    path = Path(module)
+    if not module or not path.is_file() or hashlib.sha256(path.read_bytes()).hexdigest() != pins[0]:
+        raise ValueError("GBOS_KMOD_KBD_BACKLIGHT must be the pinned module file")
+
+
 def load(profile_dir, safety_path=SAFETY):
     d = Path(profile_dir)
     with open(d / "profile.toml", "rb") as f:
         p = tomllib.load(f)
+    if isinstance(p.get("model"), dict):
+        p["model"].setdefault("android_model", "")
     p.setdefault("firmware", [])       # [[firmware]] tables: a profile without device firmware simply has none
     if isinstance(p["firmware"], list):
         for i, fw in enumerate(p["firmware"]):
@@ -406,6 +432,8 @@ def load(profile_dir, safety_path=SAFETY):
     if p["schema"] != 1:
         raise ProfileError(f"schema {p['schema']} is not supported")
     m = p["model"]
+    if m["android_model"] and not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9 ._-]{0,90}", m["android_model"]):
+        raise ProfileError("model.android_model must be a printable ASCII model name (at most 91 characters)")
     if not re.fullmatch(r"[a-z0-9][a-z0-9-]*", m["id"]) or m["id"] != d.resolve().name:
         raise ProfileError(f"model.id {m['id']!r} must be lower-case and equal to the directory name {d.resolve().name!r}")
     if m["status"] not in ("verified", "experimental", "probe-only"):
@@ -534,6 +562,17 @@ def load(profile_dir, safety_path=SAFETY):
     unknown = [k for k in p["kmods"] if k not in KMODS]
     if unknown or len(set(p["kmods"])) != len(p["kmods"]):
         raise ProfileError(f"kmods: expected distinct names from {', '.join(sorted(KMODS))}")
+    if "gbos_kbd_backlight" in p["kmods"]:
+        if m["id"] != "kano":
+            raise ProfileError("kmods gbos_kbd_backlight is restricted to kano")
+        if "cros_kbd_led_backlight" not in b["modules"] or "cros_kbd_led_backlight" in b["allow"]:
+            raise ProfileError("kmods gbos_kbd_backlight requires the stock keyboard backlight driver blacklisted")
+        if "cros_ec_proto" not in b["allow"]:
+            raise ProfileError("kmods gbos_kbd_backlight requires cros_ec_proto allowed")
+        if "gbos_kbd_backlight" in blocked:
+            raise ProfileError("kmods gbos_kbd_backlight cannot be blacklisted")
+        if inp["kbd_backlight_leds"] != "/sys/devices/platform/GOOG0004:00/GOOG0002:00/leds":
+            raise ProfileError("kmods gbos_kbd_backlight requires the KANO keyboard LED path")
     h = p["hooks"]["vendor"]
     if h and not (re.fullmatch(r"[a-z0-9_]+\.py", h) and (d / h).is_file()):
         raise ProfileError(f"hooks.vendor: {h} is not a Python file in {d}")

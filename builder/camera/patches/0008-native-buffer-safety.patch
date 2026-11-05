@@ -1,0 +1,63 @@
+--- a/src/android/mm/generic_camera_buffer.cpp
++++ b/src/android/mm/generic_camera_buffer.cpp
+@@ -6,6 +6,9 @@
+  */
+ 
+ #include "../camera_buffer.h"
++
++#include <cstdint>
++#include <limits>
+ 
+ #include <sys/mman.h>
+ #include <unistd.h>
+@@ -112,7 +115,10 @@
+ 		planeInfo_[i].offset = offset;
+ 		planeInfo_[i].size = planeSize;
+ 
+-		if (bufferLength_ < offset + planeSize) {
++		if (static_cast<std::uintmax_t>(offset) > static_cast<std::uintmax_t>(bufferLength_) ||
++		    planeSize > static_cast<std::uintmax_t>(bufferLength_) - offset ||
++		    planeSize > std::numeric_limits<unsigned int>::max() - offset) {
++			error_ = -EINVAL;
+ 			LOG(HAL, Error) << "Plane " << i << " is out of buffer:"
+ 					<< " plane offset=" << offset
+ 					<< ", plane size=" << planeSize
+--- a/src/android/camera_device.cpp
++++ b/src/android/camera_device.cpp
+@@ -775,21 +775,31 @@
+ CameraDevice::createFrameBuffer(const buffer_handle_t camera3buffer,
+ 				PixelFormat pixelFormat, const Size &size)
+ {
++	if (!camera3buffer || camera3buffer->numFds <= 0 || camera3buffer->numInts < 0) {
++		LOG(HAL, Error) << "Invalid native buffer handle";
++		return nullptr;
++	}
++
+ 	CameraBuffer buf(camera3buffer, pixelFormat, size, PROT_READ);
+ 	if (!buf.isValid()) {
+-		LOG(HAL, Fatal) << "Failed to create CameraBuffer";
++		LOG(HAL, Error) << "Failed to create CameraBuffer";
++		return nullptr;
++	}
++
++	if (!buf.numPlanes() || buf.numPlanes() > static_cast<unsigned int>(camera3buffer->numFds)) {
++		LOG(HAL, Error) << "Missing plane file descriptors";
+ 		return nullptr;
+ 	}
+ 
+ 	std::vector<FrameBuffer::Plane> planes(buf.numPlanes());
+ 	for (size_t i = 0; i < buf.numPlanes(); ++i) {
+-		SharedFD fd{ camera3buffer->data[i] };
+-		if (!fd.isValid()) {
+-			LOG(HAL, Fatal) << "No valid fd";
++		UniqueFD dupFd{ ::dup(camera3buffer->data[i]) };
++		if (!dupFd.isValid()) {
++			LOG(HAL, Error) << "Failed to duplicate plane fd";
+ 			return nullptr;
+ 		}
+ 
+-		planes[i].fd = fd;
++		planes[i].fd = SharedFD{ std::move(dupFd) };
+ 		planes[i].offset = buf.offset(i);
+ 		planes[i].length = buf.size(i);
+ 	}

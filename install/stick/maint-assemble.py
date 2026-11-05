@@ -748,13 +748,14 @@ COMPRESSION="zstd"
 # that namespace. The tool path is inside the root, not a host mkinitcpio.
 INITRAMFS_HELPER = """#!/bin/sh
 set -eu
-if [ "$#" -ne 3 ]; then
-    echo "initramfs helper: expected root, kernel version, and tool" >&2
+if [ "$#" -ne 4 ]; then
+    echo "initramfs helper: expected root, kernel version, tool, and host chroot" >&2
     exit 1
 fi
 root=$1
 kver=$2
 tool=$3
+host_chroot=$4
 case "$root" in
     /*) ;;
     *) echo "initramfs helper: root is not absolute" >&2; exit 1 ;;
@@ -763,6 +764,14 @@ case "$tool" in
     /*) ;;
     *) echo "initramfs helper: tool is not absolute" >&2; exit 1 ;;
 esac
+case "$host_chroot" in
+    /*) ;;
+    *) echo "initramfs helper: host chroot is not absolute" >&2; exit 1 ;;
+esac
+if [ ! -f "$host_chroot" ] || [ ! -x "$host_chroot" ]; then
+    echo "initramfs helper: host chroot is not an executable file" >&2
+    exit 1
+fi
 case "$kver" in
     ""|*[!A-Za-z0-9._+-]*)
         echo "initramfs helper: kernel version is not a single token" >&2
@@ -814,8 +823,8 @@ if [ ! -x "$root/usr/bin/depmod" ]; then
     echo "depmod is not in the maintenance root" >&2
     exit 1
 fi
-/usr/bin/chroot "$root" /usr/bin/depmod -a "$kver"
-exec /usr/bin/chroot "$root" "$tool" -k "$kver" -g /boot/initramfs-linux.img -c /etc/mkinitcpio-gbos.conf
+"$host_chroot" "$root" /usr/bin/depmod -a "$kver"
+exec "$host_chroot" "$root" "$tool" -k "$kver" -g /boot/initramfs-linux.img -c /etc/mkinitcpio-gbos.conf
 """
 
 
@@ -898,6 +907,14 @@ def write_firstboot(root):
     os.symlink("../usr/share/zoneinfo/UTC", link)
 
 
+def host_chroot_tool():
+    """Resolve the host executable separately from in-root tools."""
+    path = shutil.which("chroot")
+    if not path or not os.path.isabs(path) or not os.path.isfile(path) or not os.access(path, os.X_OK):
+        refuse("an absolute executable host chroot is required to build the initramfs")
+    return path
+
+
 def build_initramfs(root):
     """Build boot/initramfs-linux.img when it is missing and mkinitcpio is there.
 
@@ -919,6 +936,7 @@ def build_initramfs(root):
     if not regular_file(kernel):
         return
     kver = kernel_version(kernel)
+    chroot = host_chroot_tool()
     ensure_real_dir(boot, "refusing to follow a symlink while writing the initramfs")
     ensure_real_dir(os.path.join(root, "etc"),
                     "refusing to follow a symlink while writing the initramfs config")
@@ -950,7 +968,7 @@ def build_initramfs(root):
     write_new_file(helper, INITRAMFS_HELPER.encode("ascii"), 0o755)
     try:
         result = subprocess.run(
-            [unshare, "-U", "-r", "-m", "-p", "--fork", helper, root, kver, tool],
+            [unshare, "-U", "-r", "-m", "-p", "--fork", helper, root, kver, tool, chroot],
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             check=False,

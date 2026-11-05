@@ -5,13 +5,28 @@
     (an unsigned module may not use those: MODULE_SIG_PROTECT), and each recorded CRC equals the exported one;
   - module_layout has its own matching vmlinux CRC, even when it is not an undefined import;
   - no symbol is exported by the module, and it carries no signature (vendor modules are loaded unsigned).
-usage: check-ko.py <module.ko> <vmlinux.symvers> <expected vermagic tail>
+usage: check-ko.py <module.ko> <vmlinux.symvers> <expected vermagic tail> [--kano-backlight-provider <provider.ko>]
+The optional pinned vendor provider is restricted to gbos_kbd_backlight and one reviewed symbol.
 The CRC list is either a kbuild vmlinux.symvers (crc, name, owner, ... separated by tabs) or the "<crc> <name>" list of
 the vmlinux exports that builder/kmod/prepare.py takes from the image's own kernel (every name there is vmlinux's)."""
+import argparse
+import hashlib
 import struct
 import sys
 
-ko, symvers, magic_tail = sys.argv[1:4]
+# Reviewed unsigned vendor cros-ec-proto.ko, with the single permitted export
+# unprotected, non-GPL, no namespace, and owner CRC 0x53f88a75.
+KANO_PROVIDER_SHA256 = "5ddce2fcfe24e9f1451783bb42d7bbdb23b99955fae211c8bc1ae8f32098ad48"
+KANO_PROVIDER_SYMBOL = "cros_ec_cmd_xfer_status"
+KANO_PROVIDER_CRC = 0x53f88a75
+
+parser = argparse.ArgumentParser()
+parser.add_argument("ko")
+parser.add_argument("symvers")
+parser.add_argument("magic_tail")
+parser.add_argument("--kano-backlight-provider")
+args = parser.parse_args()
+ko, symvers, magic_tail = args.ko, args.symvers, args.magic_tail
 data = open(ko, "rb").read()
 if data[:4] != b"\x7fELF" or data[4] != 2 or data[5] != 1 or struct.unpack_from("<H", data, 16)[0] != 1:
     sys.exit(f"{ko}: not a 64-bit little-endian relocatable ELF")
@@ -31,6 +46,7 @@ def body(n):
     s = by.get(n)
     return data[s["off"]:s["off"] + s["size"]] if s else b""
 
+problems = []
 exported = {}
 for line in open(symvers):
     if "\t" in line:
@@ -38,12 +54,32 @@ for line in open(symvers):
     else:
         crc, name = line.split()
         owner = "vmlinux"
-    exported[name] = (int(crc, 16), owner)
-
-problems = []
+    if name in exported:
+        problems.append(f"duplicate export record {name}")
+    else:
+        exported[name] = (int(crc, 16), owner)
 # The selected CONFIG_MODVERSIONS GKI's same_magic() skips the release only when
 # find_sec() finds an SHF_ALLOC __versions section, not merely extended CRCs.
-info = dict(x.split("=", 1) for x in body(".modinfo").decode(errors="replace").split("\0") if "=" in x)
+info_entries = [x.split("=", 1) for x in body(".modinfo").decode(errors="replace").split("\0") if "=" in x]
+info = dict(info_entries)
+if args.kano_backlight_provider:
+    names = [value for key, value in info_entries if key == "name"]
+    if sum(s["name"] == ".modinfo" for s in secs) != 1:
+        problems.append("backlight provider requires exactly one .modinfo section")
+    if names != ["gbos_kbd_backlight"]:
+        problems.append("backlight provider requires exact unique module name gbos_kbd_backlight")
+    try:
+        with open(args.kano_backlight_provider, "rb") as provider:
+            provider_sha = hashlib.sha256(provider.read()).hexdigest()
+    except OSError:
+        provider_sha = ""
+    if provider_sha != KANO_PROVIDER_SHA256:
+        problems.append("unrecognized backlight provider SHA-256")
+    elif names == ["gbos_kbd_backlight"]:
+        if KANO_PROVIDER_SYMBOL in exported:
+            problems.append(f"duplicate export record {KANO_PROVIDER_SYMBOL}")
+        else:
+            exported[KANO_PROVIDER_SYMBOL] = (KANO_PROVIDER_CRC, "vendor:cros-ec-proto")
 vm = info.get("vermagic", "")
 if vm.split(" ", 1)[1:] != [magic_tail]:
     problems.append(f"vermagic tail {vm.split(' ', 1)[1:]!r} != {magic_tail!r}")
@@ -60,7 +96,10 @@ for i in range(1, sym["size"] // 24):
 for n in sorted(undef):
     if n not in exported:
         problems.append(f"undefined symbol {n} is not exported by the GKI")
-    elif exported[n][1] != "vmlinux":
+    elif exported[n][1] != "vmlinux" and not (
+        args.kano_backlight_provider and n == KANO_PROVIDER_SYMBOL
+        and exported[n][1] == "vendor:cros-ec-proto"
+    ):
         problems.append(f"undefined symbol {n} comes from GKI module {exported[n][1]} (protected for unsigned modules)")
 
 # Strict version-table admission is deliberately fail-closed: the kernel has
@@ -142,7 +181,7 @@ for n in sorted(undef | {"module_layout"}):
     if n not in crcs:
         problems.append(f"no CRC recorded for {n}")
     elif n in exported and crcs[n] != exported[n][0]:
-        problems.append(f"CRC of {n}: module {crcs[n]:#010x} != GKI {exported[n][0]:#010x}")
+        problems.append(f"CRC of {n}: module {crcs[n]:#010x} != {exported[n][1]} {exported[n][0]:#010x}")
 if body("__ksymtab") or body("__ksymtab_gpl"):
     problems.append("the module exports symbols")
 if data.endswith(b"~Module signature appended~\n"):

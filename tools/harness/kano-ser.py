@@ -5,6 +5,7 @@
   kano-ser.py ap-log <file>                 append everything from the AP UART to <file> until killed
   kano-ser.py ap-send "<line>"              write one line (plus CR) to the AP UART
   kano-ser.py ap-keys <hex>                 write raw bytes (hex) to the AP UART, e.g. 1b for ESC
+  kano-ser.py ap-keys-preserve-rx <hex>     Linux: one 1..8-byte write to a preconfigured raw 8N1 AP UART
   kano-ser.py ap-type "<line>" [ms]         like ap-send, but one byte at a time with a pause (default 15 ms);
                                             GRUB drops input when a whole long line arrives at once
   kano-ser.py ap-spam <hex> <log> <text> [s] send <hex> every 0.25 s until <text> shows up in <log> (default 90 s)
@@ -279,6 +280,66 @@ def port(dev, timeout=0.2):
         return serial.Serial(dev, 115200, timeout=timeout)
 
 
+def ap_keys_preserve_rx(dev, data):
+    """One nonblocking write without opening pyserial, reading, flushing, or changing tty settings.
+
+    The caller must independently hold the hardware lock and verify the AP logger.
+    A 9600 termios value is accepted only for the pinned Google simple USB serial
+    driver, where it can be a kernel placeholder; it does not prove wire speed.
+    A raised error can mean a partial/uncertain write; the caller must not retry it.
+    """
+    if not sys.platform.startswith("linux"):
+        raise ValueError("Linux only")
+    if not isinstance(data, bytes) or not 1 <= len(data) <= 8:
+        raise ValueError("expected 1..8 bytes")
+    import stat
+    import termios
+
+    def identity(s):
+        return s.st_dev, s.st_ino, s.st_rdev
+
+    before = os.stat(dev)
+    if not stat.S_ISCHR(before.st_mode):
+        raise ValueError("AP path is not a character device")
+    fd = os.open(dev, os.O_WRONLY | os.O_NOCTTY | os.O_NONBLOCK | os.O_CLOEXEC)
+    try:
+        opened = os.fstat(fd)
+        if not stat.S_ISCHR(opened.st_mode) or identity(opened) != identity(before):
+            raise ValueError("AP device changed while opening")
+        iflag, oflag, cflag, lflag, ispeed, ospeed, _ = termios.tcgetattr(fd)
+        speed_ok = ispeed == ospeed == termios.B115200
+        if ispeed == ospeed == termios.B9600:
+            try:
+                node = Path('/sys/dev/char') / f'{os.major(opened.st_rdev)}:{os.minor(opened.st_rdev)}'
+                driver = (node / 'device/driver').resolve(strict=True)
+                speed_ok = (driver == Path('/sys/bus/usb-serial/drivers/google') and
+                            (driver / 'module').resolve(strict=True) == Path('/sys/module/usb_serial_simple'))
+            except (OSError, RuntimeError, ValueError):
+                speed_ok = False
+        def bits(*names):
+            mask = 0
+            for name in names:
+                mask |= getattr(termios, name, 0)
+            return mask
+        if (iflag & bits("IGNBRK", "BRKINT", "PARMRK", "ISTRIP", "INLCR", "IGNCR", "ICRNL",
+                         "IXON", "IXOFF", "IXANY", "INPCK", "IUCLC") or
+                oflag & termios.OPOST or
+                lflag & bits("ECHO", "ECHOE", "ECHOK", "ECHONL", "ECHOCTL", "ECHOKE",
+                             "ICANON", "ISIG", "IEXTEN") or
+                cflag & termios.CSIZE != termios.CS8 or
+                cflag & bits("PARENB", "PARODD", "CSTOPB", "CRTSCTS", "CMSPAR") or
+                cflag & (termios.CREAD | termios.CLOCAL) != (termios.CREAD | termios.CLOCAL) or
+                not speed_ok):
+            raise ValueError("AP tty is not approved raw 8N1 without flow control")
+        current = os.stat(dev)
+        if not stat.S_ISCHR(current.st_mode) or identity(opened) != identity(current):
+            raise ValueError("AP device changed before write")
+        if os.write(fd, data) != len(data):
+            raise OSError("partial write; delivery uncertain")
+    finally:
+        os.close(fd)
+
+
 def usage():
     sys.exit(__doc__)
 
@@ -371,6 +432,15 @@ def main(argv):
                 print(f"the line editor did not show up within {secs:g} s", file=sys.stderr)
                 sys.exit(3)
             time.sleep(0.2)
+    elif cmd == "ap-keys-preserve-rx":
+        if len(argv) != 2 or re.fullmatch(r"(?:[0-9A-Fa-f]{2}){1,8}", argv[1]) is None:
+            print("refuse: expected 1..8 hex bytes", file=sys.stderr)
+            sys.exit(2)
+        try:
+            ap_keys_preserve_rx(os.environ["KANO_AP_TTY"], bytes.fromhex(argv[1]))
+        except Exception as exc:
+            print(f"refuse or uncertain AP write: {exc}", file=sys.stderr)
+            sys.exit(1)
     elif cmd == "ap-keys" and len(argv) == 2:
         data = hexbytes(argv[1])
         port(os.environ["KANO_AP_TTY"]).write(data)

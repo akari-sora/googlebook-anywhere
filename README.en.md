@@ -6,7 +6,7 @@ Installs Google's official **Googlebook OS** (lapis, the desktop edition of Andr
 **Acer Chromebook Spin 714 (KANO mainboard)**.
 
 - Downloads and release notes: [GitLab Releases](https://gitlab.com/aa22396584/googlebook-anywhere/-/releases) (current version: [docs/RELEASE-NOTES.md](docs/RELEASE-NOTES.md), earlier versions: [docs/RELEASE-HISTORY.md](docs/RELEASE-HISTORY.md) (both Chinese))
-- Verification: [v0.3.0](docs/VERIFICATION-v0.3.0.md) (includes the October 29 KANO keep-data update and limited standby evidence); earlier [v0.2.3](docs/VERIFICATION-v0.2.3.md) and [KANO hardware status](docs/STATUS-KANO.md) retain their original coverage (Chinese).
+- Verification: [v0.3.1](docs/VERIFICATION-v0.3.1.md) separates software checks, candidate images and open hardware acceptance; earlier [v0.3.0](docs/VERIFICATION-v0.3.0.md) includes the October 29 KANO keep-data update and limited standby evidence. [v0.2.3](docs/VERIFICATION-v0.2.3.md) and [KANO hardware status](docs/STATUS-KANO.md) retain their original coverage (Chinese).
 - Source code and issues: [gitlab.com/aa22396584/googlebook-anywhere](https://gitlab.com/aa22396584/googlebook-anywhere) (the primary repo). [akari-sora/googlebook-anywhere](https://github.com/akari-sora/googlebook-anywhere) on GitHub is a read-only mirror; use GitLab for issues and downloads.
 
 > This is not an official Google project. The repo contains no Google files: the scripts download the official recovery image from Google, check it against a fixed SHA-256,
@@ -55,7 +55,7 @@ Each record below applies to its recorded image and one 12th-generation KANO eng
 | Headphone jack, USB-C data and external display | ⚪ Not verified |
 | Waking with the keyboard while the screen is off | ⚠️ Known issue; use the power button or open and close the lid |
 | Auto-rotate, light sensor | ❌ No sensors currently available to Android |
-| Keyboard backlight adjustment | ⚠️ Backlight control remains limited in the published v0.3.0; an unreleased R6 USB candidate controls on/off, but its brightness curve has a defect; see [KANO status](docs/STATUS-KANO.md) |
+| Keyboard backlight adjustment | ⚠️ v0.3.1 includes a backlight curve source fix that has not been tested on hardware; the earlier R6 USB candidate controls on/off but has a curve defect; see [KANO status](docs/STATUS-KANO.md) |
 | Built-in camera | 🔧 In development, off by default |
 
 For how each item was verified, see [docs/STATUS-KANO.md](docs/STATUS-KANO.md) (Chinese).

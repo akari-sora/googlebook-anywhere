@@ -45,7 +45,7 @@ against --rdev (and, when given, the realpath of /sys/dev/block/MAJ:MIN and the 
 a partition is read back (page cache dropped) and compared by SHA-256, every FAT file is read back after mcopy.
 Exit: 0 done, 1 failed after writing started (run the same command again), 2 refused (nothing written).
 """
-import hashlib, os, re, shutil, stat, struct, subprocess, sys, tempfile, uuid, zlib
+import hashlib, json, os, re, selectors, shutil, stat, struct, subprocess, sys, tempfile, time, uuid, zlib
 
 SECTOR = 512
 MIB = 1 << 20
@@ -79,8 +79,9 @@ def say(*a):
     print(*a, flush=True)
 
 
-def run(cmd, data=None, text=False):
-    r = subprocess.run(cmd, input=data, capture_output=True, text=text, env=dict(os.environ, MTOOLS_SKIP_CHECK="1"))
+def run(cmd, data=None, text=False, pass_fds=()):
+    r = subprocess.run(cmd, input=data, capture_output=True, text=text, pass_fds=pass_fds,
+                       env=dict(os.environ, MTOOLS_SKIP_CHECK="1"))
     if r.returncode:
         err = r.stderr if text else r.stderr.decode(errors="replace")
         raise RuntimeError(f"{' '.join(map(str, cmd))} failed: {err.strip()[:300]}")
@@ -98,27 +99,42 @@ class Disk:
         self.blk = stat.S_ISBLK(st.st_mode)
         if not self.blk and not stat.S_ISREG(st.st_mode):
             raise Refuse(f"{path} is neither a block device nor a regular file")
-        flags = (os.O_RDWR if write else os.O_RDONLY) | os.O_CLOEXEC | os.O_NOFOLLOW
+        # Do not block opening a substituted FIFO before we can classify the fd.
+        flags = (os.O_RDWR if write else os.O_RDONLY) | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NONBLOCK
         if write and self.blk:
             flags |= os.O_EXCL
         try:
-            self.fd = os.open(self.path, flags)
+            fd = os.open(self.path, flags)
         except OSError as e:
             raise Refuse(f"cannot open {self.path}{' exclusively' if write and self.blk else ''}: {e.strerror}")
-        fst = os.fstat(self.fd)
-        if self.blk and rdev is not None and f"{os.major(fst.st_rdev)}:{os.minor(fst.st_rdev)}" != rdev:
-            raise Refuse(f"{self.path} is {os.major(fst.st_rdev)}:{os.minor(fst.st_rdev)}, not the confirmed {rdev}")
-        if write and self.blk and rdev is None:
-            raise Refuse("a block device is only written with --rdev (its confirmed major:minor)")
-        if self.blk and syspath is not None:
-            sp = os.path.realpath(f"/sys/dev/block/{os.major(fst.st_rdev)}:{os.minor(fst.st_rdev)}")
-            if sp != syspath:
-                raise Refuse(f"{self.path} is {sp} in sysfs, not the confirmed {syspath}")
-        self.size = os.lseek(self.fd, 0, os.SEEK_END)
-        if nbytes is not None and self.size != int(nbytes):
-            raise Refuse(f"{self.path} has {self.size} bytes, not the confirmed {nbytes}")
-        self.write = write
-        self.forbidden = []          # (start, end, why): byte ranges no update may write
+        try:
+            fst = os.fstat(fd)
+            before = (stat.S_IFMT(st.st_mode), st.st_dev, st.st_ino, st.st_rdev)
+            opened = (stat.S_IFMT(fst.st_mode), fst.st_dev, fst.st_ino, fst.st_rdev)
+            if opened != before:
+                raise Refuse(f"{self.path} changed while opening")
+            self.blk = stat.S_ISBLK(fst.st_mode)
+            os.set_blocking(fd, True)
+            if self.blk and rdev is not None and f"{os.major(fst.st_rdev)}:{os.minor(fst.st_rdev)}" != rdev:
+                raise Refuse(f"{self.path} is {os.major(fst.st_rdev)}:{os.minor(fst.st_rdev)}, not the confirmed {rdev}")
+            if write and self.blk and rdev is None:
+                raise Refuse("a block device is only written with --rdev (its confirmed major:minor)")
+            if self.blk and syspath is not None:
+                sp = os.path.realpath(f"/sys/dev/block/{os.major(fst.st_rdev)}:{os.minor(fst.st_rdev)}")
+                if sp != syspath:
+                    raise Refuse(f"{self.path} is {sp} in sysfs, not the confirmed {syspath}")
+            self.size = os.lseek(fd, 0, os.SEEK_END)
+            if nbytes is not None and self.size != int(nbytes):
+                raise Refuse(f"{self.path} has {self.size} bytes, not the confirmed {nbytes}")
+            self.write = write
+            self.forbidden = []          # (start, end, why): byte ranges no update may write
+        except BaseException:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+            raise
+        self.fd = fd
 
     def guard(self, ranges):
         self.forbidden = list(ranges)
@@ -162,7 +178,7 @@ class Disk:
 
     def vol(self, off):
         """mtools image spec of a FAT file system at byte offset off."""
-        return f"{self.path}@@{off}"
+        return f"/proc/self/fd/{self.fd}@@{off}"
 
 
 def gpt_read(disk):
@@ -443,9 +459,72 @@ def ramdisk_plain(rd):
     return rd
 
 
-def ramdisk_prop(rd, key):
+PREVIEW_RAMDISK_MAX = 256 * 1024 * 1024
+PREVIEW_LZ4_TIMEOUT = 60
+
+
+def preview_lz4(data, args, limit, action, tmp=None):
+    """Run an LZ4 operation with output and wall-clock bounds, reaping our child."""
+    with tempfile.TemporaryFile(dir=tmp) as source:
+        source.write(data)
+        source.seek(0)
+        proc = subprocess.Popen(["lz4", *args], stdin=source, stdout=subprocess.PIPE,
+                                stderr=subprocess.DEVNULL)
+        try:
+            out = bytearray()
+            deadline = time.monotonic() + PREVIEW_LZ4_TIMEOUT
+            with selectors.DefaultSelector() as selector:
+                selector.register(proc.stdout, selectors.EVENT_READ)
+                while True:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0 or not selector.select(remaining):
+                        raise Refuse(f"preview: ramdisk {action} timed out")
+                    part = os.read(proc.stdout.fileno(), min(1024 * 1024, limit + 1 - len(out)))
+                    if not part:
+                        break
+                    out.extend(part)
+                    if len(out) > limit:
+                        raise Refuse("preview: ramdisk exceeds output limit")
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise Refuse(f"preview: ramdisk {action} timed out")
+            try:
+                status = proc.wait(timeout=remaining)
+            except subprocess.TimeoutExpired:
+                raise Refuse(f"preview: ramdisk {action} timed out")
+            if status:
+                raise Refuse(f"preview: ramdisk {action} failed")
+            return bytes(out)
+        finally:
+            proc.stdout.close()
+            if proc.poll() is None:
+                try:
+                    proc.kill()
+                except ProcessLookupError:
+                    pass
+            proc.wait()
+
+
+def preview_ramdisk_plain(rd, tmp=None):
+    """Decode with an output and wall-clock bound; reap only our own child."""
+    if rd[:4] != LZ4_LEGACY:
+        if len(rd) > PREVIEW_RAMDISK_MAX:
+            raise Refuse("preview: ramdisk exceeds output limit")
+        return rd
+    return preview_lz4(rd, ["-d", "-c"], PREVIEW_RAMDISK_MAX, "decoder", tmp)
+
+
+def preview_ramdisk_compress(rd, tmp=None):
+    if len(rd) > PREVIEW_RAMDISK_MAX:
+        raise Refuse("preview: ramdisk exceeds input limit")
+    # LZ4 framing can make output slightly larger than the input.
+    return preview_lz4(rd, ["-l", "-12", "--favor-decSpeed", "-c"],
+                       PREVIEW_RAMDISK_MAX + (PREVIEW_RAMDISK_MAX // 255) + (1 << 20), "encoder", tmp)
+
+
+def ramdisk_prop(rd, key, preview=False, preview_tmp=None):
     """A property from system/etc/ramdisk/build.prop inside an (lz4 or plain) newc ramdisk."""
-    body = ramdisk_plain(rd)
+    body = preview_ramdisk_plain(rd, preview_tmp) if preview else ramdisk_plain(rd)
     off = 0
     while True:
         off = body.find(b"070701", off)
@@ -524,8 +603,9 @@ def fat_fits(boot_sector, length, what):
 
 
 class Fat:
-    def __init__(self, spec, tmp):
+    def __init__(self, spec, tmp, fd=None):
         self.spec, self.tmp = spec, tmp
+        self.pass_fds = (fd,) if fd is not None else ()
         self.blkfd = None            # a block device's held descriptor (open_stick)
 
     def sync_drop(self):
@@ -537,7 +617,7 @@ class Fat:
 
     def ls(self, path):
         r = subprocess.run(["mdir", "-b", "-i", self.spec, "::" + path], capture_output=True, text=True,
-                           env=dict(os.environ, MTOOLS_SKIP_CHECK="1"))
+                           env=dict(os.environ, MTOOLS_SKIP_CHECK="1"), pass_fds=self.pass_fds)
         if r.returncode:
             return []
         return [l.strip().rstrip("/").split("/")[-1] for l in r.stdout.splitlines() if l.strip().rstrip("/")]
@@ -547,12 +627,7 @@ class Fat:
         return f in self.ls(d or "/")
 
     def read(self, path):
-        t = os.path.join(self.tmp, "fat-read")
-        if os.path.exists(t):
-            os.unlink(t)
-        run(["mcopy", "-n", "-i", self.spec, "::" + path, t])
-        with open(t, "rb") as f:
-            return f.read()
+        return run(["mcopy", "-n", "-i", self.spec, "::" + path, "-"], pass_fds=self.pass_fds)
 
     def write(self, path, data):
         d = path.rpartition("/")[0]
@@ -561,25 +636,181 @@ class Fat:
             for i in range(len(parts)):
                 sub = "/" + "/".join(parts[:i + 1])
                 if not self.exists(sub):
-                    run(["mmd", "-i", self.spec, "::" + sub])
-        t = os.path.join(self.tmp, "fat-write")
-        with open(t, "wb") as f:
-            f.write(data)
-        run(["mcopy", "-o", "-i", self.spec, t, "::" + path])
+                    run(["mmd", "-i", self.spec, "::" + sub], pass_fds=self.pass_fds)
+        run(["mcopy", "-o", "-i", self.spec, "-", "::" + path], data=data, pass_fds=self.pass_fds)
         if self.read(path) != data:
             raise Failed(f"{path} on {self.spec} reads back different")
 
     def delete(self, path):
         if self.exists(path):
-            run(["mdel", "-i", self.spec, "::" + path])
+            run(["mdel", "-i", self.spec, "::" + path], pass_fds=self.pass_fds)
 
     def free(self):
-        out = run(["minfo", "-i", self.spec, "::"], text=True)
+        out = run(["minfo", "-i", self.spec, "::"], text=True, pass_fds=self.pass_fds)
         spc = int(re.search(r"cluster size:\s*(\d+) sectors", out).group(1))
         bps = int(re.search(r"sector size:\s*(\d+)", out).group(1))
-        mdir = run(["mdir", "-i", self.spec, "::/"], text=True)
+        mdir = run(["mdir", "-i", self.spec, "::/"], text=True, pass_fds=self.pass_fds)
         free = int(re.search(r"([\d ]+) bytes free", mdir).group(1).replace(" ", ""))
         return free, spc * bps
+
+
+class PreviewFatError(Refuse):
+    """A preview FAT observation failed; it is not a damaged boot entry."""
+
+
+class PreviewFat:
+    """Read-only mtools view of a private ESP snapshot, with shared resource limits."""
+    def __init__(self, spec, tmp, fd=None):
+        self.spec = spec
+        self.pass_fds = (fd,) if fd is not None else ()
+        self.deadline = time.monotonic() + 120
+        # A sealed shared ESP can remain open while a large source is hashed.
+        # Charge only mtools execution time, not that unrelated waiting time.
+        self.remaining_time = 120.0 if fd is not None else None
+        self.remaining = 1024 * MIB
+        self.calls = 0
+
+    def _run(self, command, limit):
+        started = time.monotonic()
+        if self.remaining_time is not None:
+            self.deadline = started + self.remaining_time
+        self.calls += 1
+        if self.calls > 4096:
+            raise PreviewFatError("preview: too many FAT operations")
+        limit = min(limit, self.remaining)
+        if limit <= 0:
+            raise PreviewFatError("preview: FAT output budget exhausted")
+        proc = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                stderr=subprocess.DEVNULL, env=dict(os.environ, MTOOLS_SKIP_CHECK="1"),
+                                pass_fds=self.pass_fds)
+        try:
+            out = bytearray()
+            with selectors.DefaultSelector() as selector:
+                selector.register(proc.stdout, selectors.EVENT_READ)
+                while True:
+                    remaining = self.deadline - time.monotonic()
+                    if remaining <= 0 or not selector.select(remaining):
+                        raise PreviewFatError("preview: mtools timed out")
+                    part = os.read(proc.stdout.fileno(), min(1 << 20, limit + 1 - len(out)))
+                    if not part:
+                        break
+                    out.extend(part)
+                    if len(out) > limit:
+                        raise PreviewFatError("preview: FAT output limit exceeded")
+            remaining = self.deadline - time.monotonic()
+            if remaining <= 0:
+                raise PreviewFatError("preview: mtools timed out")
+            try:
+                status = proc.wait(timeout=remaining)
+            except subprocess.TimeoutExpired:
+                raise PreviewFatError("preview: mtools timed out")
+            if status:
+                raise PreviewFatError("preview: mtools failed")
+            self.remaining -= len(out)
+            return bytes(out)
+        finally:
+            proc.stdout.close()
+            if proc.poll() is None:
+                try:
+                    proc.kill()
+                except ProcessLookupError:
+                    pass
+            proc.wait()
+            if self.remaining_time is not None:
+                self.remaining_time -= max(0, time.monotonic() - started)
+
+    @staticmethod
+    def _path(path):
+        if (not isinstance(path, str) or not path.startswith('/') or len(path) > 4096
+                or any(c in path for c in '*?[]\\:')
+                or any(p in ('.', '..') for p in path.split('/'))):
+            raise PreviewFatError("preview: invalid FAT path")
+        return path.rstrip('/') or '/'
+
+    def ls(self, path):
+        path = self._path(path)
+        if path != '/':
+            parent, _, name = path.rpartition('/')
+            if name not in self.ls(parent or '/'):
+                return []
+        data = self._run(["mdir", "-b", "-i", self.spec, "::" + path], MIB)
+        try:
+            names = [line.strip().rstrip('/').split('/')[-1]
+                     for line in data.decode('utf-8').splitlines() if line.strip().rstrip('/')]
+        except UnicodeDecodeError:
+            raise PreviewFatError("preview: invalid FAT directory output")
+        if len(names) != len(set(names)):
+            raise PreviewFatError("preview: ambiguous FAT names")
+        return names
+
+    def exists(self, path):
+        path = self._path(path)
+        parent, _, name = path.rpartition('/')
+        return name in self.ls(parent or '/')
+
+    def read(self, path):
+        path = self._path(path)
+        return self._run(["mcopy", "-n", "-i", self.spec, "::" + path, "-"], PREVIEW_ESP_MAX)
+
+    def free(self):
+        out = self._run(["minfo", "-i", self.spec, "::"], MIB).decode('utf-8')
+        listing = self._run(["mdir", "-i", self.spec, "::/"], MIB).decode('utf-8')
+        try:
+            spc = int(re.search(r"cluster size:\s*(\d+) sectors", out).group(1))
+            bps = int(re.search(r"sector size:\s*(\d+)", out).group(1))
+            free = int(re.search(r"([\d ]+) bytes free", listing).group(1).replace(" ", ""))
+        except (AttributeError, ValueError):
+            raise PreviewFatError("preview: invalid FAT space output")
+        if not spc or not bps:
+            raise PreviewFatError("preview: invalid FAT cluster size")
+        return free, spc * bps
+
+
+class BoundedMutableFat(PreviewFat):
+    """Strict bounded mtools access to a held writable target descriptor."""
+    def __init__(self, spec, tmp, fd):
+        super().__init__(spec, tmp, fd=fd)
+        self.input_remaining = 1024 * MIB
+
+    def _mutate(self, command, data=None):
+        if data is not None and (not isinstance(data, bytes) or len(data) > PREVIEW_ESP_MAX
+                                 or len(data) > self.input_remaining):
+            raise Failed('target FAT input limit exceeded')
+        self.calls += 1
+        if self.calls > 4096 or self.remaining_time is None or self.remaining_time <= 0:
+            raise Failed('target FAT operation budget exhausted')
+        started = time.monotonic()
+        try:
+            result = subprocess.run(command, input=data, stdin=subprocess.DEVNULL if data is None else None,
+                                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                    env=dict(os.environ, MTOOLS_SKIP_CHECK='1'), pass_fds=self.pass_fds,
+                                    timeout=self.remaining_time)
+            if result.returncode:
+                raise Failed('target FAT operation failed')
+            if data is not None:
+                self.input_remaining -= len(data)
+        except subprocess.TimeoutExpired as exc:
+            raise Failed('target FAT operation timed out') from exc
+        finally:
+            self.remaining_time -= max(0, time.monotonic() - started)
+
+    def write(self, path, data):
+        path = self._path(path)
+        directory = path.rpartition('/')[0]
+        if directory:
+            parts = directory.strip('/').split('/')
+            for i in range(len(parts)):
+                sub = '/' + '/'.join(parts[:i + 1])
+                if not self.exists(sub):
+                    self._mutate(['mmd', '-i', self.spec, '::' + sub])
+        self._mutate(['mcopy', '-o', '-i', self.spec, '-', '::' + path], data)
+        if self.read(path) != data:
+            raise Failed(f'{path} on target FAT reads back different')
+
+    def delete(self, path):
+        path = self._path(path)
+        if self.exists(path):
+            self._mutate(['mdel', '-i', self.spec, '::' + path])
 
 
 # ------------------------------------------------------------------ sources (a release)
@@ -587,7 +818,7 @@ class Fat:
 class Release:
     """What an update needs from a release: its GPT layout, its slot-a partitions, its super, its ESP files."""
 
-    def __init__(self, layout, read_phys, super_rd, super_size, esp_fat, ident):
+    def __init__(self, layout, read_phys, super_rd, super_size, esp_fat, ident, preview=False, preview_tmp=None):
         self.layout, self.read_phys, self.super_rd, self.super_size, self.esp, self.ident = \
             layout, read_phys, super_rd, super_size, esp_fat, ident
         self.lp = LP.read(super_rd, super_size)
@@ -604,11 +835,15 @@ class Release:
         self.loader = esp_fat.read("/loader/loader.conf").decode()
         self.vbmeta = b"".join(read_phys("vbmeta_a"))
         self.key = vbmeta_key(self.vbmeta)
-        self.fingerprint = ramdisk_prop(self.ramdisk, "ro.bootimage.build.fingerprint")
+        self.fingerprint = ramdisk_prop(self.ramdisk, "ro.bootimage.build.fingerprint", preview=preview, preview_tmp=preview_tmp)
         self.build = build_id(self.fingerprint)
         self.model = model_of(self.entries["lapis-quiet.conf"]["title"])
         if {model_of(e["title"]) for e in self.entries.values()} != {self.model}:
             raise Refuse("release: its entries name different models")
+
+
+class SharedRelease(Release):
+    """Release parsed from a catalog-backed shared source; requires its live binding."""
 
 
 def image_release(path, tmp, check_sha=True):
@@ -622,7 +857,201 @@ def image_release(path, tmp, check_sha=True):
         if img.sha(0, img.size) != want:
             raise Refuse(f"{path} does not match its .sha256")
     img = Disk(path)
+    return image_release_from_reader(img, tmp, f"image {os.path.basename(path)}")
+
+
+
+# Preview-only limits: observed base ESP 64 MiB, vbmeta 4 MiB; the miniature
+# fixture uses 64 KiB LP metadata and three slots. Legacy update behavior is unchanged.
+PREVIEW_ESP_MAX = 512 * MIB
+PREVIEW_VBMETA_MAX = 16 * MIB
+PREVIEW_LP_MAX = 1024 * 1024
+PREVIEW_LP_SLOTS = 4
+PREVIEW_LP_REFERENCES = 16384
+
+
+def preview_resource_limits(img, lay):
+    if (lay[ESP]["len"] > PREVIEW_ESP_MAX or
+            any(lay[f"vbmeta_{slot}"]["len"] > PREVIEW_VBMETA_MAX for slot in "ab")):
+        raise Refuse("preview: ESP or vbmeta exceeds resource limit")
+    sp = lay["super"]
+    def read(off, n):
+        if off < 0 or n < 0 or off > sp["len"] or n > sp["len"] - off:
+            raise Refuse("preview: LP metadata outside super")
+        return img.pread(sp["start"] + off, n)
+    g1, g2 = read(RESERVED, GEO_SIZE), read(RESERVED + GEO_SIZE, GEO_SIZE)
+    mx, slots, lbs = LP.geometry(g1)
+    if LP.geometry(g2) != (mx, slots, lbs) or not 128 <= mx <= PREVIEW_LP_MAX or not 1 <= slots <= PREVIEW_LP_SLOTS:
+        raise Refuse("preview: LP geometry exceeds resource limits")
+    if RESERVED + 2 * GEO_SIZE + 2 * slots * mx > sp["len"]:
+        raise Refuse("preview: LP metadata exceeds super")
+    # LP.parse materializes each partition's referenced extent list. Bound both
+    # table lengths and the sum of references before allowing that expansion.
+    for slot in range(slots):
+        for base in (RESERVED + 2 * GEO_SIZE, RESERVED + 2 * GEO_SIZE + slots * mx):
+            raw = read(base + slot * mx, mx)
+            if len(raw) < 128:
+                raise Refuse("preview: short LP metadata")
+            hsz, tsize = struct.unpack_from("<I", raw, 8)[0], struct.unpack_from("<I", raw, 44)[0]
+            if not 128 <= hsz <= 512 or hsz + tsize > mx:
+                raise Refuse("preview: invalid LP metadata length")
+            off, count, esz = struct.unpack_from("<III", raw, 80)
+            if esz != 52 or count > 4096 or off + count * esz > tsize:
+                raise Refuse("preview: invalid LP partition table")
+            refs = 0
+            for i in range(count):
+                refs += struct.unpack_from("<I", raw, hsz + off + i * esz + 44)[0]
+                if refs > PREVIEW_LP_REFERENCES:
+                    raise Refuse("preview: excessive LP extent references")
+
+
+def validate_preview_layout(img, lay):
+    # GPT parsing above authenticates the primary table, not its extent bounds.
+    hd = img.pread(512, 512)
+    current, backup, first, last = struct.unpack_from("<QQQQ", hd, 24)
+    table_lba, count, entry_size = struct.unpack_from("<QII", hd, 72)
+    table_end = table_lba * 512 + count * entry_size
+    if (img.size % 512 or current != 1 or backup != img.size // 512 - 1 or table_lba < 2
+            or not count or table_end > first * 512 or first > last
+            or (last + 1) * 512 > img.size - 33 * 512):
+        raise Refuse(f"{img.path}: invalid GPT bounds")
+    ranges = sorted((p["start"], p["start"] + p["len"], name) for name, p in lay.items())
+    end = first * 512
+    for start, stop, name in ranges:
+        if start < end or stop <= start or stop > (last + 1) * 512:
+            raise Refuse(f"{img.path}: invalid or overlapping extent {name}")
+        end = stop
+
+
+
+class PreviewMetadataSnapshot:
+    """Bounded immutable GPT and LP metadata captured from an already-open reader.
+
+    This captures individual ranges once, not an atomic point-in-time disk image.
+    The caller must separately check target identity and concurrent modification.
+    """
+    def __init__(self, disk, tmp=None, sealed_esp=False):
+        self.size, self.path = disk.size, disk.path
+        self.ranges = []
+        self._esp_fd = None
+        self._esp_range = None
+        if sealed_esp and tmp is None:
+            raise Refuse('sealed target ESP requires a preview directory')
+
+        def capture(off, length):
+            if (type(off) is not int or type(length) is not int or off < 0 or length < 0
+                    or off > self.size or length > self.size - off):
+                raise Refuse("preview: snapshot range outside target")
+            data = disk.pread(off, length)
+            if len(data) != length:
+                raise Refuse("preview: short snapshot read")
+            self.ranges.append((off, data))
+            return data
+
+        header = capture(0, 1024)
+        lba, count, size = struct.unpack_from("<QII", header, 512 + 72)
+        length = count * size
+        if not length or length > MIB:
+            raise Refuse("preview: GPT table exceeds snapshot limit")
+        capture(lba * SECTOR, length)
+        self.gpt = gpt_read(self)
+        validate_preview_layout(self, self.gpt)
+        sup = self.gpt["super"]
+        if sup["len"] < RESERVED + 2 * GEO_SIZE:
+            raise Refuse("preview: super too small for geometry")
+        geo = capture(sup["start"] + RESERVED, 2 * GEO_SIZE)
+        mx, slots, lbs = LP.geometry(geo[:GEO_SIZE])
+        if (LP.geometry(geo[GEO_SIZE:]) != (mx, slots, lbs) or not 128 <= mx <= PREVIEW_LP_MAX
+                or not 1 <= slots <= PREVIEW_LP_SLOTS):
+            raise Refuse("preview: LP geometry exceeds snapshot limits")
+        total = 2 * slots * mx
+        if RESERVED + 2 * GEO_SIZE + total > sup["len"]:
+            raise Refuse("preview: LP metadata exceeds super")
+        capture(sup["start"] + RESERVED + 2 * GEO_SIZE, total)
+        preview_resource_limits(self, self.gpt)
+        self.lp = LP.read(lambda off, n: self.pread(sup["start"] + off, n), sup["len"])
+        if tmp is not None:
+            for slot in "ab":
+                vb = self.gpt[f"vbmeta_{slot}"]
+                capture(vb["start"], vb["len"])
+            esp = self.gpt[ESP]
+            if esp["len"] > PREVIEW_ESP_MAX:
+                raise Refuse("preview: ESP exceeds resource limit")
+            if sealed_esp:
+                self._capture_sealed_esp(disk, esp, tmp)
+            else:
+                dest = os.path.join(tmp, "installed-esp.img")
+                with open(dest, "xb") as out:
+                    for offset in range(0, esp["len"], MIB):
+                        n = min(MIB, esp["len"] - offset)
+                        data = disk.pread(esp["start"] + offset, n)
+                        if len(data) != n:
+                            raise Refuse("preview: short ESP read")
+                        out.write(data)
+                with open(dest, "rb") as source:
+                    fat_fits(source.read(512), esp["len"], "preview target ESP")
+                self.fat = PreviewFat(dest, tmp)
+
+    def _capture_sealed_esp(self, disk, esp, tmp):
+        try:
+            import fcntl
+            fd = os.memfd_create('gbos-target-esp', os.MFD_CLOEXEC | os.MFD_ALLOW_SEALING)
+            self._esp_fd = fd
+            for offset in range(0, esp['len'], MIB):
+                n = min(MIB, esp['len'] - offset)
+                data = disk.pread(esp['start'] + offset, n)
+                if len(data) != n:
+                    raise Refuse('preview: short ESP read')
+                view = memoryview(data)
+                while view:
+                    written = os.write(fd, view)
+                    if written <= 0:
+                        raise Refuse('cannot populate sealed target ESP')
+                    view = view[written:]
+            seals = fcntl.F_SEAL_WRITE | fcntl.F_SEAL_GROW | fcntl.F_SEAL_SHRINK | fcntl.F_SEAL_SEAL
+            fcntl.fcntl(fd, fcntl.F_ADD_SEALS, seals)
+            if fcntl.fcntl(fd, fcntl.F_GET_SEALS) & seals != seals:
+                raise Refuse('cannot seal target ESP')
+            fat_fits(os.pread(fd, 512, 0), esp['len'], 'preview target ESP')
+            self._esp_range = (esp['start'], esp['len'])
+            self.fat = PreviewFat(f'/proc/self/fd/{fd}', tmp, fd=fd)
+        except BaseException:
+            self.close()
+            raise
+
+    def close(self):
+        if self._esp_fd is not None:
+            fd, self._esp_fd = self._esp_fd, None
+            os.close(fd)
+
+    def verify_unchanged(self, disk):
+        if self._esp_fd is None or self._esp_range is None or disk.size != self.size:
+            raise Refuse('sealed target snapshot is unavailable or size changed')
+        for offset, data in self.ranges:
+            if disk.pread(offset, len(data)) != data:
+                raise Refuse('target metadata changed after preview')
+        start, length = self._esp_range
+        for offset in range(0, length, MIB):
+            n = min(MIB, length - offset)
+            if disk.pread(start + offset, n) != os.pread(self._esp_fd, n, offset):
+                raise Refuse('target ESP changed after preview')
+
+    def pread(self, off, length):
+        if type(off) is not int or type(length) is not int or off < 0 or length < 0:
+            raise Refuse("preview: invalid snapshot read")
+        for start, data in self.ranges:
+            if start <= off and off + length <= start + len(data):
+                return data[off - start:off - start + length]
+        raise Refuse("preview: read outside captured metadata")
+
+
+def image_release_from_reader(img, tmp, ident, validate_layout=False, bounded_fat=False, preview_tmp=None,
+                              sealed_esp=False):
+    """Parse an image from an owned pread reader. The caller owns its lifetime."""
     lay = gpt_read(img)
+    if validate_layout:
+        validate_preview_layout(img, lay)
+        preview_resource_limits(img, lay)
 
     def read_phys(name):
         p = lay[name]
@@ -630,13 +1059,41 @@ def image_release(path, tmp, check_sha=True):
             yield img.pread(p["start"] + o, min(16 << 20, p["len"] - o))
 
     sp = lay["super"]
-    esp_t = os.path.join(tmp, "release-esp.img")
-    with open(esp_t, "wb") as f:
-        for b in read_phys(ESP):
-            f.write(b)
-    rel = Release(lay, read_phys, lambda o, n: img.pread(sp["start"] + o, n), sp["len"], Fat(esp_t, tmp),
-                  f"image {os.path.basename(path)}")
-    return rel
+    if sealed_esp:
+        # The binding owns this fd even if later parsing fails.  Each byte is
+        # supplied by its verified reader, and no writable ESP path exists.
+        try:
+            import fcntl
+            fd = os.memfd_create('gbos-shared-esp', os.MFD_CLOEXEC | os.MFD_ALLOW_SEALING)
+            img._esp_fd = fd
+            for data in read_phys(ESP):
+                view = memoryview(data)
+                while view:
+                    written = os.write(fd, view)
+                    if written <= 0:
+                        raise Refuse('cannot populate sealed ESP')
+                    view = view[written:]
+            seals = fcntl.F_SEAL_WRITE | fcntl.F_SEAL_GROW | fcntl.F_SEAL_SHRINK | fcntl.F_SEAL_SEAL
+            fcntl.fcntl(fd, fcntl.F_ADD_SEALS, seals)
+            if fcntl.fcntl(fd, fcntl.F_GET_SEALS) & seals != seals:
+                raise Refuse('cannot seal shared ESP')
+        except (AttributeError, ImportError, OSError) as e:
+            raise Refuse(f'sealed shared ESP unavailable: {e}') from e
+        esp = PreviewFat(f'/proc/self/fd/{fd}', tmp, fd=fd)
+    else:
+        esp_t = os.path.join(tmp, "release-esp.img")
+        with open(esp_t, "wb") as f:
+            for b in read_phys(ESP):
+                f.write(b)
+        esp = PreviewFat(esp_t, tmp) if bounded_fat else Fat(esp_t, tmp)
+    def read_super(o, n):
+        if validate_layout and (o < 0 or n < 0 or o > sp["len"] or n > sp["len"] - o):
+            raise Refuse("release: super read out of bounds")
+        return img.pread(sp["start"] + o, n)
+
+    release_type = SharedRelease if sealed_esp else Release
+    return release_type(lay, read_phys, read_super, sp["len"], esp, ident,
+                        preview=validate_layout, preview_tmp=preview_tmp)
 
 
 def pristine_release(pdir, superdev, tmp):
@@ -684,25 +1141,186 @@ SELECT = ("androidboot.vendor.apex.com.android.hardware.keymint", "androidboot.v
           "androidboot.hypervisor.protected_vm.supported")
 
 
+
+class SharedBinding:
+    """Owned reader/release association; catalog selection is the caller's boundary."""
+
+    def __init__(self, fd, item, catalog_sha256, source_fds, tmp, bounded_fat=False, preview_tmp=None):
+        self._closed = False
+        self._esp_fd = None
+        image = item['image']
+        self.fd = fd
+        self.size = image['size']
+        self.profile = item['profile']
+        self.catalog_sha256 = catalog_sha256
+        self.image_sha256 = image['sha256']
+        self.source_fds = tuple(source_fds)
+        if (self.profile not in ('kano', 'amd-hx370') or type(self.size) is not int or self.size <= 0
+                or self.size > 128 * 1024 ** 3
+                or not re.fullmatch('[0-9a-f]{64}', self.catalog_sha256)
+                or not re.fullmatch('[0-9a-f]{64}', self.image_sha256)
+                or fd not in self.source_fds):
+            raise Refuse('invalid shared source identity')
+        self.source_stat = self._signature(os.fstat(fd))
+        self._chunk_hashes = None
+        self._verify_source()
+        try:
+            self.release = image_release_from_reader(self, tmp, 'shared synthetic release', validate_layout=True,
+                                                     sealed_esp=True,
+                                                     **({"bounded_fat": True} if bounded_fat else {}),
+                                                     **({"preview_tmp": preview_tmp} if preview_tmp is not None else {}))
+            self._verify_source()
+        except BaseException:
+            self.close()
+            raise
+
+    def close(self):
+        """Release our ESP snapshot; the caller retains ownership of catalog fds."""
+        self._closed = True
+        if self._esp_fd is not None:
+            fd, self._esp_fd = self._esp_fd, None
+            os.close(fd)
+
+    @staticmethod
+    def _signature(st):
+        return st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns
+
+    @property
+    def path(self):
+        return '<catalog-backed source>'
+
+    def _read_exact(self, off, n):
+        out = bytearray()
+        while len(out) < n:
+            data = os.pread(self.fd, n - len(out), off + len(out))
+            if not data:
+                raise Refuse('shared source short read')
+            out.extend(data)
+        return bytes(out)
+
+    def pread(self, off, n):
+        if self._closed:
+            raise Refuse('shared binding is closed')
+        if type(off) is not int or type(n) is not int or off < 0 or n < 0 or off > self.size or n > self.size - off:
+            raise Refuse('shared source read out of bounds')
+        if self._chunk_hashes is None:
+            raise Refuse('shared source is not verified')
+        out = bytearray()
+        end = off + n
+        while off < end:
+            chunk_number = off // MIB
+            chunk_start = chunk_number * MIB
+            chunk = self._read_exact(chunk_start, min(MIB, self.size - chunk_start))
+            digest_offset = chunk_number * hashlib.sha256().digest_size
+            expected = self._chunk_hashes[digest_offset:digest_offset + hashlib.sha256().digest_size]
+            if hashlib.sha256(chunk).digest() != expected:
+                raise Refuse('shared source chunk changed')
+            take = min(end - off, len(chunk) - (off - chunk_start))
+            out.extend(chunk[off - chunk_start:off - chunk_start + take])
+            off += take
+        return bytes(out)
+
+    def _verify_source(self):
+        st = os.fstat(self.fd)
+        if not stat.S_ISREG(st.st_mode) or self._signature(st) != self.source_stat or st.st_size != self.size:
+            raise Refuse('shared source changed or is not a regular file')
+        h = hashlib.sha256()
+        chunk_hashes = bytearray() if self._chunk_hashes is None else None
+        for off in range(0, self.size, MIB):
+            n = min(MIB, self.size - off)
+            chunk = self._read_exact(off, n) if chunk_hashes is not None else self.pread(off, n)
+            h.update(chunk)
+            if chunk_hashes is not None:
+                chunk_hashes.extend(hashlib.sha256(chunk).digest())
+        if h.hexdigest() != self.image_sha256 or self._signature(os.fstat(self.fd)) != self.source_stat:
+            raise Refuse('shared source changed or hash differs')
+        if chunk_hashes is not None:
+            self._chunk_hashes = bytes(chunk_hashes)
+
+    def verify(self, release, disk=None):
+        if getattr(self, '_closed', True):
+            raise Refuse('shared binding is closed')
+        if release is not self.release:
+            raise Refuse('release is not tied to this shared source')
+        SharedBinding._verify_source(self)
+        if disk is not None:
+            target = os.fstat(disk.fd)
+            for fd in self.source_fds:
+                source = os.fstat(fd)
+                if not stat.S_ISREG(source.st_mode):
+                    raise Refuse('catalog payload is not a regular file')
+                if (source.st_dev, source.st_ino) == (target.st_dev, target.st_ino):
+                    raise Refuse('catalog payload and target are the same file')
+        return {'profile': self.profile, 'catalog_sha256': self.catalog_sha256,
+                'image_sha256': self.image_sha256, 'image_size': self.size}
+
+
+def shared_state(st):
+    """Strictly parse shared state; absence is legacy state, never shared proof."""
+    lines = st.splitlines()
+    shared = [line for line in lines if line.split(' ', 1)[0].startswith('shared-')]
+    if not shared:
+        return None
+    pairs = [line.split(' ', 1) for line in lines]
+    required = ('updating', 'from', 'build', 'fingerprint', 'key', 'model', 'release',
+                *("select." + k for k in SELECT), 'shared-version', 'shared-digest')
+    if any(len(p) != 2 or not p[1] for p in pairs):
+        raise Refuse('shared update state malformed')
+    keys = [p[0] for p in pairs]
+    if set(keys) != set(required) or len(keys) != len(set(keys)):
+        raise Refuse('shared update state missing or duplicated fields')
+    values = dict(pairs)
+    if (values['shared-version'] != '1' or not re.fullmatch('[0-9a-f]{64}', values['shared-digest'])
+            or values['updating'] not in ('a', 'b') or values['from'] not in ('a', 'b')
+            or values['updating'] == values['from'] or not values['build'].isdigit()):
+        raise Refuse('shared update state malformed')
+    return values['shared-digest']
+
+
+def shared_identity(disk, inst, source, mode, without_fallback, device_identity=None):
+    """Consistency identifier only; does not authenticate a physical device."""
+    header = disk.pread(512, 512)
+    partitions = [{k: p[k] for k in ('n', 'start', 'len', 'type', 'guid', 'attrs')} | {'name': name}
+                  for name, p in sorted(inst.gpt.items())]
+    identity = {'v': 1, 'operation': 'keep-data-update', 'source': source,
+                'mode': mode, 'without_fallback': without_fallback,
+                'current': inst.current, 'target': inst.target,
+                'disk_size': disk.size, 'disk_guid': str(uuid.UUID(bytes_le=header[56:72])),
+                'partitions': partitions}
+    if device_identity is not None:
+        if not isinstance(device_identity, str) or not re.fullmatch('[0-9a-f]{64}', device_identity):
+            raise Refuse('invalid shared block device identity')
+        identity['v'] = 2
+        identity['target_device_sha256'] = device_identity
+    return hashlib.sha256(json.dumps(identity, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+
+
 class Installed:
     """What is on the disk: partition table, super metadata, boot menu, which slot starts by default and the facts of
     that slot (Google build, AVB key, model, KeyMint/Gatekeeper selection). While an update is unfinished, the facts
     come from /gbos/update-state.txt, written before its first change."""
 
-    def __init__(self, disk, tmp):
+    def __init__(self, disk, tmp, preview=False, snapshot=None, preview_tmp=None):
         self.disk = disk
-        self.gpt = gpt_read(disk)
+        self.gpt = snapshot.gpt if snapshot is not None else gpt_read(disk)
         self.super = self.gpt["super"]
-        self.lp = LP.read(lambda o, n: disk.pread(self.super["start"] + o, n), self.super["len"])
+        self.lp = snapshot.lp if snapshot is not None else LP.read(lambda o, n: disk.pread(self.super["start"] + o, n), self.super["len"])
         esp = self.gpt[ESP]
-        fat_fits(disk.pread(esp["start"], 512), esp["len"], "the disk's ESP")     # before mtools reads or writes it
-        self.fat = Fat(disk.vol(esp["start"]), tmp)
+        if snapshot is not None:
+            if not preview:
+                raise Refuse("snapshot requires preview")
+            self.fat = snapshot.fat
+        else:
+            fat_fits(disk.pread(esp["start"], 512), esp["len"], "the disk's ESP")
+            self.fat = Fat(disk.vol(esp["start"]), tmp, fd=disk.fd)
         self.entries, self.slot_of = {}, {}
         for name in self.fat.ls("/loader/entries"):
             if not name.endswith(".conf"):
                 continue
             try:
                 e = entry_parse(self.fat.read("/loader/entries/" + name).decode())
+            except PreviewFatError:
+                raise
             except (Refuse, RuntimeError, UnicodeDecodeError):
                 self.slot_of[name] = None
                 continue
@@ -710,6 +1328,8 @@ class Installed:
             try:
                 _, bc = split_initrd(self.fat.read(e["initrd"][-1]))
                 self.slot_of[name] = bc_get(bc, "androidboot.slot_suffix").lstrip("_")
+            except PreviewFatError:
+                raise
             except (Refuse, RuntimeError):
                 self.slot_of[name] = None        # file missing or damaged (an interrupted update)
         try:
@@ -718,6 +1338,8 @@ class Installed:
             m = None
         self.default = m.group(1) if m else None
         st = self.fat.read(STATE).decode() if self.fat.exists(STATE) else ""
+        self.shared_digest = shared_state(st) if st else None
+        self.state_original = st
         if st:
             kv = dict(l.split(" ", 1) for l in st.splitlines() if " " in l)
             self.resume = kv.get("updating")
@@ -734,10 +1356,10 @@ class Installed:
                 raise Refuse("cannot tell which slot starts by default (damaged boot menu, no update in progress)")
             cur = self.entries[self.default]
             rd, bc = split_initrd(self.fat.read(cur["initrd"][-1]))
-            self.fingerprint = ramdisk_prop(rd, "ro.bootimage.build.fingerprint")
+            self.fingerprint = ramdisk_prop(rd, "ro.bootimage.build.fingerprint", preview=preview, preview_tmp=preview_tmp)
             self.build = build_id(self.fingerprint)
             vb = self.gpt[f"vbmeta_{self.current}"]
-            self.key = vbmeta_key(disk.pread(vb["start"], vb["len"]))
+            self.key = vbmeta_key((snapshot if snapshot is not None else disk).pread(vb["start"], vb["len"]))
             self.model = model_of(cur["title"])
             self.select = {k: bc_get(bc, k) for k in SELECT}
         self.target = "b" if self.current == "a" else "a"
@@ -793,16 +1415,22 @@ def check(inst, rel, mode):
     return dict(sizes=sizes, extents=ext, group=gi)
 
 
-def boot_files(inst, rel, mode, tmp):
+def boot_files(inst, rel, mode, tmp, preview=False, preview_tmp=None):
     """The target slot's ESP files and entries, the running slot's entries as prev-<entry>, and whether the ESP has
     room for both slots' files (otherwise the previous version cannot stay on this disk's menu)."""
     t, c = inst.target, inst.current
     bc = bc_set(rel.bc, "androidboot.slot_suffix", "_" + t)
     bc = bc_set(bc, "androidboot.boot_part_uuid", inst.gpt["boot_a"]["guid"])
     raw = os.path.join(tmp, "ramdisk.cpio")
-    with open(raw, "wb") as f:
-        f.write(ramdisk_plain(rel.ramdisk))
-    initrd = run(["lz4", "-l", "-12", "--favor-decSpeed", "-c", raw]) + bc_blob(bc)
+    if preview:
+        if preview_tmp is None:
+            initrd = preview_ramdisk_compress(preview_ramdisk_plain(rel.ramdisk)) + bc_blob(bc)
+        else:
+            initrd = preview_ramdisk_compress(preview_ramdisk_plain(rel.ramdisk, preview_tmp), preview_tmp) + bc_blob(bc)
+    else:
+        with open(raw, "wb") as f:
+            f.write(ramdisk_plain(rel.ramdisk))
+        initrd = run(["lz4", "-l", "-12", "--favor-decSpeed", "-c", raw]) + bc_blob(bc)
     ks = hashlib.sha256(rel.kernel).hexdigest()
     running = {n: e for n, e in inst.entries.items() if inst.slot_of.get(n) == c}
     kernel_path = None
@@ -867,7 +1495,17 @@ def write_stream(disk, ranges, chunks):
     """Write a stream of byte chunks across [(byte offset, length)] ranges; returns the SHA-256 of what was written."""
     h = hashlib.sha256()
     ri, roff = 0, 0
-    for b in chunks:
+    try:
+        iterator = iter(chunks)
+    except Refuse as e:
+        raise Failed(f"release source refused during write: {e}") from e
+    while True:
+        try:
+            b = next(iterator)
+        except StopIteration:
+            break
+        except Refuse as e:
+            raise Failed(f"release source refused during write: {e}") from e
         h.update(b)
         mv = memoryview(b)
         while mv:
@@ -1040,10 +1678,111 @@ def open_stick(stick_boot, tmp):
     return sb
 
 
-def apply(disk, rel, mode, without_fallback, stick_boot, tmp):
-    inst = Installed(disk, tmp)
+class SharedBlockOperation:
+    """Own block-preview resources and bind one already-observed target.
+
+    This association prevents accidental mixing of operations; trusted source,
+    device confirmation and topology observations belong to its caller.
+    """
+    def __init__(self, disk, release, binding, tmp, device_identity, check_target):
+        self._closed = False
+        self._snapshots = []
+        if (type(disk) is not Disk or type(release) is not SharedRelease or type(binding) is not SharedBinding
+                or getattr(binding, '_closed', True) or getattr(binding, 'release', None) is not release
+                or not disk.blk or not disk.write or not callable(check_target)
+                or not isinstance(device_identity, str) or not re.fullmatch('[0-9a-f]{64}', device_identity)):
+            raise Refuse('invalid shared block operation')
+        st = os.fstat(disk.fd)
+        if not stat.S_ISBLK(st.st_mode):
+            raise Refuse('shared block target is not a block device')
+        self.disk, self.release, self.binding, self.tmp = disk, release, binding, tmp
+        self.device_identity, self.check_target = device_identity, check_target
+        self._fd = disk.fd
+        self._signature = (st.st_dev, st.st_ino, st.st_rdev, disk.size)
+        try:
+            self.snapshot = PreviewMetadataSnapshot(disk, tmp, sealed_esp=True)
+            self._snapshots.append(self.snapshot)
+            self.inst = Installed(disk, tmp, preview=True, snapshot=self.snapshot, preview_tmp=tmp)
+        except BaseException:
+            self.close()
+            raise
+
+    def verify(self, disk, release, binding):
+        if (self._closed or disk is not self.disk or release is not self.release or binding is not self.binding
+                or disk.fd != self._fd or getattr(binding, '_closed', True)
+                or getattr(binding, 'release', None) is not release or not disk.blk or not disk.write):
+            raise Refuse('shared block operation is closed or does not match')
+        st = os.fstat(disk.fd)
+        if (not stat.S_ISBLK(st.st_mode) or
+                (st.st_dev, st.st_ino, st.st_rdev, disk.size) != self._signature or
+                os.lseek(disk.fd, 0, os.SEEK_END) != disk.size):
+            raise Refuse('shared block target changed')
+        self.check_target()
+
+    def before_write(self):
+        self.verify(self.disk, self.release, self.binding)
+        self.snapshot.verify_unchanged(self.disk)
+        self.check_target()
+
+    def writable_fat(self):
+        self.verify(self.disk, self.release, self.binding)
+        esp = self.inst.gpt[ESP]
+        return BoundedMutableFat(self.disk.vol(esp['start']), self.tmp, self.disk.fd)
+
+    def installed_after(self):
+        self.verify(self.disk, self.release, self.binding)
+        snapshot = PreviewMetadataSnapshot(self.disk, self.tmp, sealed_esp=True)
+        self._snapshots.append(snapshot)
+        installed = Installed(self.disk, self.tmp, preview=True, snapshot=snapshot, preview_tmp=self.tmp)
+        self.verify(self.disk, self.release, self.binding)
+        return installed
+
+    def close(self):
+        if self._closed:
+            return
+        self._closed = True
+        while self._snapshots:
+            self._snapshots.pop().close()
+
+
+def apply(disk, rel, mode, without_fallback, stick_boot, tmp, shared_binding=None, *, pre_write_check=None,
+          block_operation=None):
+    if isinstance(rel, SharedRelease) and shared_binding is None:
+        raise Refuse('shared release requires a live catalog binding')
+    if block_operation is not None and shared_binding is None:
+        raise Refuse('shared block operation requires a live catalog binding')
+    if shared_binding is not None:
+        if type(shared_binding) is not SharedBinding:
+            raise Refuse('shared update requires a live catalog binding')
+        st = os.fstat(disk.fd)
+        if (not disk.write or mode not in ('stick', 'nvme') or without_fallback or stick_boot is not None):
+            raise Refuse('shared update only supports bounded synthetic regular files with fallback')
+        if disk.blk:
+            if type(block_operation) is not SharedBlockOperation or not stat.S_ISBLK(st.st_mode):
+                raise Refuse('shared update only supports bounded synthetic regular files with fallback without a block operation')
+            block_operation.verify(disk, rel, shared_binding)
+        elif (block_operation is not None or not stat.S_ISREG(st.st_mode) or disk.size > 128 * MIB):
+            raise Refuse('shared update only supports bounded synthetic regular files with fallback')
+        source = SharedBinding.verify(shared_binding, rel, disk)
+        if block_operation is None:
+            validate_preview_layout(disk, gpt_read(disk))
+            preview_resource_limits(disk, gpt_read(disk))
+    inst = (block_operation.inst if block_operation is not None else
+            Installed(disk, tmp, preview=True) if shared_binding is not None else Installed(disk, tmp))
+    if inst.shared_digest and shared_binding is None:
+        raise Refuse('shared update requires matching shared binding')
+    if shared_binding is not None:
+        if inst.resume and not inst.shared_digest:
+            raise Refuse('shared update cannot resume unmarked legacy state')
+        binding_digest = shared_identity(disk, inst, source, mode, without_fallback,
+                                         block_operation.device_identity if block_operation is not None else None)
+        if inst.resume and inst.shared_digest != binding_digest:
+            raise Refuse('shared update identity differs from saved state')
+        if inst.resume and any(inst.slot_of.get(n) != inst.current for n in REQUIRED_ENTRIES):
+            raise Refuse('shared update cannot safely resume this late menu phase')
     chk = check(inst, rel, mode)
-    bf = boot_files(inst, rel, mode, tmp)
+    bf = boot_files(inst, rel, mode, tmp, preview=True, preview_tmp=tmp) if shared_binding is not None else \
+        boot_files(inst, rel, mode, tmp)
     for l in plan_text(inst, rel, chk, bf):
         say("     " + l)
     sb = open_stick(stick_boot, tmp) if stick_boot else None
@@ -1058,15 +1797,32 @@ def apply(disk, rel, mode, without_fallback, stick_boot, tmp):
     if not bf["fits"] and bf["prev"] and not without_fallback and sb is None:
         raise Refuse("the ESP has no room to keep the previous version; run again with --without-fallback "
                      "(if the update then stops halfway, run it again to finish) or update from the installer stick")
+    if shared_binding is not None and (not bf['fits'] or not bf['prev']):
+        raise Refuse('shared update requires previous boot fallback')
     disk.guard(guard_ranges(inst))
     orig = {q["name"]: list(q["extents"]) for q in inst.lp.parts}
+    # Recheck an observed target after expensive source/boot preflight. This is
+    # a discrete observation; the held fd, not this check, prevents redirection.
+    if pre_write_check is not None:
+        pre_write_check()
+    if block_operation is not None:
+        block_operation.before_write()
+        inst.fat = block_operation.writable_fat()
     # ---- from here on the disk changes. First the state file: a rerun finishes this slot, never the running one.
     WRITING.append(True)
     if inst.resume and inst.slot_of.get(inst.default) is None:
         # a rerun after a stop inside the window: the old boot files are gone already, so the disk's own menu cannot
         # start any version until this run has switched it
         WINDOW.append(sb is not None)
-    inst.fat.write(STATE, inst.state_text(rel.ident).encode())
+    if shared_binding is None:
+        inst.fat.write(STATE, inst.state_text(rel.ident).encode())
+    elif not inst.resume:
+        state = inst.state_text(rel.ident) + f'shared-version 1\nshared-digest {binding_digest}\n'
+        inst.fat.write(STATE, state.encode())
+        disk.sync_drop()
+        if inst.fat.read(STATE) != state.encode():
+            raise Failed('shared update state readback failed')
+        step('sharedstate: synced and verified shared update state')
     if sb is not None:
         stick_prepare(sb, t, c, stick_src, copy)
         step(f"stickprep: the installer stick starts slot {c} only, from its own copy")
@@ -1154,17 +1910,23 @@ def apply(disk, rel, mode, without_fallback, stick_boot, tmp):
         inst.fat.delete("/loader/entries/" + n)
     for n, text in bf["entries"].items():
         inst.fat.write("/loader/entries/" + n, text.encode())
+        if shared_binding is not None:
+            step('sharedmenu-' + n + ': wrote new boot entry')
     inst.fat.write("/loader/loader.conf", bf["loader"].encode())
+    if shared_binding is not None:
+        step('sharedmenu-loader: wrote boot default')
     WINDOW.clear()                                   # the menu starts the new slot now
     if not bf["fits"] and bf["new_first"]:
         for x in old_files:                          # nothing on the menu uses them any more
             inst.fat.delete(x)
         say("     the ESP holds one version only: the old boot files were removed after the switch")
     inst.fat.write(f"/gbos/{t}/release.txt", f"google build {rel.build}\n{rel.fingerprint}\n{rel.ident}\n".encode())
+    if block_operation is not None:
+        block_operation.verify(disk, rel, shared_binding)
     inst.fat.delete(STATE)
     disk.sync_drop()                                 # the ESP was written through mtools: flush, read the result from the disk
     step(f"switched: the boot menu starts slot {t}")
-    done = Installed(disk, tmp)
+    done = block_operation.installed_after() if block_operation is not None else Installed(disk, tmp)
     if done.current != t or done.resume:
         raise Failed("the boot menu does not start the new slot")
     if bf["fits"] and bf["prev"] and not any(n.startswith(PREV) and done.slot_of.get(n) == c for n in done.entries):
@@ -1180,7 +1942,7 @@ def slot_build(fat, e):
     return build_id(ramdisk_prop(rd, "ro.bootimage.build.fingerprint"))
 
 
-def rollback(disk, tmp, stick_boot=None, allow_build_change=False):
+def rollback(disk, tmp, stick_boot=None, allow_build_change=False, *, pre_write_check=None):
     inst = Installed(disk, tmp)
     if inst.resume:
         raise Refuse("an update stopped halfway; finish it first (run the update again)")
@@ -1209,6 +1971,8 @@ def rollback(disk, tmp, stick_boot=None, allow_build_change=False):
                              pe["linux"], pe["initrd"], pe["options"])
         if e is not None:
             swap[pn] = entry_text(e["title"] + PREV_TITLE, e["linux"], e["initrd"], e["options"])
+    if pre_write_check is not None:
+        pre_write_check()
     WRITING.append(True)
     if sb is not None:
         # the stick: 'internal disk' <-> 'previous version'; its serial-debug entry follows the new running slot with

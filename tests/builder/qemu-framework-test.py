@@ -2,7 +2,10 @@
 """QEMU framework acceptance follows the display configuration; other gates fail closed."""
 import ast
 import contextlib
+import hashlib
 import io
+import json
+import os
 import re
 import shutil
 import sys
@@ -10,13 +13,17 @@ import tempfile
 import unittest
 from pathlib import Path
 
-source = (Path(__file__).resolve().parents[2] / 'builder/image.py').read_text()
+root = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(root / 'builder/lib'))
+import build_record
+
+source = (root / 'builder/image.py').read_text()
 tree = ast.parse(source)
 names = {'serial_device_probe', 'serial_boot_completed', 'framework_log_checks',
-         'qemu_framework_checks', 'record_not_run'}
+         'qemu_framework_checks', 'record_not_run', 'publish_record'}
 nodes = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in names]
 assert {n.name for n in nodes} == names
-ns = {'re': re}
+ns = {'re': re, 'os': os, 'hashlib': hashlib, 'build_record': build_record}
 exec(compile(ast.Module(body=nodes, type_ignores=[]), 'builder/image.py', 'exec'), ns)
 
 TOKEN = 'GBOS_BOOT_123'
@@ -39,20 +46,31 @@ class FrameworkAcceptance(unittest.TestCase):
             local = dict(ns, GBOS_OUT=out, checks=checks, log=log, probe_token=TOKEN, probe_age=age, GOP=gop)
             output = io.StringIO()
             ns['GBOS_OUT'] = out
+            ns.update(IMG=image, FINAL=final, PROF={'model': {'id': 'kano'}},
+                      PROFILE_BYTES=b'fixture profile', DEFAULT_ENTRY='lapis-quiet.conf',
+                      EDITOR='no', EC_FEATURES=[], ADB=False, USB_SMOKE=False)
+            digest = hashlib.sha256(image.read_bytes()).hexdigest()
             (out / 'build-info.txt').write_text('existing build identity\n')
             with contextlib.redirect_stdout(output):
                 exec(calls, local)
                 try:
-                    exec(gate, dict(local, IMG=image, FINAL=final, OUT=out, before='fixture-sha',
-                                    sha256=lambda p: 'fixture-sha', QMP_DIR=out / 'qmp', shutil=shutil, sys=sys))
+                    exec(gate, dict(local, IMG=image, FINAL=final, OUT=out, before=digest,
+                                    DEFAULT_ENTRY='lapis-quiet.conf', sha256=lambda p: digest,
+                                    QMP_DIR=out / 'qmp', shutil=shutil, sys=sys))
                 except SystemExit as e:
                     self.assertEqual(e.code, 1)
             renamed = final.exists()
             self.assertEqual(image.exists(), not renamed)
             self.assertEqual((out / 'test.img.sha256').exists(), renamed)
+            record_path = out / 'test.img.build-record.json'
+            self.assertEqual(record_path.exists(), renamed)
             if renamed:
-                self.assertEqual((out / 'test.img.sha256').read_text(), 'fixture-sha  test.img\n')
+                self.assertEqual((out / 'test.img.sha256').read_text(), digest + '  test.img\n')
                 self.assertEqual(final.read_bytes(), b'image fixture')
+                record = json.loads(record_path.read_text())
+                self.assertEqual(record['selftest'], 'passed')
+                self.assertEqual(record['image']['sha256'], digest)
+                self.assertEqual(bool(record['not_run']), not gop)
             info = (out / 'build-info.txt').read_text()
             self.assertTrue(info.startswith('existing build identity\n'))
             return renamed, output.getvalue(), info

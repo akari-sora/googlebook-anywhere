@@ -11,7 +11,12 @@ bad() { echo "FAIL $1"; fail=$((fail + 1)); }
 expect() {  # expect <name> <exit code> <output regex> -- command...
     local name=$1 code=$2 re=$3; shift 4
     out=$("$@" 2>&1); rc=$?
-    if [ "$rc" = "$code" ] && printf '%s' "$out" | grep -Eq -- "$re"; then ok "$name"; else bad "$name (rc=$rc): $(printf '%s' "$out" | tail -n 3)"; fi
+    if [ "$rc" = "$code" ] && printf '%s' "$out" | grep -Eq -- "$re"; then
+        ok "$name"
+    else
+        bad "$name (rc=$rc)"
+        printf '%s\n' "$out" | tail -n 80
+    fi
 }
 
 for f in "$ROOT"/builder/*.sh "$ROOT"/builder/kmod/*.sh "$ROOT"/builder/camera/*.sh "$ROOT"/base/*.sh "$ROOT"/install/*.sh "$ROOT"/install/stick/*.sh "$ROOT"/tests/*/*.sh "$ROOT"/tools/release/*.sh "$ROOT"/tools/mesa/*.sh "$ROOT"/tools/minigbm/*.sh; do
@@ -35,6 +40,15 @@ expect "build.sh refuses an absolute GBOS_IMAGE_NAME" 2 "plain file name" -- "${
 expect "build.sh refuses a GBOS_IMAGE_NAME with a path" 2 "plain file name" -- "${B[@]}" GBOS_OUT="$T/o1" GBOS_IMAGE_NAME=../x.img bash "$ROOT/builder/build.sh"
 expect "build.sh refuses an unknown GBOS_EC feature" 2 "GBOS_EC must be" -- "${B[@]}" GBOS_OUT="$T/o1" GBOS_EC=sensors,chardev bash "$ROOT/builder/build.sh"
 expect "build.sh refuses a malformed GBOS_EC list" 2 "GBOS_EC must be" -- "${B[@]}" GBOS_OUT="$T/o1" GBOS_EC=sensors, bash "$ROOT/builder/build.sh"
+expect "optional KANO backlight profile" 0 "Ran [0-9]+ tests" -- python3 "$ROOT/tests/builder/kano-backlight-profile-test.py"
+expect "KANO backlight PWM rounding" 0 "101/101 levels round-trip" -- python3 "$ROOT/builder/kmod/test_gbos_kbd_backlight_math.py"
+expect "optional KANO backlight build guards" 0 "Ran [0-9]+ tests" -- python3 "$ROOT/tests/builder/kano-backlight-build-test.py"
+expect "isolated USB backlight trial" 0 "^OK$" -- python3 "$ROOT/tests/builder/usb-smoke-test.py"
+expect "opt-in product model pin and rebuild guards" 0 "^OK$" -- python3 "$ROOT/tests/builder/product-model-tests.py"
+expect "optional setup Skip overlay guards" 0 "OK$" -- python3 "$ROOT/tests/builder/product-skip-tests.py"
+expect "USB diagnostic snapshot" 0 "Ran [0-9]+ tests" -- python3 "$ROOT/tests/builder/usb-diag-test.py"
+expect "ADB settings failures stop service startup" 0 "^OK$" -- python3 "$ROOT/tests/builder/adb-settings-test.py"
+expect "opt-in audio marker consumption" 0 "^OK$" -- python3 "$ROOT/tests/builder/audio-test.py"
 expect "GBOS_EC=drain variant (tests/builder/ec-drain-test.py)" 0 "ec-drain tests: [0-9]+ passed, 0 failed" -- python3 "$ROOT/tests/builder/ec-drain-test.py"
 mkdir -p "$T/o2"; touch "$T/o2/leftover"
 expect "build.sh refuses a non-empty GBOS_OUT" 2 "new or empty directory" -- "${B[@]}" GBOS_OUT="$T/o2" bash "$ROOT/builder/build.sh"
@@ -44,6 +58,11 @@ mkdir -p "$T/badprof/badprof"; sed '/^image_name = /d' "$ROOT/profiles/kano/prof
 expect "build.sh refuses an invalid device profile" 2 "missing key image_name" -- "${B[@]}" GBOS_OUT="$T/o4" GBOS_PROFILE="$T/badprof/badprof" bash "$ROOT/builder/build.sh"
 [ ! -e "$T/o4" ] && ok "build.sh wrote nothing for the invalid profile" || bad "build.sh created GBOS_OUT for an invalid profile"
 expect "device profile loader (tests/builder/profile-test.py)" 0 "profile tests: [0-9]+ passed, 0 failed" -- python3 "$ROOT/tests/builder/profile-test.py"
+expect "diagnostic-only model detector (tests/stick/detect-model-test.py)" 0 "^OK$" -- python3 "$ROOT/tests/stick/detect-model-test.py"
+expect "offline common-media catalog" 0 "^OK$" -- python3 "$ROOT/tests/stick/catalog-test.py"
+expect "maintenance host chroot resolution" 0 "^OK$" -- python3 "$ROOT/tests/stick/maint-chroot-test.py"
+expect "read-only shared source preview" 0 "^OK$" -- python3 "$ROOT/tests/stick/shared-source-test.py"
+expect "shared source Linux fixture integration" 0 "^OK" -- python3 "$ROOT/tests/stick/shared-source-integration.py"
 expect "display.density option (tests/builder/density-test.py)" 0 "density tests: [0-9]+ passed, 0 failed" -- python3 "$ROOT/tests/builder/density-test.py"
 expect "shipped module firmware (tests/builder/firmware-test.py)" 0 "firmware tests: [0-9]+ passed, 0 failed, 0 skipped" -- python3 "$ROOT/tests/builder/firmware-test.py"
 # every name a builder Python script reads is bound (symtable; py_compile does not catch a removed definition)
@@ -51,6 +70,7 @@ expect "builder scripts read no unbound names (tests/builder/undefined-names-tes
 expect "IFMA build-time patcher (tests/builder/test-patch-ifma.py)" 0 "patch-ifma tests: [0-9]+ passed, 0 failed" -- python3 -B "$ROOT/tests/builder/test-patch-ifma.py"
 expect "APK/APEX alignment gate" 0 "^OK$" -- python3 -B "$ROOT/tests/builder/container-alignment-test.py"
 expect "QEMU framework acceptance" 0 "^OK$" -- python3 -B "$ROOT/tests/builder/qemu-framework-test.py"
+expect "QEMU chain userdata write trace" 0 "^OK$" -- python3 -B "$ROOT/tests/builder/qemu-write-trace-test.py"
 expect "lapis base build pins and final hash guard" 0 "lapis base pins tests: [0-9]+ passed, 0 failed" -- python3 "$ROOT/tests/builder/lapis-base-pins-test.py"
 expect "lapis IFMA build selection and identity guards" 0 "lapis IFMA pins: [0-9]+ passed, 0 failed" -- python3 "$ROOT/tests/builder/lapis-ifma-pins-test.py"
 # tools/release/png-ok.py: the only binary files the public export and the release archive accept (docs/images/*.png)
@@ -382,7 +402,7 @@ grep -qE '^KSRC_COMMIT=[0-9a-f]{40}$' "$ROOT/builder/kmod/build-ac.sh" && ok "bu
     && ok "vendor.sh can read the one ac.ko pin" || bad "vendor.sh cannot read exactly one ac.ko pin"
 printf 'not an elf' > "$T/fake.ko"; : > "$T/symvers"
 expect "check-ko.py refuses a file that is not a relocatable ELF" 1 "not a 64-bit" -- python3 "$ROOT/builder/kmod/check-ko.py" "$T/fake.ko" "$T/symvers" "SMP "
-expect "check-ko.py validates version tables and module_layout without executing modules" 0 "42 passed, 0 failed" -- python3 "$ROOT/tests/builder/check-ko-test.py"
+expect "check-ko.py validates version tables and module_layout without executing modules" 0 "54 passed, 0 failed" -- python3 "$ROOT/tests/builder/check-ko-test.py"
 [ "$(python3 "$ROOT/builder/lib/devprofile.py" kmods "$ROOT/profiles/kano" | tr '\n' ' ')" = "ac gbos_wakefilter " ] && ok "the KANO profile ships ac.ko and gbos_wakefilter.ko" \
     || bad "the KANO profile does not list kmods = [\"ac\", \"gbos_wakefilter\"]"
 # gbos_wakefilter.ko: built in build-ac.sh's work dir; only the guards and the pin here
@@ -757,6 +777,7 @@ print("ssdt ok")
 PY
 
 # builder/camera/build-libcamera.sh (the opt-in camera overlay): argument and toolchain guards (nothing fetched or built)
+expect "camera overlay integrity, expected delta and CMake wrap" 0 "^OK$" -- python3 "$ROOT/tests/builder/camera-test.py"
 expect "build-libcamera.sh requires a work directory" 1 "usage: build-libcamera.sh" -- bash "$ROOT/builder/camera/build-libcamera.sh"
 expect "build-libcamera.sh refuses a missing NDK" 2 "NDK clang not found|CMake not found" -- env NDK="$T/no-ndk" CMAKE="$T/no-cmake" bash "$ROOT/builder/camera/build-libcamera.sh" "$T/cam"
 expect "build-libcamera.sh pins every download" 0 "^4$" -- sh -c "grep -cE '^fetch https://' '$ROOT/builder/camera/build-libcamera.sh'"
@@ -968,6 +989,11 @@ fi
 expect "install.sh cache reuse and _safety.toml invalidation (tests/install/install-sh-test.sh)" 0 "install script tests: [0-9]+ passed, 0 failed" -- bash "$ROOT/tests/install/install-sh-test.sh"
 # write-usb.sh refuses to run without root (it writes a block device)
 if [ "$(id -u)" != 0 ]; then expect "write-usb.sh refuses non-root" 2 "run as root" -- bash "$ROOT/install/write-usb.sh" "$T/x.img" /dev/null; fi
+
+expect "shared read-only block plan tests" 0 "OK" -- python3 "$ROOT/tests/stick/shared-block-plan-test.py"
+expect "shared diagnostic medium unit tests" 0 "OK" -- python3 "$ROOT/tests/stick/universal-stick-test.py"
+expect "build record unit tests" 0 "OK" -- python3 "$ROOT/tests/stick/build-record-test.py"
+expect "shared diagnostic model selection tests" 0 "OK" -- python3 "$ROOT/tests/stick/universal-selection-test.py"
 
 echo "builder tests: $pass passed, $fail failed"
 [ "$fail" = 0 ]

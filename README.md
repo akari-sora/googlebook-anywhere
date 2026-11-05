@@ -6,7 +6,7 @@
 **Acer Chromebook Spin 714（KANO 主機板）**。
 
 - 下載與版本說明：[GitLab Releases](https://gitlab.com/aa22396584/googlebook-anywhere/-/releases)（目前版本見 [docs/RELEASE-NOTES.md](docs/RELEASE-NOTES.md)，較早版本見 [docs/RELEASE-HISTORY.md](docs/RELEASE-HISTORY.md)）
-- 驗收紀錄：[v0.3.0](docs/VERIFICATION-v0.3.0.md)（含 10-29 KANO keep-data 更新與有限待機證據）；先前的 [v0.2.3](docs/VERIFICATION-v0.2.3.md) 與 [KANO 硬體狀態](docs/STATUS-KANO.md) 保留原驗證範圍。
+- 驗收紀錄：[v0.3.1](docs/VERIFICATION-v0.3.1.md) 區分軟體檢查、候選映像與未完成實機驗收；先前的 [v0.3.0](docs/VERIFICATION-v0.3.0.md) 含 10-29 KANO keep-data 更新與有限待機證據，[v0.2.3](docs/VERIFICATION-v0.2.3.md) 與 [KANO 硬體狀態](docs/STATUS-KANO.md) 保留原驗證範圍。
 - 原始碼與 issue：[gitlab.com/aa22396584/googlebook-anywhere](https://gitlab.com/aa22396584/googlebook-anywhere)（正本）。GitHub 上的 [akari-sora/googlebook-anywhere](https://github.com/akari-sora/googlebook-anywhere) 是唯讀鏡像，issue 與下載請到 GitLab。
 
 > 這不是 Google 的官方專案。repo 裡沒有任何 Google 的檔案：腳本從 Google 下載官方 recovery 映像，用固定的 SHA-256 核對後，
@@ -55,7 +55,7 @@
 | 耳機孔、USB-C 資料與外接螢幕 | ⚪ 未驗證 |
 | 螢幕關著時用鍵盤叫醒 | ⚠️ 已知問題，請用電源鍵或開合上蓋 |
 | 自動旋轉、光感測 | ❌ 目前 Android 沒有可用感測器 |
-| 鍵盤背光調整 | ⚠️ 已發布 v0.3.0 的背光調整仍受限；未發布 R6 USB 候選可控制亮／滅，但亮度曲線有缺陷，詳見 [KANO 狀態](docs/STATUS-KANO.md) |
+| 鍵盤背光調整 | ⚠️ v0.3.1 含背光曲線來源修正，尚未實機驗證；先前 R6 USB 候選可控制亮／滅，但曲線有缺陷，詳見 [KANO 狀態](docs/STATUS-KANO.md) |
 | 內建相機 | 🔧 開發中，預設關 |
 
 每一項的驗證方式見 [docs/STATUS-KANO.md](docs/STATUS-KANO.md)。

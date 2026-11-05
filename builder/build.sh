@@ -3,6 +3,8 @@
 # Required env: GBOS_BASE GBOS_INITRD GBOS_OUT GBOS_OTATOOLS GBOS_AVB_KEY GBOS_INPUTS (builder/fetch-inputs.sh <dir>;
 # GBOS_FIRMWARE and GBOS_AUDIO_SRC default to <dir>/firmware and <dir>/audio-src, a linux-firmware tree with the
 # pinned versions such as Arch's /usr/lib/firmware also works as GBOS_FIRMWARE).
+# The final image has a .build-record.json unsigned self-report: incomplete input coverage,
+# pristine NOT_PROVEN; it is neither authentication nor permission to write.
 # Optional: GBOS_PROFILE (profiles/kano; every model-specific value is in <profile>/profile.toml), GBOS_ADB_PUBKEY (opt-in
 # network adb, an adbkey.pub), GBOS_DEFAULT_ENTRY (lapis-quiet.conf), GBOS_LOADER_EDITOR (no), GBOS_IMAGE_NAME (the
 # profile's model.image_name, googlebook-kano.img for KANO), GBOS_QEMU, GBOS_QEMU_LIB,
@@ -25,6 +27,9 @@
 # A profile with [gralloc] (amd-hx370) also needs GBOS_MINIGBM (default <GBOS_INPUTS>/amd-hx370/libminigbm_gralloc.so
 # from tools/minigbm/build-libminigbm-gralloc.sh). Its sha256 must match gralloc.sha256. Profiles without the table
 # (kano, generic-x86) do not read that file.
+# GBOS_USB_SMOKE=1: isolated, mandatory-QEMU KANO backlight trial with fresh GPT GUIDs; see usb_smoke.py.
+# GBOS_ANDROID_MODEL=profile: experimental product model correction, KANO and Google build 16658739 only.
+# GBOS_SETUP_PIN_SKIP=1: optional normal setup Skip button; requires that model correction (default off).
 # GBOS_EC: opt-in ChromeOS EC features, a comma list of sensors (accelerometers -> auto-rotate), typec (USB-C
 # USB3/DisplayPort), buttons (side volume keys), or exactly drain (experimental: transport/core only).
 # Empty (default): the EC stays unreachable. drain,sensors and any duplicate or empty item are refused. See docs/SAFETY.md.
@@ -60,6 +65,21 @@ export GBOS_OVMF_CODE="${GBOS_OVMF_CODE:-/usr/share/edk2/x64/OVMF_CODE.4m.fd}"
 export GBOS_OVMF_VARS="${GBOS_OVMF_VARS:-/usr/share/edk2/x64/OVMF_VARS.4m.fd}"
 
 echo "== preflight"
+# USB backlight trial is explicit and never skips either QEMU gate.
+python3 - "$HERE/lib" "$GBOS_PROFILE" <<'PYUSB' || exit 2
+import os, sys
+sys.path.insert(0, sys.argv[1])
+import devprofile, usb_smoke
+import product_model
+try:
+    usb_smoke.validate_options(devprofile.load(sys.argv[2]), os.environ)
+    product_model.validate_options(devprofile.load(sys.argv[2]), os.environ)
+except (ValueError, OSError) as exc:
+    sys.exit(str(exc))
+PYUSB
+if [ "${GBOS_USB_SMOKE:-}" = 1 ]; then
+    command -v sgdisk >/dev/null || die "USB smoke requires sgdisk to regenerate GPT GUIDs"
+fi
 [[ "$GBOS_IMAGE_NAME" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*\.img$ ]] || die "GBOS_IMAGE_NAME must be a plain file name ending in .img"
 gbos_ec_ok "${GBOS_EC:-}" \
     || die "GBOS_EC must be empty, drain, or a comma list of sensors, typec, buttons"
@@ -74,6 +94,16 @@ if [ -n "${GBOS_EC:-}" ]; then
 fi
 # Empty = off. A non-empty value must be an integer 60..7200 (canonical decimal, no leading zeros).
 # Check the text before any arithmetic: bash wraps 2^64+60 to 60, and 10#0060 becomes 60.
+# Validate the optional module independently at each entry point.
+python3 - "$HERE/lib" "$GBOS_PROFILE" "$HERE" <<'PYKBD' || exit 2
+import os, sys
+sys.path.insert(0, sys.argv[1])
+import devprofile
+try:
+    devprofile.check_kbd_backlight_inputs(devprofile.load(sys.argv[2]), os.environ.get("GBOS_EC", ""), os.environ, sys.argv[3])
+except (ValueError, OSError) as exc:
+    sys.exit(str(exc))
+PYKBD
 if [ -n "${GBOS_TEST_AUTOOFF:-}" ]; then
     [[ "$GBOS_TEST_AUTOOFF" =~ ^[1-9][0-9]{1,3}$ ]] \
         || die "GBOS_TEST_AUTOOFF must be empty or an integer 60..7200, not $GBOS_TEST_AUTOOFF"

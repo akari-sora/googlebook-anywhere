@@ -5,12 +5,13 @@ check-gpt, bootconfig-*, lift-entry, check-cmdline) on good and damaged inputs, 
 and the installer's busy check of the target (in_use) on fake /proc and /sys files.
 With an optional raw disk image made by another GPT tool (e.g. sgdisk, hdiutil), both parsers must accept its CRCs.
 usage: selftest.py <empty work dir> [reference GPT disk image]"""
-import hashlib, random, re, shutil, struct, subprocess, sys, uuid
+import atexit, hashlib, random, re, shutil, struct, subprocess, sys, uuid
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import gptlib  # noqa: E402
 
-W = Path(sys.argv[1]); W.mkdir(parents=True, exist_ok=False)
+W = Path(sys.argv[1]).resolve(); W.mkdir(parents=True, exist_ok=False)
+atexit.register(shutil.rmtree, W, True)
 REPO = Path(__file__).resolve().parents[2]
 src = (REPO / "install/stick/gbos-install.sh").read_text()
 m = re.search(r"cat > \"\$W/gbos.py\" << 'PY'\n(.*?)\nPY\n", src, re.S)

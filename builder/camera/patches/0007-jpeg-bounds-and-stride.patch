@@ -1,0 +1,227 @@
+--- a/src/android/jpeg/encoder_libjpeg.cpp
++++ b/src/android/jpeg/encoder_libjpeg.cpp
+@@ -7,6 +7,8 @@
+ 
+ #include "encoder_libjpeg.h"
+ 
++#include <cerrno>
++#include <climits>
+ #include <fcntl.h>
+ #include <iomanip>
+ #include <iostream>
+@@ -32,6 +34,42 @@
+ 
+ namespace {
+ 
++/* Keep writes bounded without longjmp across C++ stack objects. */
++struct BoundedDestination {
++	jpeg_destination_mgr manager;
++	JOCTET *data;
++	size_t capacity;
++	bool overflow;
++	bool switched;
++	JOCTET discard[4096];
++};
++
++void initBoundedDestination(j_compress_ptr cinfo)
++{
++	auto *dest = reinterpret_cast<BoundedDestination *>(cinfo->dest);
++	dest->manager.next_output_byte = dest->data;
++	dest->manager.free_in_buffer = dest->capacity;
++	dest->overflow = false;
++	dest->switched = false;
++}
++
++boolean discardOverflow(j_compress_ptr cinfo)
++{
++	auto *dest = reinterpret_cast<BoundedDestination *>(cinfo->dest);
++	dest->overflow = dest->switched;
++	dest->switched = true;
++	dest->manager.next_output_byte = dest->discard;
++	dest->manager.free_in_buffer = sizeof(dest->discard);
++	return TRUE;
++}
++
++void finishBoundedDestination(j_compress_ptr cinfo)
++{
++	auto *dest = reinterpret_cast<BoundedDestination *>(cinfo->dest);
++	if (dest->switched && dest->manager.free_in_buffer != sizeof(dest->discard))
++		dest->overflow = true;
++}
++
+ struct JPEGPixelFormatInfo {
+ 	J_COLOR_SPACE colorSpace;
+ 	const PixelFormatInfo &pixelFormatInfo;
+@@ -88,6 +126,27 @@
+ 	const struct JPEGPixelFormatInfo info = findPixelInfo(cfg.pixelFormat);
+ 	if (info.colorSpace == JCS_UNKNOWN)
+ 		return -ENOTSUP;
++
++	const PixelFormatInfo &format = info.pixelFormatInfo;
++	const unsigned int packedStride = format.stride(cfg.size.width, 0);
++	if (!cfg.size.width || !cfg.size.height ||
++	    cfg.size.width > JPEG_MAX_DIMENSION || cfg.size.height > JPEG_MAX_DIMENSION ||
++	    !packedStride ||
++	    cfg.stride < packedStride)
++		return -EINVAL;
++
++	const bool nv = format.numPlanes() == 2;
++	if (nv && (cfg.size.width & 1))
++		return -EINVAL;
++	if (nv && (!format.planes[0].bytesPerGroup ||
++	    !format.planes[1].bytesPerGroup ||
++	    cfg.stride % format.planes[0].bytesPerGroup ||
++	    cfg.stride / format.planes[0].bytesPerGroup >
++		UINT_MAX / format.planes[1].bytesPerGroup))
++		return -EINVAL;
++	stride_ = cfg.stride;
++	chromaStride_ = nv ? cfg.stride / format.planes[0].bytesPerGroup *
++			     format.planes[1].bytesPerGroup : 0;
+ 
+ 	compress_.image_width = cfg.size.width;
+ 	compress_.image_height = cfg.size.height;
+@@ -108,8 +167,7 @@
+ void EncoderLibJpeg::compressRGB(const std::vector<Span<uint8_t>> &planes)
+ {
+ 	unsigned char *src = const_cast<unsigned char *>(planes[0].data());
+-	/* \todo Stride information should come from buffer configuration. */
+-	unsigned int stride = pixelFormatInfo_->stride(compress_.image_width, 0);
++	unsigned int stride = stride_;
+ 
+ 	JSAMPROW row_pointer[1];
+ 
+@@ -135,10 +193,10 @@
+ 	 * Possible hints at:
+ 	 * https://sourceforge.net/p/libjpeg/mailman/message/30815123/
+ 	 */
+-	unsigned int y_stride = pixelFormatInfo_->stride(compress_.image_width, 0);
+-	unsigned int c_stride = pixelFormatInfo_->stride(compress_.image_width, 1);
++	unsigned int y_stride = stride_;
++	unsigned int c_stride = chromaStride_;
+ 
+-	unsigned int horzSubSample = 2 * compress_.image_width / c_stride;
++	unsigned int horzSubSample = pixelFormatInfo_->pixelsPerGroup;
+ 	unsigned int vertSubSample = pixelFormatInfo_->planes[1].verticalSubSampling;
+ 
+ 	unsigned int c_inc = horzSubSample == 1 ? 2 : 0;
+@@ -200,21 +258,37 @@
+ 			   Span<uint8_t> dest, Span<const uint8_t> exifData,
+ 			   unsigned int quality)
+ {
+-	unsigned char *destination = dest.data();
+-	unsigned long size = dest.size();
++	if (dest.empty() || dest.size() > INT_MAX)
++		return -ENOSPC;
++	if (src.size() != pixelFormatInfo_->numPlanes())
++		return -EINVAL;
+ 
++	auto planeFits = [](size_t size, unsigned int stride,
++			    unsigned int rows, unsigned int rowBytes) {
++		return rows && rowBytes && size >= rowBytes &&
++		       (rows - 1) <= (size - rowBytes) / stride;
++	};
++	if (!planeFits(src[0].size(), stride_, compress_.image_height,
++		       pixelFormatInfo_->stride(compress_.image_width, 0)))
++		return -EINVAL;
++	if (nv_) {
++		const unsigned int subsampling = pixelFormatInfo_->planes[1].verticalSubSampling;
++		if (!subsampling ||
++		    !planeFits(src[1].size(), chromaStride_,
++			       (compress_.image_height + subsampling - 1) / subsampling,
++			       pixelFormatInfo_->stride(compress_.image_width, 1)))
++			return -EINVAL;
++	}
++
++	BoundedDestination destination{};
++	destination.data = dest.data();
++	destination.capacity = dest.size();
++	destination.manager.init_destination = initBoundedDestination;
++	destination.manager.empty_output_buffer = discardOverflow;
++	destination.manager.term_destination = finishBoundedDestination;
++	compress_.dest = &destination.manager;
+ 	jpeg_set_quality(&compress_, quality, TRUE);
+ 
+-	/*
+-	 * The jpeg_mem_dest will reallocate if the required size is not
+-	 * sufficient. That means the output won't be written to the correct
+-	 * buffers.
+-	 *
+-	 * \todo Implement our own custom memory destination to prevent
+-	 * reallocation and prefer failure with correct reporting.
+-	 */
+-	jpeg_mem_dest(&compress_, &destination, &size);
+-
+ 	jpeg_start_compress(&compress_, TRUE);
+ 
+ 	if (exifData.size())
+@@ -235,5 +309,9 @@
+ 
+ 	jpeg_finish_compress(&compress_);
+ 
+-	return size;
++	compress_.dest = nullptr;
++	if (destination.overflow)
++		return -ENOSPC;
++	return destination.switched ? destination.capacity :
++		destination.capacity - destination.manager.free_in_buffer;
+ }
+--- a/src/android/jpeg/encoder_libjpeg.h
++++ b/src/android/jpeg/encoder_libjpeg.h
+@@ -39,6 +39,8 @@
+ 
+ 	const libcamera::PixelFormatInfo *pixelFormatInfo_;
+ 
++	unsigned int stride_;
++	unsigned int chromaStride_;
+ 	bool nv_;
+ 	bool nvSwap_;
+ };
+--- a/src/android/jpeg/post_processor_jpeg.cpp
++++ b/src/android/jpeg/post_processor_jpeg.cpp
+@@ -72,6 +72,7 @@
+ 	StreamConfiguration thCfg;
+ 	thCfg.size = targetSize;
+ 	thCfg.pixelFormat = thumbnailer_.pixelFormat();
++	thCfg.stride = PixelFormatInfo::info(thCfg.pixelFormat).stride(targetSize.width, 0);
+ 	int ret = thumbnailEncoder_.configure(thCfg);
+ 
+ 	if (!rawThumbnail.empty() && !ret) {
+@@ -98,6 +99,10 @@
+ 
+ 		int jpeg_size = thumbnailEncoder_.encode(thumbnailPlanes,
+ 							 *thumbnail, {}, quality);
++		if (jpeg_size < 0) {
++			thumbnail->clear();
++			return;
++		}
+ 		thumbnail->resize(jpeg_size);
+ 
+ 		LOG(JPEG, Debug)
+@@ -202,8 +207,16 @@
+ 	const uint8_t quality = ret ? *entry.data.u8 : 95;
+ 	resultMetadata->addEntry(ANDROID_JPEG_QUALITY, quality);
+ 
++	const size_t blobSize = destination->jpegBufferSize(cameraDevice_->maxJpegBufferSize());
++	if (blobSize < sizeof(struct camera3_jpeg_blob) ||
++	    blobSize > destination->plane(0).size()) {
++		processComplete.emit(streamBuffer, PostProcessor::Status::Error);
++		return;
++	}
++
+ 	int jpeg_size = encoder_->encode(streamBuffer, exif.data(), quality);
+-	if (jpeg_size < 0) {
++	if (jpeg_size < 0 || static_cast<size_t>(jpeg_size) >
++	    blobSize - sizeof(struct camera3_jpeg_blob)) {
+ 		LOG(JPEG, Error) << "Failed to encode stream image";
+ 		processComplete.emit(streamBuffer, PostProcessor::Status::Error);
+ 		return;
+@@ -211,8 +224,7 @@
+ 
+ 	/* Fill in the JPEG blob header. */
+ 	uint8_t *resultPtr = destination->plane(0).data()
+-			   + destination->jpegBufferSize(cameraDevice_->maxJpegBufferSize())
+-			   - sizeof(struct camera3_jpeg_blob);
++			   + blobSize - sizeof(struct camera3_jpeg_blob);
+ 	auto *blob = reinterpret_cast<struct camera3_jpeg_blob *>(resultPtr);
+ 	blob->jpeg_blob_id = CAMERA3_JPEG_BLOB_ID;
+ 	blob->jpeg_size = jpeg_size;

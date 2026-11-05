@@ -28,6 +28,7 @@ KEY="$GBOS_AVB_KEY"
 FW="${GBOS_FIRMWARE:?GBOS_FIRMWARE = firmware directory (builder/fetch-inputs.sh <dir> fills <dir>/firmware)}"
 export GBOS_AUDIO_SRC="${GBOS_AUDIO_SRC:?GBOS_AUDIO_SRC = audio sources of the profile (builder/fetch-inputs.sh <dir> fills <dir>/audio-src)}"
 export GBOS_PROFILE GBOS_ADB_PUBKEY="${GBOS_ADB_PUBKEY:-}"
+PATCH_MODEL=$(python3 -c 'import os,sys; sys.path.insert(0, sys.argv[1]); import devprofile, product_model; print(str(product_model.validate_options(devprofile.load(os.environ["GBOS_PROFILE"]), os.environ)).lower())' "$HERE/lib")
 # GBOS_EC (opt-in EC features, see builder/image.py): empty, exactly drain, or sensors, typec, buttons.
 # drain is exclusive. Duplicates, empty items and unknown items are refused.
 export GBOS_EC="${GBOS_EC:-}"
@@ -45,6 +46,16 @@ gbos_ec_ok "$GBOS_EC" \
     || { echo "GBOS_EC must be empty, drain, or a comma list of sensors, typec, buttons, not $GBOS_EC"; exit 2; }
 # GBOS_TEST_AUTOOFF (developer-only; install/install.sh refuses it): empty = off; else seconds 60..7200.
 # Canonical decimal, no leading zeros. Check the text before any arithmetic: bash wraps 2^64+60 to 60.
+# Validate the optional module independently at each entry point.
+python3 - "$HERE/lib" "$GBOS_PROFILE" "$HERE" <<'PYKBD' || exit 2
+import os, sys
+sys.path.insert(0, sys.argv[1])
+import devprofile
+try:
+    devprofile.check_kbd_backlight_inputs(devprofile.load(sys.argv[2]), os.environ.get("GBOS_EC", ""), os.environ, sys.argv[3])
+except (ValueError, OSError) as exc:
+    sys.exit(str(exc))
+PYKBD
 if [ -n "${GBOS_TEST_AUTOOFF:-}" ]; then
     [[ "$GBOS_TEST_AUTOOFF" =~ ^[1-9][0-9]{1,3}$ ]] \
         || { echo "GBOS_TEST_AUTOOFF must be empty or an integer 60..7200, not $GBOS_TEST_AUTOOFF"; exit 2; }
@@ -274,6 +285,20 @@ elif [ -n "$GBOS_KMOD_WAKEFILTER" ]; then
     echo "GBOS_KMOD_WAKEFILTER is set but the profile does not list kmods \"gbos_wakefilter\""; exit 1
 fi
 
+if printf '%s\n' "$KMODS" | grep -qx gbos_kbd_backlight; then
+    mkdir -p "$TMP/kmod"
+    cp "$GBOS_KMOD_KBD_BACKLIGHT" "$TMP/kmod/gbos_kbd_backlight.ko"
+    GBOS_KMOD_KBD_BACKLIGHT="$TMP/kmod/gbos_kbd_backlight.ko" python3 - "$HERE/lib" "$GBOS_PROFILE" "$HERE" <<'PYKBD' || exit 2
+import os, sys
+sys.path.insert(0, sys.argv[1])
+import devprofile
+try:
+    devprofile.check_kbd_backlight_inputs(devprofile.load(sys.argv[2]), os.environ.get("GBOS_EC", ""), os.environ, sys.argv[3])
+except (ValueError, OSError) as exc:
+    sys.exit(str(exc))
+PYKBD
+fi
+
 echo "extract vendor tree"
 mkdir -p "$TMP/vendor-tree"
 ot fsck.erofs --extract="$TMP/vendor-tree" --overwrite --preserve-perms "$TMP/vendor.erofs.src"
@@ -286,6 +311,7 @@ sys.path.insert(0, sys.argv[2])
 import rebuild
 import devprofile
 import kano_autooff
+import kano_usb_diag
 import importlib.util
 import types
 
@@ -508,7 +534,7 @@ for f in ("etc/kano-diag.sh", "etc/init/kano-diag.rc"):
 if prof["wifi"]["modprobe"] and not (hooks and hasattr(hooks, "wifi_rc")):
     raise SystemExit("profile wifi.modprobe needs hooks.vendor with wifi_rc()")
 hw_head = hooks.wifi_rc(ctx) if hooks and hasattr(hooks, "wifi_rc") else ""
-KANO_KMODS = [k for k in ("ac", "gbos_wakefilter") if k in prof["kmods"]]
+KANO_KMODS = [k for k in ("ac", "gbos_wakefilter", "gbos_kbd_backlight") if k in prof["kmods"]]
 KMOD_LOAD = {
     "ac": "    # ACPI AC adapter (ACPI0003): Android sees the charger as a Mains power supply; no EC host command\n",
     "gbos_wakefilter": "    # drop the ACPI power button's resume KEY_WAKEUP when the button did not wake the system (dark resumes stay dark)\n",
@@ -528,7 +554,14 @@ if KANO_KMODS:
         (tree / f).chmod(0o644)
         vmap[f] = dict(vmap[ref])
     kmod_load = "".join(KMOD_LOAD[k] + f"    exec_background u:r:vendor_modprobe:s0 -- /vendor/bin/modprobe --dirname=/vendor/lib/kano {k}\n"
-                        for k in KANO_KMODS)
+                        for k in KANO_KMODS if k != "gbos_kbd_backlight")
+    if "gbos_kbd_backlight" in KANO_KMODS:
+        kmod_load += ("    exec u:r:vendor_modprobe:s0 -- /vendor/bin/modprobe --dirname=/vendor/lib/modules cros-ec-proto\n"
+                      "    exec u:r:vendor_modprobe:s0 -- /vendor/bin/modprobe --dirname=/vendor/lib/kano gbos_kbd_backlight\n"
+                      "    exec_background u:r:kano_kmsg_logcat:s0 -- /system/bin/sh /vendor/etc/kano-kbd-modules.sh\n")
+        shutil.copyfile(Path(sys.argv[2]).parent / "kmod/kano-kbd-modules.sh", tree / "etc/kano-kbd-modules.sh")
+        (tree / "etc/kano-kbd-modules.sh").chmod(0o644)
+        vmap["etc/kano-kbd-modules.sh"] = dict(vmap["etc/init/fwupd.rc"])
     hw_head = (hw_head[:-1] + kmod_load + "\n") if hw_head else ("on early-boot\n" + kmod_load + "\n")
 # Profile [modules]: synchronous modprobe (no -b) from the existing module dirs. Empty for kano and generic-x86,
 # so their kano-hw.rc head is unchanged. vendor_dlkm is not rewritten.
@@ -792,7 +825,7 @@ at = tree / "etc/kano-audiotest.sh"
 t2 = at.read_text()
 if t2.count("mkdir -p $D\n") != 1:
     raise SystemExit("audiotest script not as expected")
-at.write_text(t2.replace("mkdir -p $D\n", "[ -e /data/kano-audiotest.enable ] || exit 0\nrm -f /data/kano-audiotest.enable\nmkdir -p $D\n", 1))
+at.write_text(t2.replace("mkdir -p $D\n", "[ -e /data/kano-audiotest.enable ] || exit 0\nrm -f /data/kano-audiotest.enable || exit 1\n[ ! -e /data/kano-audiotest.enable ] && [ ! -L /data/kano-audiotest.enable ] || exit 1\nmkdir -p $D\n", 1))
 # More hardware state in the heavy diag round.
 dg2 = tree / "etc/kano-diag.sh"
 d2 = dg2.read_text()
@@ -821,8 +854,20 @@ cat /vendor/etc/kano-adb_keys > /data/misc/adb/adb_keys
 chown system:shell /data/misc/adb/adb_keys
 chmod 0640 /data/misc/adb/adb_keys
 restorecon /data/misc/adb/adb_keys
+: > "$D/adb-settings.txt" || exit 1
 for k in development_settings_enabled adb_enabled; do
-  timeout 20 /system/bin/cmd settings put global $k 1 < /dev/null 2>&1 | cat
+  timeout 20 /system/bin/cmd settings put global "$k" 1 < /dev/null >> "$D/adb-settings.txt" 2>&1
+  rc=$?
+  printf '%s put rc=%s\\n' "$k" "$rc" >> "$D/adb-settings.txt" || exit 1
+  [ "$rc" -eq 0 ] || exit "$rc"
+  value=$(timeout 20 /system/bin/cmd settings get global "$k" < /dev/null 2>> "$D/adb-settings.txt")
+  rc=$?
+  printf '%s get rc=%s\\n' "$k" "$rc" >> "$D/adb-settings.txt" || exit 1
+  [ "$rc" -eq 0 ] || exit "$rc"
+  if [ "$value" != 1 ]; then
+    printf '%s readback mismatch rc=1\\n' "$k" >> "$D/adb-settings.txt"
+    exit 1
+  fi
 done
 setprop service.adb.tcp.port 5555
 sleep 5
@@ -932,6 +977,14 @@ _autooff = os.environ.get("GBOS_TEST_AUTOOFF", "")
 if _autooff:
     kano_autooff.install(tree, vmap, int(_autooff))
     print("kano-autooff:", _autooff, "seconds")
+# USB evidence is developer-only and present only in the explicit KANO trial.
+_usb_smoke = os.environ.get("GBOS_USB_SMOKE", "")
+if _usb_smoke not in ("", "1"):
+    raise SystemExit("GBOS_USB_SMOKE must be empty or 1")
+if _usb_smoke:
+    if prof["model"]["id"] != "kano":
+        raise SystemExit("GBOS_USB_SMOKE requires KANO")
+    kano_usb_diag.install(tree, vmap, Path(sys.argv[2]).parent / "usb-smoke/collect-runtime.sh")
 # adb over TCP is opt-in: without GBOS_ADB_PUBKEY the three adb files are not part of the image.
 if not os.environ.get("GBOS_ADB_PUBKEY"):
     for f in ("etc/kano-adb_keys", "etc/kano-adb.sh", "etc/init/kano-adb.rc"):
@@ -1430,13 +1483,18 @@ expect_changed = sorted(set(["build.prop", "etc/fstab.android-desktop", "etc/ini
 expect_new = sorted(set(["etc/kano-adb_keys", "etc/kano-adb.sh", "etc/init/kano-adb.rc", "etc/init/kano-services.rc", "etc/kano-tone-1k.wav", "etc/kano-audiotest.sh", "etc/init/kano-audiotest.rc", "etc/init/kano-bootfix.rc", "etc/init/gbos-no-ota.rc", "etc/init/kano-diag.rc", "etc/init/kano-hw.rc", "etc/init/kano-logcat.rc", "etc/kano-diag.sh", "etc/kano-logcat.sh", "etc/kano-wifi.sh"] + p_new + fw_new))
 if not os.environ.get("GBOS_ADB_PUBKEY"):
     expect_new = sorted(x for x in expect_new if "kano-adb" not in x)
-kano_kmods = [k for k in ("ac", "gbos_wakefilter") if k in prof["kmods"]]
+kano_kmods = [k for k in ("ac", "gbos_wakefilter", "gbos_kbd_backlight") if k in prof["kmods"]]
 if kano_kmods:
     expect_new = sorted(expect_new + ["lib/kano", "lib/kano/modules.dep"] + [f"lib/kano/{k}.ko" for k in kano_kmods])
+if "gbos_kbd_backlight" in kano_kmods:
+    expect_new = sorted(expect_new + ["etc/kano-kbd-modules.sh"])
 if prof["display"]["stack"] == "gop-swiftshader":
     expect_new = sorted(expect_new + ["etc/gbos-efifb.sh", "etc/init/gbos-efifb.rc", "lib64/gbos_efifb.ko", "lib64/hw/vulkan.pastel.so"])
 if os.environ.get("GBOS_TEST_AUTOOFF"):
     expect_new = sorted(expect_new + ["etc/kano-autooff.sh", "etc/init/kano-autooff.rc", "etc/kano-autooff.nonce"])
+if os.environ.get("GBOS_USB_SMOKE") == "1":
+    expect_new = sorted(expect_new + ["etc/kano-usb-collect.sh", "etc/kano-usb-evidence.sh", "etc/init/kano-usb-evidence.rc"])
+    expect_changed = sorted(set(expect_changed + ["etc/selinux/vendor_file_contexts"]))
 if prof["model"]["id"] == "amd-hx370":
     expect_new = sorted(expect_new + [
         "bin/radv-probe", "etc/NOTICES-amd-hx370-radv.txt", "etc/amd-hx370-graphics.sh", "etc/gbos-efifb.sh",
@@ -1532,8 +1590,17 @@ if [ "$PATCH_IFMA" = true ]; then
         "$HERE/lib" "$IMG" "$TMP"
 fi
 
+if [ "$PATCH_MODEL" = true ]; then
+    echo "rebuild product_a (GBOS_ANDROID_MODEL=profile)"
+    python3 -c 'import os,sys; sys.path.insert(0, sys.argv[1]); import devprofile, product_model; product_model.rebuild_product_partition(devprofile.load(os.environ["GBOS_PROFILE"]), sys.argv[2], sys.argv[3])' "$HERE/lib" "$IMG" "$TMP"
+fi
+
 echo "re-sign vbmeta"
 dd if="$IMG" of="$TMP/vbmeta.old.img" bs=1 skip="$VBMETA_OFF" count=6720 status=none
+if [ "$PATCH_MODEL" = true ]; then
+    ot avbtool info_image --image "$TMP/vbmeta.old.img" > "$TMP/vbmeta.old.info"
+    python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import product_model; product_model.assert_root_product_descriptor(open(sys.argv[2], encoding="utf-8").read())' "$HERE/lib" "$TMP/vbmeta.old.info"
+fi
 ot avbtool update_partition_descriptor \
     --image "$TMP/vbmeta.old.img" \
     --partition_image "$TMP/vendor.img" \
@@ -1559,6 +1626,16 @@ if [ "$PATCH_IFMA" = true ]; then
         --key "$KEY" \
         --rollback_index "$VBMETA_ROLLBACK_INDEX"
 fi
+if [ "$PATCH_MODEL" = true ]; then
+    cp "$TMP/vbmeta.new.img" "$TMP/vbmeta.before-product.img"
+    ot avbtool update_partition_descriptor \
+        --image "$TMP/vbmeta.before-product.img" \
+        --partition_image "$TMP/product.img" \
+        --output "$TMP/vbmeta.new.img" \
+        --algorithm SHA256_RSA4096 \
+        --key "$KEY" \
+        --rollback_index "$VBMETA_ROLLBACK_INDEX"
+fi
 ot avbtool info_image --image "$TMP/vbmeta.new.img" > "$TMP/vbmeta.new.info"
 ot avbtool calculate_vbmeta_digest --image "$TMP/vbmeta.new.img" --hash_algorithm sha256 \
     | tee "$WORK/logs/vbmeta.digest.txt"
@@ -1566,7 +1643,7 @@ ot avbtool calculate_vbmeta_digest --image "$TMP/vbmeta.new.img" --hash_algorith
 echo "read ESP initrd"
 mcopy -i "$IMG@@$ESP_OFF" ::/initrd.img "$TMP/esp-initrd.img"
 
-python3 - "$IMG" "$TMP" "$STANDALONE" "$PATCH_IFMA" << 'PY'
+python3 - "$IMG" "$TMP" "$STANDALONE" "$PATCH_IFMA" "$PATCH_MODEL" << 'PY'
 import hashlib, shutil, struct, sys
 from pathlib import Path
 
@@ -1574,6 +1651,7 @@ img = Path(sys.argv[1])
 tmp = Path(sys.argv[2])
 standalone = Path(sys.argv[3])
 patch_ifma = sys.argv[4]
+patch_model = sys.argv[5]
 env = {}
 for line in (tmp / "offsets.env").read_text().splitlines():
     k, v = line.split("=", 1)
@@ -1643,6 +1721,24 @@ footer = struct.pack("<II", len(raw), sum(raw) & 0xFFFFFFFF) + b"#BOOTCONFIG\n"
 print("initrd bytes", (tmp / "initrd.new.img").stat().st_size, "vbmeta", vb_size)
 
 with img.open("r+b") as f:
+    if patch_model == "true":
+        product_off = int(env["PRODUCT_OFF"])
+        product_size = int(env["PRODUCT_SIZE"])
+        product_img = tmp / "product.img"
+        if product_img.stat().st_size != product_size:
+            raise SystemExit("product size")
+        if product_off < 0 or product_off + product_size > img.stat().st_size:
+            raise SystemExit("product extent outside image")
+        if product_off < vendor_off + vendor_size and vendor_off < product_off + product_size:
+            raise SystemExit("product overlaps vendor")
+        if patch_ifma == "true":
+            for label in ("SYSTEM", "SYSTEM_EXT"):
+                other_off, other_size = int(env[label + "_OFF"]), int(env[label + "_SIZE"])
+                if product_off < other_off + other_size and other_off < product_off + product_size:
+                    raise SystemExit("product overlaps " + label)
+        f.seek(product_off)
+        with product_img.open("rb") as pf:
+            shutil.copyfileobj(pf, f, length=16 << 20)
     if patch_ifma == "true":
         system_off = int(env["SYSTEM_OFF"])
         system_size = int(env["SYSTEM_SIZE"])
@@ -1687,6 +1783,8 @@ if patch_ifma == "true":
     ):
         if range_sha256(img, offset, size) != range_sha256(expected, 0, size):
             raise SystemExit(f"{label} final image readback differs after splice")
+if patch_model == "true" and range_sha256(img, product_off, product_size) != range_sha256(product_img, 0, product_size):
+    raise SystemExit("product final image readback differs after splice")
 print("spliced vendor and vbmeta")
 PY
 
@@ -1698,6 +1796,11 @@ for partition in vendor_dlkm system_dlkm; do
     python3 "$HERE/lib/lp-dump.py" "$IMG" "$TMP" "${partition}_a"
     ot fsck.erofs --extract="$TMP/firmware-$partition" --overwrite "$TMP/${partition}_a.img"
 done
+if printf '%s\n' "$KMODS" | grep -qx gbos_kbd_backlight; then
+    provider="$TMP/firmware-vendor_dlkm/lib/modules/cros-ec-proto.ko"
+    [ -f "$provider" ] && [ "$(sha256sum < "$provider" | cut -c1-64)" = 5ddce2fcfe24e9f1451783bb42d7bbdb23b99955fae211c8bc1ae8f32098ad48 ] \
+        || { echo "stock cros-ec-proto.ko readback does not match pinned provider"; exit 2; }
+fi
 python3 "$HERE/kmod/check-firmware.py" --profile "$GBOS_PROFILE" \
     --vendor "$TMP/vendor-tree-new" --base-vendor "$TMP/vendor-tree-base" \
     --module-tree "$TMP/firmware-vendor_dlkm" --module-tree "$TMP/firmware-system_dlkm" \

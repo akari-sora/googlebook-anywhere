@@ -1,8 +1,6 @@
-# Compatibility (Googlebook Anywhere v0.3.0)
+# Compatibility (Googlebook Anywhere)
 
-This document describes which machines the Googlebook Anywhere v0.3.0 image
-can be installed on, the current support level for each model, and what has
-**not yet been verified on real hardware**.
+This document describes support for each model and what has **not yet been verified on real hardware**. The [v0.3.1 verification record](VERIFICATION-v0.3.1.md) separates software checks, candidate images and open hardware acceptance. Hardware evidence below retains its original image scope and does not establish acceptance of a new candidate.
 
 - The only machine verified on real hardware is an **Alder Lake-P engineering
   sample** of the Acer Chromebook Spin 714 (codename KANO) — iGPU `8086:46a6`.
