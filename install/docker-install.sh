@@ -65,7 +65,14 @@ fi
 echo "== building the container image $TAG"
 $DOCKER build --platform linux/amd64 -t "$TAG" "$ROOT/install/docker"
 echo "== running install.sh in the container (work dir $WORK)"
-$DOCKER run --rm --platform linux/amd64 --user "$USERID" -e HOME=/work/.home "${MOUNTS[@]}" "$TAG" \
+# Forward an explicit GBOS_EC (including empty, the opt-out). Unset stays unset, so the container's
+# KANO build uses the typec default. bash 3.2: an empty array must use the ${name[@]+...} form.
+if [ -n "${GBOS_EC+x}" ]; then
+    DOCKER_EC=(-e "GBOS_EC=${GBOS_EC}")
+else
+    DOCKER_EC=()
+fi
+$DOCKER run --rm --platform linux/amd64 --user "$USERID" -e HOME=/work/.home ${DOCKER_EC[@]+"${DOCKER_EC[@]}"} "${MOUNTS[@]}" "$TAG" \
     bash -c 'mkdir -p "$HOME" && exec bash /repo/install/install.sh --work /work "$@"' install ${CARGS[@]+"${CARGS[@]}"}
 echo
 echo "The image is $WORK/build/image/googlebook-kano.img (checksum in googlebook-kano.img.sha256)."

@@ -295,8 +295,11 @@ def arsc_values(b):
 
 
 def ec_vendor_features(raw):
-    """Features that change the vendor tree. drain is exclusive and changes nothing, so the caller skips the hook."""
-    if not raw or raw == "drain":
+    """Features that change the vendor tree. drain, none and empty change nothing, so the caller skips the hook.
+
+    typec (the KANO default) also changes no vendor file; it still returns ["typec"] so the hook runs and no-ops.
+    """
+    if not raw or raw in ("drain", "none"):
         return []
     if "drain" in raw.split(","):
         raise SystemExit("GBOS_EC=drain is exclusive")

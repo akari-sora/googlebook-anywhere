@@ -99,6 +99,16 @@ for sh in "${BASHES[@]}"; do
     dexpect "$sh" "refuses an unknown argument" 2 "unknown argument" --work "$T/w 1" --bogus
     dexpect "$sh" "refuses --zip without a value" 2 "not a file" --work "$T/w 1" --zip
     dexpect "$sh" "refuses a missing --work" 2 "--work DIR is required"
+    rm -rf "$T/dl"; mkdir -p "$T/dl"
+    out=$(cd "$T" && env -u GBOS_TEST_AUTOOFF DOCKER_LOG="$T/dl" GBOS_DOCKER="$T/fake/docker" GBOS_DOCKER_USER="$DUSER" \
+        GBOS_EC=none "$sh" "$ROOT/install/docker-install.sh" --work "$T/w 1" --no-selftest 2>&1 < /dev/null); rc=$?
+    check "[$sh] GBOS_EC=none is forwarded into the container" \
+        '[ "$rc" = 0 ] && has_line call1 -e && has_line call1 "GBOS_EC=none"'
+    rm -rf "$T/dl"; mkdir -p "$T/dl"
+    out=$(cd "$T" && env -u GBOS_TEST_AUTOOFF -u GBOS_EC DOCKER_LOG="$T/dl" GBOS_DOCKER="$T/fake/docker" \
+        GBOS_DOCKER_USER="$DUSER" "$sh" "$ROOT/install/docker-install.sh" --work "$T/w 1" --no-selftest 2>&1 < /dev/null); rc=$?
+    check "[$sh] unset GBOS_EC is not passed into the container" \
+        '[ "$rc" = 0 ] && ! grep -q "^GBOS_EC" "$T/dl/call1"'
 done
 
 # --- 2. install.sh
@@ -285,7 +295,7 @@ ifma_calls() { cat "$T/log/ifma" 2>/dev/null | wc -l | tr -d ' '; }
 check "IFMA (kano: patch_ifma = true): ensure_apex_keys() ran once for the build" '[ "$(ifma_calls)" = 1 ]'
 check "IFMA: its key-info line is recorded in build/params" 'grep -qx "apex-keys stand-in-fingerprint-v1" "$W/build/params"'
 check "IFMA: the stand-in saw the persistent key dir GBOS_APEX_KEYS_DIR=\$W/keys/apex-keys (never build/keys)" '[ "$(sort -u "$T/log/ifma")" = "$W/keys/apex-keys" ]'
-for l in "^sources [0-9a-f]{64}$" "^adb-key none$" "^default-entry lapis-quiet.conf$" "^loader-editor no$" "^ec-features none$" "^android-model none$" "^selftest 0$" "^firmware-drift 0$"; do
+for l in "^sources [0-9a-f]{64}$" "^adb-key none$" "^default-entry lapis-quiet.conf$" "^loader-editor no$" "^ec-features typec$" "^android-model none$" "^selftest 0$" "^firmware-drift 0$"; do
     check "params records: $l" 'grep -Eq -- "$l" "$W/build/params"'
 done
 check "the base records its sources" 'grep -Eq "^base-sources [0-9a-f]{64} build 16452207$" "$W/base/install-sources"'
@@ -313,6 +323,8 @@ iexpect "GBOS_DEFAULT_ENTRY changed: refused" 2 "made with other settings" GBOS_
 check "... and the change is shown" 'grep -q "now: default-entry lapis-debug.conf" <<< "$out"'
 iexpect "GBOS_LOADER_EDITOR changed: refused" 2 "made with other settings" GBOS_LOADER_EDITOR=yes -- --work "$W"
 iexpect "GBOS_EC changed: refused" 2 "made with other settings" GBOS_EC=sensors -- --work "$W"
+iexpect "GBOS_EC=none opts out and is refused against a typec build" 2 "now: ec-features none" GBOS_EC=none -- --work "$W"
+iexpect "explicit empty GBOS_EC opts out and is refused against a typec build" 2 "now: ec-features none" GBOS_EC= -- --work "$W"
 mkdir -p "$T/devk-test"; echo k > "$T/devk-test/bzImage"
 echo r > "$T/radv-test.so"; echo p > "$T/probe-test"; echo v > "$T/vkprop-test.so"
 iexpect "GBOS_DEV_KERNEL_DIR changed: refused" 2 "now: GBOS_DEV_KERNEL_DIR [0-9a-f]{64}" GBOS_DEV_KERNEL_DIR="$T/devk-test" -- --work "$W"

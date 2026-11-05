@@ -4,6 +4,14 @@
 
 這版整理 KANO 的 USB 容量與機型識別、首次設定、背光及相機實驗功能，並推進共用維護媒體與更新防護。各功能的實機範圍不同，詳見 [驗收紀錄](VERIFICATION-v0.3.1.md)；v0.3.0 與更早的內容見 [完整版本紀錄](RELEASE-HISTORY.md)。
 
+## KANO 預設開啟 USB-C（typec）
+
+- KANO 建置沒有設定 `GBOS_EC` 時等於 `GBOS_EC=typec`：放行 `cros_ec`、`cros_ec_lpcs`、`cros_ec_dev`、`cros_ec_typec`、`cros_usbpd_notify`，讓 USB-C 做 USB3 與 DisplayPort alt mode。`sensors`、`buttons`、`drain` 仍須明確選用，而且 `drain` 不能和其他功能並用。其他機型維持不放行；對它們設 `typec` 仍會拒絕。
+- 關掉：`GBOS_EC=none`，或把 `GBOS_EC` 設成空字串。`thunderbolt`、`cros_typec_switch`、`cros_ec_ucsi`、`cros_usbpd_charger` 維持封鎖。
+- 載入 EC transport 之後，休眠失敗的復原仍可能重設 AP 並丟失進行中的寫入。硬體 S0ix 尚未量到。這是維護者接受的安全模型變更，不是新的實機驗收。
+- USB-C 外接畫面與底座能用，是 issue #12 的使用者回報（零售 CP714-2W、v0.3.0、stock 韌體加 MrChromebox RW_LEGACY）。維護者尚未在實機確認。已標 v0.3.0 的映像仍是當時的預設（EC 封鎖）。
+- 套用 typec 之後，serial-debug 命令列是 1892 bytes、quiet 是 1800 bytes，都在 builder 的 1909 bytes 限制內。drain 的 serial-debug 仍是 1909 bytes。
+
 ## KANO 首次使用與背光
 
 - R6 測試 USB 的 F2FS 資料區讀得 42,919,243,776 bytes，型號顯示 Acer Chromebook Spin 714；一次正常關機再開機後容量與型號仍相符。資料與設定完整保留、冷開機連線穩定性仍待驗證。

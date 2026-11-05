@@ -53,14 +53,18 @@ AMD_HX370 = PROF["model"]["id"] == "amd-hx370"
 # Both generic-x86 and amd-hx370's safe default entry use the GOP framebuffer + SwiftShader path in QEMU self-tests.
 GOP = GENERIC or AMD_HX370
 def parse_gbos_ec(raw, model_id):
-    """GBOS_EC: empty, a unique sensors/typec/buttons list, or exactly drain. Non-empty is KANO only.
+    """GBOS_EC for one profile.
 
-    drain is exclusive (drain,sensors and buttons,drain are refused). Duplicates, empty items and unknown
-    items are refused. build.sh and vendor.sh apply the same rule before this stage.
+    None (the variable is unset) on KANO is typec, the default image. None on any other profile is no
+    features. "" and "none" are the explicit opt-out (no features) on every profile. drain is exclusive.
+    A sensors/typec/buttons list is KANO only. Duplicates, empty items and unknown items are refused.
+    build.sh and vendor.sh apply the same rule before this stage.
     """
+    if raw is None:
+        raw = "typec" if model_id == "kano" else "none"
     if not isinstance(raw, str):
-        raise SystemExit("GBOS_EC must be empty, drain, or a comma list of sensors, typec, buttons")
-    if raw == "":
+        raise SystemExit("GBOS_EC must be empty, none, drain, or a comma list of sensors, typec, buttons")
+    if raw in ("", "none"):
         features = []
     elif raw == "drain":
         features = ["drain"]
@@ -68,21 +72,30 @@ def parse_gbos_ec(raw, model_id):
         features = raw.split(",")
         if len(features) != len(set(features)):
             raise SystemExit(
-                "GBOS_EC must be empty, drain, or a comma list of sensors, typec, buttons, not " + raw)
+                "GBOS_EC must be empty, none, drain, or a comma list of sensors, typec, buttons, not " + raw)
     else:
         raise SystemExit(
-            "GBOS_EC must be empty, drain, or a comma list of sensors, typec, buttons, not " + raw)
+            "GBOS_EC must be empty, none, drain, or a comma list of sensors, typec, buttons, not " + raw)
     if features and model_id != "kano":
         raise SystemExit("GBOS_EC is audited for the KANO only")
     return features
 
 
-# Opt-in EC features (default: none, and then every byte below is as without this switch). Each feature releases an
-# audited set of ChromeOS EC kernel drivers (docs/SAFETY.md, "EC 功能變體"). drain is not a feature: it releases only
-# cros_ec and cros_ec_lpcs. The EC userspace channels and every EC writer stay blocked in every variant. KANO only.
-EC_FEATURES = parse_gbos_ec(os.environ.get("GBOS_EC", ""), PROF["model"]["id"])
+# KANO default is typec (USB-C USB3/DisplayPort). GBOS_EC=none or an explicit empty value opts out.
+# Other profiles stay with no EC features unless they set a value, and any feature value is still refused.
+# Each feature releases an audited set of ChromeOS EC kernel drivers (docs/SAFETY.md, "EC 功能變體").
+# drain is not a feature: it releases only cros_ec and cros_ec_lpcs. The EC userspace channels and every
+# EC writer stay blocked in every variant, including thunderbolt, cros_typec_switch, cros_ec_ucsi and
+# cros_usbpd_charger. KANO only.
+EC_FEATURES = parse_gbos_ec(os.environ.get("GBOS_EC"), PROF["model"]["id"])
+if EC_FEATURES == ["drain"]:
+    _EC_FOR_KBD = "drain"
+elif not EC_FEATURES:
+    _EC_FOR_KBD = "none"
+else:
+    _EC_FOR_KBD = ",".join(EC_FEATURES)
 try:
-    devprofile.check_kbd_backlight_inputs(PROF, os.environ.get("GBOS_EC", ""), os.environ, Path(__file__).resolve().parent)
+    devprofile.check_kbd_backlight_inputs(PROF, _EC_FOR_KBD, os.environ, Path(__file__).resolve().parent)
 except (ValueError, OSError) as exc:
     sys.exit(str(exc))
 KMOD_KBD_BACKLIGHT = "gbos_kbd_backlight" in PROF["kmods"]
@@ -237,8 +250,10 @@ def ec_blacklist(options, features):
         out.append(x)
     return out
 
-# Stock KANO serial-debug is 1879 bytes of the 1909 budget (docs/STATUS-KANO.md). drain removes
-# cros_ec and cros_ec_lpcs and appends the six EC_EXTRA_BLOCK names, a net +57 bytes (1936),
+# Before the EC rewrite, KANO serial-debug is 1879 bytes and quiet is 1787 (docs/STATUS-KANO.md).
+# typec (the KANO default) drops five blacklist names and appends EC_EXTRA_BLOCK, a net +13 bytes:
+# debug 1892, quiet 1800, both inside the 1909 limit (17 bytes of builder slack on debug).
+# drain removes only cros_ec and cros_ec_lpcs and appends the same six names, a net +57 bytes (1936),
 # which fails cmdline_within_limit. The quiet entry already omits these two verbosity tokens.
 # Dropping them on the drain serial-debug entry lands on 1909, so the 64-byte kano-boot.sh
 # headroom stays free. earlycon (the only serial console), keep_bootcon and printk.devkmsg=on stay.

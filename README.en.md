@@ -52,7 +52,8 @@ Each record below applies to its recorded image and one 12th-generation KANO eng
 | Bluetooth | 🟡 Can be turned on; the unreleased R8 candidate discovers nearby devices, while pairing, use and reconnection are unverified |
 | Lid sleep/wake, battery level, "charging" indicator | ✅ Works (since v0.2) |
 | Touchscreen, stylus | 🟡 Detected, no real tap test yet |
-| Headphone jack, USB-C data and external display | ⚪ Not verified |
+| Headphone jack | ⚪ Not verified |
+| USB-C data and external display | 🟡 On by default (`typec`). A user reported it working in issue #12; maintainers have not confirmed it on hardware. S0ix with the EC transport loaded has not been measured |
 | Waking with the keyboard while the screen is off | ⚠️ Known issue; use the power button or open and close the lid |
 | Auto-rotate, light sensor | ❌ No sensors currently available to Android |
 | Keyboard backlight adjustment | ⚠️ v0.3.1 includes a backlight curve source fix that has not been tested on hardware; the earlier R6 USB candidate controls on/off but has a curve defect; see [KANO status](docs/STATUS-KANO.md) |
@@ -279,8 +280,9 @@ The build script, `amdgpu_linear.c`, and `upstream-delta.patch` under `tools/min
   that a key that is not registered is rejected (`unauthorized`); see SAFETY.md "Data safety trade-offs".
 - `GBOS_DEFAULT_ENTRY=lapis-debug.conf`: makes serial-debug the default (serial console + logcat mirror).
 - `GBOS_LOADER_EDITOR=yes`: allows editing kernel parameters in the boot menu (needed when the harness's `kano-boot.sh` appends parameters).
+- With `GBOS_EC` unset, a KANO build is `typec`: the audited USB-C drivers (USB3/DisplayPort) are allowed. `GBOS_EC=none`, or setting `GBOS_EC` to an empty value, turns that off and the EC stays unreachable. Other profiles stay with no EC features when unset, and still refuse `typec`. `thunderbolt`, `cros_typec_switch`, `cros_ec_ucsi` and `cros_usbpd_charger` stay blocked. Hardware S0ix with the EC transport loaded has not been measured, and sleep-failure recovery can reset the AP. USB-C video and docks were reported working by a user in issue #12; maintainers have not confirmed that on hardware. See [docs/SAFETY.md](docs/SAFETY.md) (Chinese), "EC feature variants".
 - `GBOS_EC=drain`: an experimental KANO-only exclusive option allowing only EC transport modules. Sleep-failure recovery can reset the AP and lose data; about 33 minutes without screen self-wake and a keyboard wake were observed on October 29; S0ix, power-button and lid behavior remain unverified (see [KANO status](docs/STATUS-KANO.md)).
-- `GBOS_EC=sensors,typec,buttons` (you can pick only some of them): allows a set of audited EC drivers, in exchange for auto-rotate, USB3/DP over USB-C, and the side volume keys. The safety guarantees change with it, and you must first confirm that sleep can enter S0ix; see [docs/SAFETY.md](docs/SAFETY.md) (Chinese) "EC feature variants". Not yet verified on hardware.
+- `GBOS_EC=sensors` and `GBOS_EC=buttons` (either may be combined with `typec`, neither with `drain`): also allow the auto-rotate sensors or the side volume keys. The safety guarantees are in [docs/SAFETY.md](docs/SAFETY.md) (Chinese), "EC feature variants". Those two are not verified on hardware.
 
 `install.sh` records these settings and a content digest of `base/`, `builder/` and the model profile (including files that are not committed yet); when a setting or the source changes, it stops instead of reusing the old base or image. For a work directory built by an older `install.sh`, delete its `base/` and `build/` once first.
 

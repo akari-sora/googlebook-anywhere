@@ -52,7 +52,8 @@
 | 藍牙 | 🟡 可開啟；未發布 R8 候選可搜尋到附近裝置，配對、使用及重連未驗證 |
 | 上蓋休眠／喚醒、電池電量、「充電中」顯示 | ✅ 可用（v0.2 起） |
 | 觸控螢幕、觸控筆 | 🟡 偵測得到，還沒做實際點擊測試 |
-| 耳機孔、USB-C 資料與外接螢幕 | ⚪ 未驗證 |
+| 耳機孔 | ⚪ 未驗證 |
+| USB-C 資料與外接螢幕 | 🟡 預設開啟（`typec`）。issue #12 使用者回報可用；維護者尚未實機確認。載入 EC 後的 S0ix 也尚未量到 |
 | 螢幕關著時用鍵盤叫醒 | ⚠️ 已知問題，請用電源鍵或開合上蓋 |
 | 自動旋轉、光感測 | ❌ 目前 Android 沒有可用感測器 |
 | 鍵盤背光調整 | ⚠️ v0.3.1 含背光曲線來源修正，尚未實機驗證；先前 R6 USB 候選可控制亮／滅，但曲線有缺陷，詳見 [KANO 狀態](docs/STATUS-KANO.md) |
@@ -277,8 +278,9 @@ install/gbos-report.sh --probe gbos-probe --out gbos-report
   沒登記的金鑰會被拒（`unauthorized`），見 SAFETY.md「資料安全取捨」。
 - `GBOS_DEFAULT_ENTRY=lapis-debug.conf`：預設改成 serial-debug（序列埠 console + logcat 鏡像）。
 - `GBOS_LOADER_EDITOR=yes`：開機選單可以編輯核心參數（harness 的 `kano-boot.sh` 附加參數時需要）。
+- `GBOS_EC` 沒設定時，KANO 建置等於 `typec`：放行經過稽核的 USB-C 驅動（USB3／DisplayPort）。`GBOS_EC=none` 或把 `GBOS_EC` 設成空字串會關掉，EC 維持不可達。其他機型沒設定時不放行，設了 `typec` 仍會拒絕。`thunderbolt`、`cros_typec_switch`、`cros_ec_ucsi`、`cros_usbpd_charger` 維持封鎖。載入 EC transport 之後的硬體 S0ix 尚未量到，休眠失敗恢復可能重設 AP。USB-C 畫面與底座是 issue #12 的使用者回報，維護者尚未實機確認。見 [docs/SAFETY.md](docs/SAFETY.md)「EC 功能變體」。
 - `GBOS_EC=drain`：僅限 KANO、實驗性且須單獨使用，只放行 EC 傳輸模組；休眠失敗恢復可能重設 AP，造成資料遺失。10-29 已觀察到約 33 分鐘沒有自行亮屏及鍵盤喚醒，S0ix／電源鍵／上蓋仍未驗證，見 [KANO 硬體狀態](docs/STATUS-KANO.md)。
-- `GBOS_EC=sensors,typec,buttons`（可只選幾項）：放行一組經過稽核的 EC 驅動，換來自動旋轉、USB-C 的 USB3／DP、側邊音量鍵。安全保證會跟著改變，而且要先確認休眠能進入 S0ix，見 [docs/SAFETY.md](docs/SAFETY.md)「EC 功能變體」。尚未在實機驗證。
+- `GBOS_EC=sensors`、`GBOS_EC=buttons`（可與 `typec` 並列，不可與 `drain` 並列）：再放行自動旋轉的感測器或側邊音量鍵。安全保證見 [docs/SAFETY.md](docs/SAFETY.md)「EC 功能變體」。這兩項尚未在實機驗證。
 
 `install.sh` 會記下這些設定與 `base/`、`builder/`、機型設定的內容摘要（包括還沒 commit 的檔案）；設定或原始碼一變，就會停下來而不是沿用舊的 base 或映像。舊版 `install.sh` 建的工作目錄要先刪掉一次 `base/` 與 `build/`。
 

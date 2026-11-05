@@ -265,6 +265,15 @@ if [ "$WANT_AC" = 1 ] || [ "$WANT_WF" = 1 ]; then
 fi
 
 log "4/4 image ($IMAGE_NAME) + QEMU self-tests (about 10 minutes)"
+# Unset on KANO is typec. Unset on any other profile, GBOS_EC=none, and an explicit empty value are no EC
+# features. Same rule as builder/build.sh. Record the resolved value so a later build with a different
+# choice is not reused.
+if [ -z "${GBOS_EC+x}" ]; then
+    if [ "$MODEL_ID" = kano ]; then export GBOS_EC=typec; else export GBOS_EC=none; fi
+elif [ -z "$GBOS_EC" ]; then
+    export GBOS_EC=none
+fi
+log "EC features: $GBOS_EC (KANO default is typec; GBOS_EC=none or an empty GBOS_EC leaves the EC unreachable)"
 # what this build is made of; an existing build is reused only when all of it is the same. The firmware and audio inputs
 # are pinned by SHA-256 in the profile (checked by builder/vendor.sh), so their paths are enough, unless
 # GBOS_ALLOW_FIRMWARE_DRIFT=1.
@@ -279,7 +288,7 @@ selftest $SELFTEST
 qemu-seconds ${GBOS_QEMU_SECONDS:-200}
 default-entry ${GBOS_DEFAULT_ENTRY:-lapis-quiet.conf}
 loader-editor ${GBOS_LOADER_EDITOR:-no}
-ec-features ${GBOS_EC:-none}
+ec-features $GBOS_EC
 android-model ${GBOS_ANDROID_MODEL:-none}
 image-name $IMAGE_NAME
 profile $PROFILE
