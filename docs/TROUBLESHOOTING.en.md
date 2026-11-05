@@ -1,4 +1,4 @@
-# Troubleshooting (Googlebook Anywhere v0.3.0, unreleased)
+# Troubleshooting (Googlebook Anywhere v0.3.0)
 
 This document describes known boot and usage problems in a
 **symptom → likely cause → what to do** format. It covers only items with a
