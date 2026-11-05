@@ -50,9 +50,21 @@ stick:
   stage: test
   <<: *deps
   script:
-    - python3 tests/stick/selftest.py "$(mktemp -d)/w"
-    - python3 tests/update/selftest.py "$(mktemp -d)/w"
-    - python3 tests/update/mutate.py -j 2      # each listed guard of gbos-update.py reverted in a copy must turn the self-test red
+    - df -h "${TMPDIR:-/tmp}"
+    - df -i "${TMPDIR:-/tmp}"
+    - |
+      (
+        T=$(mktemp -d "${TMPDIR:-/tmp}/gbos-stick.XXXXXX") || exit 1
+        trap 'rm -rf -- "$T"' EXIT
+        python3 tests/stick/selftest.py "$T/w"
+      )
+    - |
+      (
+        T=$(mktemp -d "${TMPDIR:-/tmp}/gbos-update.XXXXXX") || exit 1
+        trap 'rm -rf -- "$T"' EXIT
+        python3 tests/update/selftest.py "$T/w"
+      )
+    - python3 tests/update/mutate.py -j 1      # each listed guard of gbos-update.py reverted in a copy must turn the self-test red
     # Docker is root. This suite is the normal-user path (no network, no disk), same python entry as the lines above.
     - useradd -m tester && chown -R tester:tester "$CI_PROJECT_DIR"
     - runuser -u tester -- python3 tests/update/check-updates-test.py   # offline fixtures (install/check-updates.py, update.sh notice)

@@ -5,7 +5,7 @@
 2026-10-22 軟體驗收更新：v0.2.3 的 CI、韌體檢查與突變測試結果見 [軟體驗收紀錄](VERIFICATION-v0.2.3.md)。該輪沒有新增 KANO 實機開機或硬體測試；下方仍保留原實機紀錄的日期與範圍，不代表 16658739 的重新驗證。
 
 驗證日期 2026-10-12。**目前唯一在實機上驗證過的是一台 Alder Lake-P K0 工程樣機**（CPU Core i7-1260P，CPUID `06-9a-02`，iGPU PCI ID `8086:46a6`，ChromeOS CBI SKU `131073`；`131073` 是 CBI SKU，不是 CPU 型號），Googlebook 裝在內建 NVMe（SAMSUNG MZVLQ128HCHQ）。
-下方功能表中的每一項都是在該台實機上量到的結果，不是推論；唯一的例外寫明在該列（休眠／喚醒的鍵盤喚醒問題，目前是依核心原始碼推得）。驗證方式見最右欄；用到的工具在 `tools/harness/`。
+下方功能表區分實測結果、依來源推論及尚未驗證的項目；各項證據與適用映像見最右欄，用到的工具在 `tools/harness/`。
 
 ## KANO 主機板家族型號表（CP714-1WN 與 CP714-2WN）
 
@@ -35,7 +35,7 @@ Acer Chromebook Spin 714 的 12 代（`CP714-1WN`）與 13 代（`CP714-2WN`，C
 
 ## 驗證機（`46a6` 工程樣機）實測紀錄
 
-表中的功能是在開發者設定的映像上量的（final26：serial-debug 預設、網路 adb、選單編輯器開啟），量測對象是那台 `46a6` 工程樣機。`tests/builder/repro.sh` 當時證明那個 builder 與 final26 逐檔相同（只差刻意改過的 loader.conf，以及之後拿掉的 plain 選項 `lapis.conf`）。v0.2.1 的家族設定之後這句不再成立：開機命令列、兩個 RPL SOF 韌體檔，以及它們帶動的 vbmeta／super／initrd hash 鏈都和 final26 不同。功能表仍是較早那張映像在 `46a6` 上量到的，不是這次命令列的實機紀錄。
+表中的實測紀錄除另有註明外來自開發者設定的映像（final26：serial-debug 預設、網路 adb、選單編輯器開啟），對象是那台 `46a6` 工程樣機；各列也明確標出推論與未測項目。`tests/builder/repro.sh` 當時證明那個 builder 與 final26 逐檔相同（只差刻意改過的 loader.conf，以及之後拿掉的 plain 選項 `lapis.conf`）。v0.2.1 的家族設定之後這句不再成立：開機命令列、兩個 RPL SOF 韌體檔，以及它們帶動的 vbmeta／super／initrd hash 鏈都和 final26 不同。較早映像的結果不是新版命令列的實機紀錄。
 
 ### serial-debug 還留著什麼
 
@@ -68,7 +68,7 @@ userdata、metadata、misc 三個分割區。
 | 內建麥克風（DMIC） | 可用 | 喇叭 → DMIC 回授測試，1 kHz 從 -121 dB 升到 -42 dB |
 | 耳機孔 | 未驗證 | NAU8825、jack 偵測已註冊，需要插入耳機測試 |
 | Wi-Fi（AX211） | 可用 | 連上家用網路，ping 正常 |
-| 藍牙（AX211） | 可用 | 3 秒開啟、0 次崩潰（在慢速 USB 隨身碟上，開機 I/O 高峰時藍牙堆疊會逾時崩潰，I/O 平穩後可開啟，見 JOURNAL） |
+| 藍牙（AX211） | 可開啟；配對、使用及重連未驗證 | 3 秒開啟、0 次崩潰（在慢速 USB 隨身碟上，開機 I/O 高峰時藍牙堆疊會逾時崩潰，I/O 平穩後可開啟，見 JOURNAL）。2026-11-05 未發布 R8 候選可搜尋到附近裝置；未配對。 |
 | 電源鍵 | 可用 | 亮螢幕時按下 → 關螢幕並 s2idle；休眠時按下 → 喚醒並亮螢幕 |
 | 上蓋開關 | 可用（v0.2） | 闔上 1 秒內休眠，打開喚醒。v0.1 闔著時會在幾十秒內自己亮起；v0.2 映像闔著 300 秒、160 秒都沒亮（見下一列，2026-10-13 實測） |
 | 休眠／喚醒（s2idle） | 可用（v0.2），鍵盤喚醒有已知問題 | 會進 s2idle。v0.1 待機留不住：每次暗中喚醒（RTC 鬧鐘、EC 事件）後，GKI 的 ACPI 電源鍵驅動都會送 `KEY_WAKEUP`，Android 當成喚醒鍵而亮螢幕，所以關螢幕或闔上蓋子後 7～76 秒就自己醒來（2026-10-13：關螢幕休眠 74 秒、闔蓋休眠 17.5 秒後醒，喚醒裝置都是 `Power Button`）。v0.2 起 KANO 映像帶 `gbos_wakefilter.ko`（`builder/kmod/build-gbos_wakefilter.sh`），電源鍵沒有喚醒系統時就丟掉這個 `KEY_WAKEUP`。2026-10-13 在隨身碟上的 v0.2 映像實測：闔蓋 300 秒期間暗中喚醒 10 次、160 秒期間 9 次，螢幕全程沒亮（觀察鏡頭畫面）；螢幕關閉時按電源鍵會亮。**已知問題**：螢幕關著時按內建鍵盤可能叫不醒螢幕：喚醒那一下按鍵在 i8042 resume 時被讀掉，模組判斷時還看不到任何按鍵事件，於是 `KEY_WAKEUP` 被丟掉（審查依核心原始碼推得，實機還沒測）；請用電源鍵或開合上蓋。這是已知問題，v0.2.1 沒有修。也沒有進到 S0ix：LPIT 的系統 residency 一直是 0，CPU package residency 則跟著休眠時間增加 |
@@ -77,7 +77,7 @@ userdata、metadata、misc 三個分割區。
 | 「充電中」顯示 | 可用（v0.2） | v0.2 起 KANO 映像帶 ACPI 充電器驅動 `ac.ko`（`builder/kmod/build-ac.sh` 從固定版本的核心原始碼建置），只讀 ACPI `_PSR`，不送 EC 指令。QEMU 裡 `AC Adapter [AC] (on-line)`、healthd `chg=a`；KANO 實機（2026-10-13，隨身碟上的 v0.2 映像）接著充電器時 `BATTERY_CHANGED plugged=1`、狀態列顯示充電中。實際充電一直由 EC 自行處理，不受影響 |
 | 鍵盤背光調整／睡眠關燈 | 舊配置受限；未發布候選部分可用，驗收未完成 | 較早實測配置的 Android 控制狀態與實際燈光不同步，不能據此認定 EC 或硬體無法調光。未發布 R6 USB 候選已驗證控制端點與照片定性亮／滅，但 EC 回報級距為 0、3、5、8、10、12、15、17、19、22、100%，最後跳升是尚未解決的可用性缺陷。未發布 R8 候選含曲線來源修正，修正後曲線尚未實機測試；自動關燈、反覆睡醒、闔蓋、冷開機、S0ix 與待機耗電的完整驗收仍未完成。這些候選結果不能回推至已發布的 v0.3.0。 |
 | 自動旋轉、光感測 | 不可用 | 感測器在 EC 的 sensor hub 後面，目前封鎖 |
-| 內建相機（IPU6 + ov2740） | 開發中 | 硬體路徑已在維護 Linux 實測出畫面；Googlebook 原本的相機 HAL 只支援 IPU7，IPU6 用的上游 libcamera HAL 已做成 KANO 機型設定的選項（`camera.libcamera`，預設關；開發者用 `GBOS_CAMERA_OVERLAY` 建置），Android 上的實機驗證未完成。外接 USB 鏡頭走 `usb` provider |
+| 內建相機（IPU6 + ov2740） | 目前版本不可用；替代 HAL 開發中 | 硬體路徑已在維護 Linux 實測出畫面；Googlebook 原本的相機 HAL 只支援 IPU7，IPU6 用的上游 libcamera HAL 已做成 KANO 機型設定的選項（`camera.libcamera`，預設關；開發者用 `GBOS_CAMERA_OVERLAY` 建置）。2026-11-05 未發布 R8 實測 total 0、normal 0，原生診斷顯示 `No available camera`，未通過預覽或拍照。來源候選 0006–0009 已通過完整 Android NDK 編譯（8 個輸出檔），新映像建置中，尚未經實機驗證；編譯通過不代表相機已修好。外接 USB 鏡頭走 `usb` provider |
 | USB-A | 可用 | 隨身碟開機與讀寫 |
 | USB-C 資料、外接螢幕 | 未驗證 | 需要實體裝置 |
 | 指紋 | 不適用／封鎖 | GSPI 由 pci-stub 佔住 |

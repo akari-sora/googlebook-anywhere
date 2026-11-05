@@ -48,7 +48,8 @@ Each record below applies to its recorded image and one 12th-generation KANO eng
 
 | Feature | Status |
 |---|---|
-| Desktop, Wi-Fi, Bluetooth, touchpad, keyboard, speakers, microphone, power button | ✅ Works |
+| Desktop, Wi-Fi, touchpad, keyboard, speakers, microphone, power button | ✅ Works |
+| Bluetooth | 🟡 Can be turned on; the unreleased R8 candidate discovers nearby devices, while pairing, use and reconnection are unverified |
 | Lid sleep/wake, battery level, "charging" indicator | ✅ Works (since v0.2) |
 | Touchscreen, stylus | 🟡 Detected, no real tap test yet |
 | Headphone jack, USB-C data and external display | ⚪ Not verified |
@@ -62,7 +63,7 @@ For how each item was verified, see [docs/STATUS-KANO.md](docs/STATUS-KANO.md) (
 <details>
 <summary>Full description (standby, wake filtering, model mapping)</summary>
 
-On that engineering sample and the respective recorded images, these daily functions have been tested: the desktop, Wi-Fi, Bluetooth, touchpad, keyboard, speakers, microphone, power button and lid sleep/wake have all been verified on hardware;
+On that engineering sample and the respective recorded images, these daily functions have been tested: the desktop, Wi-Fi, touchpad, keyboard, speakers, microphone, power button and lid sleep/wake. Bluetooth can be turned on, and the unreleased R8 candidate discovered nearby devices; pairing, use and reconnection are unverified.
 the touchscreen and stylus are detected, but no real tap test has been done yet. For how each item was verified, see [docs/STATUS-KANO.md](docs/STATUS-KANO.md) (Chinese).
 
 Still incomplete: auto-rotate and the light sensor, full keyboard-backlight adjustment and sleep acceptance, and the built-in camera (in development, off by default). The unreleased R6 USB candidate demonstrated backlight on/off, but its brightness curve remains defective.
