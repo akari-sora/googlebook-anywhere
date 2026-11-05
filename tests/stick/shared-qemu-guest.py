@@ -56,7 +56,7 @@ def digest(path):
         return hashlib.file_digest(source, 'sha256').hexdigest()
 
 
-def prepare(repo_root, outdir):
+def prepare(repo_root, outdir, controller=False):
     """Build v1/v2 synthetic catalogs and copy only guest runtime dependencies.
 
     Run only on an unprivileged Linux host with mtools in a new, private work
@@ -76,6 +76,8 @@ def prepare(repo_root, outdir):
              'install/stick/shared-source.py', 'install/stick/catalog.py',
              'install/stick/detect-model.py', 'profiles/kano/profile.toml',
              'profiles/amd-hx370/profile.toml', 'tests/stick/shared-qemu-guest.py')
+    if controller:
+        files += ('install/stick/universal-controller.py',)
     for relative in files:
         dst = out / 'repo' / relative
         dst.parent.mkdir(parents=True, exist_ok=True)
@@ -126,9 +128,22 @@ def prepare(repo_root, outdir):
         (fixture / name).unlink(missing_ok=True)
     for path in fixture.glob('*.sha256'):
         path.unlink()
+    if controller:
+        stage_controller_catalogs(out, fixture, result)
     result['target_size'] = largest + 24 * MIB
     result['scope'] = 'SYNTHETIC_QEMU_FIXTURE_ONLY'
     return result
+
+
+def stage_controller_catalogs(out, fixture, result):
+    """Stage only the already-built miniature payloads under fixed catalog names."""
+    for label, catalog_name, payload_key in (('fresh', 'fresh-catalog.json', 'fresh_payloads'),
+                                              ('update', 'catalog.json', 'payloads')):
+        destination = out / ('controller-' + label)
+        destination.mkdir(mode=0o700)
+        shutil.copyfile(fixture / catalog_name, destination / 'catalog.json')
+        for info in result[payload_key].values():
+            shutil.copyfile(fixture / info['path'], destination / info['path'])
 
 
 def unique_object(pairs):
@@ -323,13 +338,17 @@ class TopologyObservation:
         return result
 
 
-def observe_operation(shared, operation, *args, **kwargs):
+def observe_operation(backend, operation, *args, **kwargs):
     previous = sys.getprofile()
-    observer = TopologyObservation(shared, previous)
+    observer = TopologyObservation(backend, previous)
     try:
         sys.setprofile(observer)
         try:
-            return operation(*args, **kwargs)
+            result = operation(*args, **kwargs)
+            if isinstance(result, dict) and result.get('status') == 'UNKNOWN':
+                print('GBOS_QEMU_OBSERVATION ' + json.dumps(observer.report(), sort_keys=True,
+                      separators=(',', ':')), flush=True)
+            return result
         finally:
             sys.setprofile(previous)
     except BaseException:
@@ -342,8 +361,13 @@ def observe_operation(shared, operation, *args, **kwargs):
 
 
 def run(request):
-    if (not isinstance(request, dict) or set(request) !=
-            {'schema', 'action', 'expected_catalog_sha256', 'expected_profile', 'payloads'}
+    mode = request.get('mode') if isinstance(request, dict) else None
+    expected_keys = {'schema', 'action', 'expected_catalog_sha256', 'expected_profile', 'payloads'}
+    if mode is not None:
+        expected_keys.add('mode')
+    if (not isinstance(request, dict) or set(request) != expected_keys
+            or mode not in (None, 'controller', 'controller-cancel')
+            or (mode is not None and request.get('action') not in ('fresh', 'update'))
             or type(request['schema']) is not int or request['schema'] != 1
             or request['action'] not in ('fresh', 'update', 'bad-catalog')
             or request['expected_profile'] not in PROFILES
@@ -379,6 +403,28 @@ def run(request):
         selected = None  # The real block backend must independently reject unknown DMI.
     if selected is not None and selected != request['expected_profile']:
         raise ValueError('recognized profile differs from host expectation')
+    if mode is not None:
+        if selected is None:
+            raise ValueError('controller mode requires recognized profile')
+        controller = load('guest_universal_controller', BUNDLE / 'repo/install/stick/universal-controller.py')
+        controller_bundle = BUNDLE / ('controller-' + action)
+        controller_raw = (controller_bundle / 'catalog.json').read_bytes()
+        if controller_raw != raw:
+            raise ValueError('controller catalog differs from validated fixture')
+        controller_items = shared.catalog.schema(controller_raw)
+        if {item['profile']: item['image'] for item in controller_items} != request['payloads']:
+            raise ValueError('controller payload mapping mismatch')
+        with shared.catalog.validate(str(controller_bundle), 'catalog.json', expected):
+            pass
+        build = next(item['build_id'] for item in controller_items if item['profile'] == selected)
+        confirmation = '' if mode == 'controller-cancel' else ('INSTALL' if action == 'fresh' else 'UPDATE') + ' ' + TARGET
+        answers = iter(('1\n', confirmation + '\n'))
+        result = observe_operation(shared, controller.run, action,
+            snapshot=lambda: (selected, build, expected), shared=shared,
+            enumerate_targets=lambda: [TARGET], read_line=lambda limit: next(answers),
+            write=lambda message: None, bundle=str(controller_bundle), dmi=Path('/sys/class/dmi/id'))
+        return {'status': result.get('status'), 'action': action, 'profile': selected,
+                'controller': result, 'scope': 'SYNTHETIC_QEMU_ONLY', 'hardware': 'NOT_VERIFIED'}
     facts = shared.observe_block_target(TARGET)
     operation = shared.apply_observed_block if action == 'update' else shared.install_observed_block
     try:
@@ -410,7 +456,7 @@ def main():
         result = {'status': 'ERROR', 'reason': type(exc).__name__ + ': ' + str(exc)[:400],
                   'scope': 'SYNTHETIC_QEMU_ONLY', 'hardware': 'NOT_VERIFIED'}
     print('GBOS_QEMU_RESULT ' + json.dumps(result, sort_keys=True, separators=(',', ':')), flush=True)
-    return 0 if result['status'] in ('OK', 'REFUSED') else 1
+    return 0 if result['status'] in ('OK', 'REFUSED', 'COMPLETED', 'CANCELLED') else 1
 
 
 if __name__ == '__main__':

@@ -42,6 +42,12 @@
   - v0.3.0 映像已帶 `gbos-no-ota.rc`，但不能保證實機不再卡住。v0.2.3（含）以前：預設映像沒有 adb（只有建置時另外給公鑰才會開），不靠 adb 沒有已知解法。
   - 還沒有在實機上驗證（未實機測試）：`update_engine` 在裝置上完全不會執行、精靈之後會走完、GMS 怎麼反應。QEMU 沒有網路，也看不到 Google 實際提供更新的那一段。
 
+### 首次設定時不想設定 PIN
+
+在一台 KANO 實測的 R6 USB 候選上，可以在選擇鎖定方式時選 **PIN**，接著在空白的 PIN 頁選 **Skip**，再選 **Skip anyway**；不需要輸入 PIN。該次流程到達 Google 服務頁與桌面。這項結果只適用該次測試的映像，資料與設定保留、冷開機後的完整流程仍待驗證。
+
+這個候選使用 Google build `16658739`，建置時同時設定 `GBOS_SETUP_PIN_SKIP=1` 和 `GBOS_ANDROID_MODEL=profile`；此選項預設關閉，只支援這個 KANO 建置路徑。這是建置設定，不代表已發布的來源包內含此 OS 映像。如果 PIN 頁沒有 **Skip**，不能認定該映像支援此流程。另有已知問題：在前一頁選 **Not now** 再選 **Skip anyway**，可能回到 **Choose a picture**；此路徑尚未修復。詳見 [KANO 剩餘目標](KANO-REMAINING-GOALS.md)。
+
 ### 開機就失敗，或開機後某些程式閃退（CPU 太舊）
 
 - **症狀**：選單後幾乎立刻失敗、kernel panic，或開機後某些 App 一開就閃退。

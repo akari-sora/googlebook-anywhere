@@ -7,8 +7,12 @@ and activity-result handling remain in Settings and Setup Wizard.
 
 The initial candidate is opt-in with `GBOS_SETUP_PIN_SKIP=1`, together with
 `GBOS_ANDROID_MODEL=profile`, for the pinned KANO / Google build 16658739 route.
-It is not enabled by default. It does not fix the separate generic Not now
-activity-result defect by itself. Physical setup completion remains unverified.
+It is not enabled by default. It does not fix the separate Not now
+setup-flow problem by itself. On one KANO R6 USB candidate, the empty PIN
+page's Skip and Skip anyway flow reached Google services and the desktop without
+entering a PIN. Data/settings retention and a complete cold-boot repeat remain
+unverified; Not now may return to Choose a picture. Other images are not covered
+by this observation.
 Enabled candidates add `setup_pin_skip=true` to their build-record options and
 require this revision's record reader. Older strict readers reject that record;
 default builds retain the legacy option set and remain readable by those readers.

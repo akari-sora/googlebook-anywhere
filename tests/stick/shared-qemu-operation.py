@@ -166,7 +166,7 @@ def prepare_overlay(source, work):
     return overlayfd, baseline, changed
 
 
-def make_bundle(work):
+def make_bundle(work, controller=False):
     bundle = work / 'bundle'
     bundle.mkdir(mode=0o700)
     spec = importlib.util.spec_from_file_location('shared_qemu_guest', HERE / 'shared-qemu-guest.py')
@@ -174,7 +174,7 @@ def make_bundle(work):
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
-    manifest = module.prepare(ROOT, bundle)
+    manifest = module.prepare(ROOT, bundle, controller=controller)
     (work / 'fixture-manifest.json').write_text(json.dumps(manifest, sort_keys=True, indent=2) + '\n')
     total = sum(x.stat().st_size for x in bundle.rglob('*') if x.is_file())
     size = ((total + 128 * MIB + MIB - 1) // MIB) * MIB
@@ -260,6 +260,22 @@ def check_negative(result, stats, expected, tag):
          f'{tag}: unexpected refusal stage/reason: {result}')
 
 
+def check_controller_result(result, stats, request, tag):
+    need(no_writes(stats['stick']), f'{tag}: USB was written or unmapped')
+    mode = request.get('mode')
+    if mode == 'controller-cancel':
+        need(no_writes(stats['nv']) and result.get('status') == 'CANCELLED'
+             and result.get('controller') == {'status': 'CANCELLED', 'hardware': 'NOT_VERIFIED'},
+             f'{tag}: cancellation was not read-only')
+    elif mode == 'controller':
+        need(stats['nv']['wr_operations'] > 0 and result.get('status') == 'COMPLETED'
+             and result.get('profile') == request['expected_profile']
+             and result.get('controller') == {'status': 'COMPLETED', 'hardware': 'NOT_VERIFIED'},
+             f'{tag}: unexpected controller result {result}')
+    else:
+        raise ValueError('unknown controller mode')
+
+
 def run_guest(work, tag, source, overlayfd, aux, targetfd, target, targetsize,
               code, vars_template, identity, request, negative=None):
     vars_path = work / f'{tag}-vars.fd'
@@ -343,7 +359,9 @@ def run_guest(work, tag, source, overlayfd, aux, targetfd, target, targetsize,
                         json.dump({'guest': result, 'qmp': stats}, evidence, sort_keys=True, indent=2)
                         evidence.write('\n')
                     need(no_writes(stats['stick']), f'{tag}: USB was written or unmapped')
-                    if negative is not None:
+                    if request.get('mode') in ('controller', 'controller-cancel'):
+                        check_controller_result(result, stats, request, tag)
+                    elif negative is not None:
                         check_negative(result, stats, negative, tag)
                     else:
                         need(stats['nv']['wr_operations'] > 0, f'{tag}: no actual NVMe writes')
@@ -508,6 +526,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ('source', 'source-sha256', 'work', 'ovmf-code', 'ovmf-vars'):
         parser.add_argument('--' + name, required=True)
+    parser.add_argument('--controller', action='store_true', help='exercise controller against virtual NVMe')
     a = parser.parse_args()
     need(sys.platform.startswith('linux') and os.geteuid() != 0, 'requires non-root Linux host')
     need(re.fullmatch('[0-9a-f]{64}', a.source_sha256), 'invalid source digest')
@@ -524,7 +543,7 @@ def main():
         progress('prepare-overlay')
         overlayfd, baseline, changed = prepare_overlay(source, work)
         progress('prepare-fixtures')
-        manifest, bundle, aux = make_bundle(work)
+        manifest, bundle, aux = make_bundle(work, controller=a.controller)
         spec = importlib.util.spec_from_file_location('shared_qemu_lp', HERE / 'shared-qemu-lp.py')
         need(spec is not None and spec.loader is not None, 'independent LP checker missing')
         lp = importlib.util.module_from_spec(spec)
@@ -547,6 +566,8 @@ def main():
                     request = {'schema': 1, 'action': action, 'expected_profile': profile,
                                'expected_catalog_sha256': manifest['fresh_catalog_sha256' if fresh else 'catalog_sha256'],
                                'payloads': manifest['fresh_payloads' if fresh else 'payloads']}
+                    if a.controller:
+                        request['mode'] = 'controller'
                     selected_path(bundle, request['payloads'][profile])
                     tag = f'{profile}-{action}'
                     progress('guest-start', case=tag)
@@ -584,11 +605,25 @@ def main():
                     target_named(targetfd, target, manifest['target_size'])
             finally:
                 os.close(targetfd)
-        for tag, identity, action, negative in (
+        if a.controller:
+            target = work / 'controller-cancel.img'
+            fd = create(target, manifest['target_size'])
+            try:
+                before_cancel = digest(fd)
+                req = {'schema': 1, 'action': 'fresh', 'mode': 'controller-cancel',
+                       'expected_profile': 'kano', 'expected_catalog_sha256': manifest['fresh_catalog_sha256'],
+                       'payloads': manifest['fresh_payloads']}
+                checks['controller-cancel'] = run_guest(work, 'controller-cancel', source, overlayfd, aux, fd,
+                    target, manifest['target_size'], a.ovmf_code, a.ovmf_vars, manifest['smbios']['kano'], req)
+                target_named(fd, target, manifest['target_size'])
+                need(digest(fd) == before_cancel, 'cancel target changed')
+            finally:
+                os.close(fd)
+        for tag, identity, action, negative in (() if a.controller else (
                 ('bad-catalog', manifest['smbios']['kano'], 'bad-catalog',
                  ('BACKEND_CATALOG_HASH', 'CATALOG_DIGEST_MISMATCH', 'Refused', 'invalid_catalog_or_payload')),
                 ('unknown', {}, 'fresh', ('BACKEND_MODEL_SELECTION', 'UNRECOGNIZED_DMI', 'ValueError',
-                                         'machine profile is not uniquely and completely recognized'))):
+                                         'machine profile is not uniquely and completely recognized')))):
             target = work / f'{tag}.img'
             fd = create(target, manifest['target_size'])
             try:

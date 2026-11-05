@@ -163,7 +163,8 @@ def setup_root(root, catalog_sha, data_guid, records=None):
                 'etc/systemd/system/gbos-installer.service', 'usr/local/sbin/gbos-update.py'):
         need(not os.path.lexists(root / rel), 'root contains installer or update payload')
     app = safe_dir(root, 'opt/googlebook/install/stick')
-    for name in ('catalog.py', 'detect-model.py', 'universal-diagnostic.py', 'shared-source.py', 'universal-menu.py'):
+    for name in ('catalog.py', 'detect-model.py', 'universal-diagnostic.py', 'shared-source.py',
+                 'universal-menu.py', 'universal-controller.py'):
         write_new(app / name, (HERE / name).read_bytes())
     for name in ('gbos-update.py', 'gbos-fresh.py'):
         write_new(app.parent / name, (HERE.parent / name).read_bytes())
@@ -474,7 +475,8 @@ def build(args):
                             'etc/systemd/system/gbos-universal-menu.service',
                             'etc/tmpfiles.d/root.conf', 'etc/.updated', 'etc/locale.conf', 'etc/vconsole.conf']
             root_members += ['opt/googlebook/install/stick/' + name for name in
-                             ('catalog.py', 'detect-model.py', 'universal-diagnostic.py', 'shared-source.py', 'universal-menu.py')]
+                             ('catalog.py', 'detect-model.py', 'universal-diagnostic.py', 'shared-source.py',
+                              'universal-menu.py', 'universal-controller.py')]
             root_members += ['opt/googlebook/install/' + name for name in ('gbos-update.py', 'gbos-fresh.py')]
             root_members += ['opt/googlebook/profiles/' + name + '/profile.toml'
                              for name in ('kano', 'amd-hx370')]

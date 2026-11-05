@@ -48,6 +48,12 @@ For firmware flashing, writing the USB, and safety trade-offs, see `FIRMWARE.md`
   - v0.3.0 images carry `gbos-no-ota.rc`, but this does not yet prove the loop is resolved on hardware. On v0.2.3 or older, the default image has no adb (adb exists only when the build was given a public key), with no known adb-less workaround.
   - Not verified on hardware: that `update_engine` never runs at all on a device, that the wizard then finishes, and how GMS reacts. QEMU has no network, so it cannot show Google actually offering an update.
 
+### Skip the PIN during first setup
+
+On one KANO test using the R6 USB candidate, select **PIN** when choosing a screen lock, leave the PIN field empty, select **Skip**, then **Skip anyway**. No PIN needs to be entered. That test reached Google services and the desktop. This result applies to that tested image; data and settings retention and the complete flow after a cold boot remain unverified.
+
+The candidate used Google build `16658739` and was built with both `GBOS_SETUP_PIN_SKIP=1` and `GBOS_ANDROID_MODEL=profile`. The option is off by default and supports only this KANO build path. These are build settings; the released source archive does not include this OS image. If the PIN page has no **Skip**, this flow has not been established for that image. A separate known issue remains: choosing **Not now** on the previous page and then **Skip anyway** may return to **Choose a picture**. See [KANO remaining goals](KANO-REMAINING-GOALS.md).
+
 ### Boot fails, or some programs crash after boot (CPU too old)
 
 - **Symptom**: It fails almost right after the menu, panics, or some apps crash as soon as they open.

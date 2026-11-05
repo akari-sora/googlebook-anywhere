@@ -96,7 +96,8 @@ class SharedMediumTest(unittest.TestCase):
         self.assertIn('After=gbos-universal-diagnostic.service', menu_unit)
         self.assertIn('StandardInput=tty', menu_unit)
         self.assertIn('TTYPath=/dev/tty1', menu_unit)
-        for name in ('catalog.py', 'detect-model.py', 'universal-diagnostic.py', 'shared-source.py', 'universal-menu.py'):
+        for name in ('catalog.py', 'detect-model.py', 'universal-diagnostic.py', 'shared-source.py',
+                     'universal-menu.py', 'universal-controller.py'):
             self.assertTrue((self.root / 'opt/googlebook/install/stick' / name).is_file())
         for name in ('gbos-update.py', 'gbos-fresh.py'):
             self.assertTrue((self.root / 'opt/googlebook/install' / name).is_file())
@@ -410,13 +411,14 @@ class SharedMediumTest(unittest.TestCase):
         self.assertTrue(image.is_file())
         self.assertTrue(Path(str(image) + '.not-self-tested').is_file())
         self.assertEqual(u.STICK.LAYOUT.load(str(image))[0], image.stat().st_size // 512)
-        self.assertEqual(readback.call_count, 24 if hasattr(self, 'record_fixture') else 20)
+        self.assertEqual(readback.call_count, 25 if hasattr(self, 'record_fixture') else 21)
         if hasattr(self, 'record_fixture'):
             self.assertEqual(staged_records, {p: values[1] for p, values in self.record_fixture.items()})
         expected_readback = {'etc/systemd/system/gbos-universal-menu.service',
                              'opt/googlebook/install/gbos-update.py', 'opt/googlebook/install/gbos-fresh.py'}
         expected_readback.update('opt/googlebook/install/stick/' + name for name in
-                                 ('catalog.py', 'detect-model.py', 'universal-diagnostic.py', 'shared-source.py', 'universal-menu.py'))
+                                 ('catalog.py', 'detect-model.py', 'universal-diagnostic.py', 'shared-source.py',
+                                  'universal-menu.py', 'universal-controller.py'))
         self.assertTrue(expected_readback.issubset({call.args[2] for call in readback.call_args_list}))
         self.assertTrue({'etc/locale.conf', 'etc/vconsole.conf'}.issubset(
             {call.args[2] for call in readback.call_args_list}))
