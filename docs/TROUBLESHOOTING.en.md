@@ -199,13 +199,12 @@ The steps of Settings > Display > Display size are scaled from the base density 
 
 ## Hardware feature limits
 
-The following are **currently unavailable or deliberately blocked**, mostly
-related to the EC (embedded controller) or machine firmware:
+Support and limits depend on the image and machine; see each record below:
 
 | Feature | Status |
 |---|---|
-| Auto-rotate, ambient light sensor | Requires the EC; deliberately blocked or unsupported |
-| Keyboard backlight control | Requires the EC; deliberately blocked or unsupported |
+| Auto-rotate, ambient light sensor | Android listed no available sensors on the tested configuration; this does not establish that the hardware is absent |
+| Keyboard backlight control | Backlight control remains limited in the published v0.3.0; an unreleased R6 USB candidate verified control endpoints and on/off, but its brightness curve has a defect. See [KANO status](STATUS-KANO.md). |
 | Built-in camera | In development, **off by default** |
 | Touchscreen, stylus | Detected, but **no actual click test yet** (untested on hardware) |
 | Wi-Fi, audio (`generic-x86`) | Needs machine firmware, which the generic image mostly does not ship, so usually unavailable |

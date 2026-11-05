@@ -44,6 +44,8 @@ it boots from the firmware all the way to the setup wizard, and the picture come
 
 ## Status (KANO hardware)
 
+Each record below applies to its recorded image and one 12th-generation KANO engineering sample; other SKUs have not been tested. R6 and R8 are unreleased candidates; sleep and power acceptance must be checked separately for each image.
+
 | Feature | Status |
 |---|---|
 | Desktop, Wi-Fi, Bluetooth, touchpad, keyboard, speakers, microphone, power button | ✅ Works |
@@ -51,7 +53,8 @@ it boots from the firmware all the way to the setup wizard, and the picture come
 | Touchscreen, stylus | 🟡 Detected, no real tap test yet |
 | Headphone jack, USB-C data and external display | ⚪ Not verified |
 | Waking with the keyboard while the screen is off | ⚠️ Known issue; use the power button or open and close the lid |
-| Auto-rotate, light sensor, keyboard backlight adjustment | ❌ Not available (they go through the EC: deliberately blocked, or not supported by the hardware itself) |
+| Auto-rotate, light sensor | ❌ No sensors currently available to Android |
+| Keyboard backlight adjustment | ⚠️ Backlight control remains limited in the published v0.3.0; an unreleased R6 USB candidate controls on/off, but its brightness curve has a defect; see [KANO status](docs/STATUS-KANO.md) |
 | Built-in camera | 🔧 In development, off by default |
 
 For how each item was verified, see [docs/STATUS-KANO.md](docs/STATUS-KANO.md) (Chinese).
@@ -59,10 +62,10 @@ For how each item was verified, see [docs/STATUS-KANO.md](docs/STATUS-KANO.md) (
 <details>
 <summary>Full description (standby, wake filtering, model mapping)</summary>
 
-KANO is usable day to day: the desktop, Wi-Fi, Bluetooth, touchpad, keyboard, speakers, microphone, power button and lid sleep/wake have all been verified on hardware;
+On that engineering sample and the respective recorded images, these daily functions have been tested: the desktop, Wi-Fi, Bluetooth, touchpad, keyboard, speakers, microphone, power button and lid sleep/wake have all been verified on hardware;
 the touchscreen and stylus are detected, but no real tap test has been done yet. For how each item was verified, see [docs/STATUS-KANO.md](docs/STATUS-KANO.md) (Chinese).
 
-What does not work: auto-rotate and the light sensor, keyboard backlight adjustment (all of these go through the EC: deliberately blocked, or not supported by the hardware itself), and the built-in camera (in development, off by default).
+Still incomplete: auto-rotate and the light sensor, full keyboard-backlight adjustment and sleep acceptance, and the built-in camera (in development, off by default). The unreleased R6 USB candidate demonstrated backlight on/off, but its brightness curve remains defective.
 "Charging" icon: since v0.2 the image includes the ACPI charger driver (`ac.ko`, reads ACPI only, sends no EC commands); on KANO hardware, Android shows charging when the charger is plugged in (2026-10-13).
 Standby: in v0.1, the screen lights up again by itself within tens of seconds after you close the lid or turn off the screen (every dark wake carries a power-button `KEY_WAKEUP`); since v0.2 the image includes
 `gbos_wakefilter.ko`, which drops that key event when the power button did not wake the system. On KANO hardware, with the lid closed for 300 seconds there were 10 dark wakes and the screen never lit up; with the screen off, pressing the power button turns it on, and opening the lid turns the screen on.

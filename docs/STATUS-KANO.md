@@ -75,7 +75,7 @@ userdata、metadata、misc 三個分割區。
 | 平板模式開關 | 可用 | `SW_TABLET_MODE` 0/1 事件正確 |
 | 電池電量 | 可用 | ACPI BAT0 |
 | 「充電中」顯示 | 可用（v0.2） | v0.2 起 KANO 映像帶 ACPI 充電器驅動 `ac.ko`（`builder/kmod/build-ac.sh` 從固定版本的核心原始碼建置），只讀 ACPI `_PSR`，不送 EC 指令。QEMU 裡 `AC Adapter [AC] (on-line)`、healthd `chg=a`；KANO 實機（2026-10-13，隨身碟上的 v0.2 映像）接著充電器時 `BATTERY_CHANGED plugged=1`、狀態列顯示充電中。實際充電一直由 EC 自行處理，不受影響 |
-| 鍵盤背光調整 | 不可用 | 這台的 EC 本身就調不動（連 EC console `kblight` 都無效），燈固定亮 |
+| 鍵盤背光調整／睡眠關燈 | 舊配置受限；未發布候選部分可用，驗收未完成 | 較早實測配置的 Android 控制狀態與實際燈光不同步，不能據此認定 EC 或硬體無法調光。未發布 R6 USB 候選已驗證控制端點與照片定性亮／滅，但 EC 回報級距為 0、3、5、8、10、12、15、17、19、22、100%，最後跳升是尚未解決的可用性缺陷。未發布 R8 候選含曲線來源修正，修正後曲線尚未實機測試；自動關燈、反覆睡醒、闔蓋、冷開機、S0ix 與待機耗電的完整驗收仍未完成。這些候選結果不能回推至已發布的 v0.3.0。 |
 | 自動旋轉、光感測 | 不可用 | 感測器在 EC 的 sensor hub 後面，目前封鎖 |
 | 內建相機（IPU6 + ov2740） | 開發中 | 硬體路徑已在維護 Linux 實測出畫面；Googlebook 原本的相機 HAL 只支援 IPU7，IPU6 用的上游 libcamera HAL 已做成 KANO 機型設定的選項（`camera.libcamera`，預設關；開發者用 `GBOS_CAMERA_OVERLAY` 建置），Android 上的實機驗證未完成。外接 USB 鏡頭走 `usb` provider |
 | USB-A | 可用 | 隨身碟開機與讀寫 |

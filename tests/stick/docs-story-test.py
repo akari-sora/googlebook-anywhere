@@ -122,7 +122,7 @@ def main():
         fail("synthetic fixture kernel was rewritten")
     if "linux-7.2.7.arch1-1-x86_64.pkg.tar.zst" not in read(PINS):
         fail("maint.pins no longer pins linux 7.2.7.arch1-1")
-    if "做不到的：自動旋轉與光感測" not in root:
+    if "自動旋轉與光感測" not in root:
         fail("unrelated hardware limit was rewritten")
     neg_amdgpu = re.compile(r"(?:lacks\s+an?|no|沒有)\s*`?amdgpu`?\s*`?backend`?", re.IGNORECASE)
     en = read(REPO / "README.en.md")
