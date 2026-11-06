@@ -867,13 +867,18 @@ chown system:shell /data/misc/adb/adb_keys
 chmod 0640 /data/misc/adb/adb_keys
 restorecon /data/misc/adb/adb_keys
 : > "$D/adb-settings.txt" || exit 1
+# cmd passes stdio over Binder; keep all three descriptors as pipes.
 for k in development_settings_enabled adb_enabled; do
-  timeout 20 /system/bin/cmd settings put global "$k" 1 < /dev/null >> "$D/adb-settings.txt" 2>&1
+  output=$(set -o pipefail || exit 1; printf '' | timeout 20 /system/bin/cmd settings put global "$k" 1 2>&1 | cat)
   rc=$?
+  [ -z "$output" ] || printf '%s\\n' "$output" >> "$D/adb-settings.txt" || exit 1
   printf '%s put rc=%s\\n' "$k" "$rc" >> "$D/adb-settings.txt" || exit 1
   [ "$rc" -eq 0 ] || exit "$rc"
-  value=$(timeout 20 /system/bin/cmd settings get global "$k" < /dev/null 2>> "$D/adb-settings.txt")
+  value=$(set -o pipefail || exit 1; printf '' | timeout 20 /system/bin/cmd settings get global "$k" 2>&1 | cat)
   rc=$?
+  if [ "$rc" -ne 0 ] && [ -n "$value" ]; then
+    printf '%s\\n' "$value" >> "$D/adb-settings.txt" || exit 1
+  fi
   printf '%s get rc=%s\\n' "$k" "$rc" >> "$D/adb-settings.txt" || exit 1
   [ "$rc" -eq 0 ] || exit "$rc"
   if [ "$value" != 1 ]; then

@@ -46,9 +46,12 @@ class AdbSettings(unittest.TestCase):
         programs = {
             'timeout': '#!/bin/sh\nshift\nexec "$@"\n',
             'fake-cmd': '''#!/bin/sh
+for fd in 0 1 2; do
+  [ -p /dev/fd/$fd ] || { echo "non-pipe fd $fd" >&2; exit 88; }
+done
 printf '%s %s\\n' "$2" "$4" >> "$EVENTS"
 if [ "$FAIL_AT" = "$2:$4" ]; then
-  case "$MODE" in fail) exit 42 ;; timeout) exit 124 ;; esac
+  case "$MODE" in fail) echo "diagnostic failure" >&2; exit 42 ;; timeout) exit 124 ;; esac
 fi
 if [ "$2" = get ]; then
   if [ "$FAIL_AT" = "get:$4" ] && [ "$MODE" = mismatch ]; then echo 0; else echo 1; fi
@@ -70,7 +73,8 @@ fi
         self.env = dict(os.environ, PATH=str(bindir) + os.pathsep + '/usr/bin:/bin', EVENTS=str(self.events))
 
     def run_generated(self, mode='', fail_at=''):
-        result = subprocess.run(['/bin/sh', str(self.script)],
+        # This host Bash test does not establish behavior on Android mksh.
+        result = subprocess.run(['/bin/bash', str(self.script)],
                                 env=dict(self.env, MODE=mode, FAIL_AT=fail_at),
                                 capture_output=True, text=True, timeout=10)
         events = self.events.read_text().splitlines() if self.events.exists() else []
@@ -101,6 +105,8 @@ fi
                     self.assertEqual(rc, expected)
                     self.assertFalse(any(event.startswith('setprop ') for event in events), events)
                     self.assertIn(f'{key} {operation} rc={0 if mode == "mismatch" else expected}', log)
+                    if mode == 'fail':
+                        self.assertIn('diagnostic failure', log)
                     if mode == 'mismatch':
                         self.assertIn(f'{key} readback mismatch rc=1', log)
 
