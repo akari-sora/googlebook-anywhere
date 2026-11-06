@@ -54,7 +54,7 @@ KANO 的 QEMU 沒有 GPU，所以完整 Android framework 開機與 system_serve
 沒有 `FATAL EXCEPTION IN SYSTEM PROCESS`、分割區完整 APK/APEX alignment）仍強制執行。
 QEMU 通過不能取代 KANO 實機的 `sys.boot_completed=1`、framework 穩定性或桌面驗收。
 
-三個 `console=` 加回這 12 個 ID 的 debug 命令列是 1969 bytes。核心上限是 1973（`COMMAND_LINE_SIZE` 2048 − 1 − 73 bytes 的 `CONFIG_CMDLINE` − 1 byte 分隔空白），再扣 64 bytes 給 `kano-boot.sh` 之後 builder 只接到 1909。1969 放不進去，所以維持拿掉。目前 debug 是 1879 bytes（距核心上限還有 94 bytes），quiet 是 1787 bytes；兩者都含 systemd-boot 的 `initrd=\initrd.img ` 前綴。quiet 本來就沒有這三個 token。
+三個 `console=` 加回套用 EC 變體之前的 debug 命令列是 1969 bytes。核心上限是 1973（`COMMAND_LINE_SIZE` 2048 − 1 − 73 bytes 的 `CONFIG_CMDLINE` − 1 byte 分隔空白），再扣 64 bytes 給 `kano-boot.sh` 之後 builder 只接到 1909。1969 放不進去，所以維持拿掉。套用變體之前 debug 是 1879 bytes、quiet 是 1787 bytes。KANO 預設映像套用 `typec` 之後，debug 是 1892 bytes（距核心上限 81 bytes，距 builder 限制 17 bytes），quiet 是 1800 bytes。兩者都含 systemd-boot 的 `initrd=\initrd.img ` 前綴。quiet 本來就沒有這三個 token。
 
 **新使用者的預設映像也在實機上開過**（2026-10-12）：用全新 AVB 金鑰、quiet 預設、沒有 adb 的映像，模擬剛寫好的隨身碟
 （所有分割區等於映像、/data 開頭清空、GPT 屬性為映像原始值），不按任何鍵開機：約 5 分鐘到 `BOOT_COMPLETED`，畫面停在
@@ -85,7 +85,7 @@ userdata、metadata、misc 三個分割區。
 | 自動旋轉、光感測 | 不可用 | 感測器在 EC 的 sensor hub 後面，目前封鎖。2026-11-02 在 16658739 + drain 的 sensorservice 實際回報沒有感測器；這是 Android 的可用裝置盤點，不能據此認定機器沒有實體感測器 |
 | 內建相機（IPU6 + ov2740） | 目前版本不可用；替代 HAL 開發中 | 硬體路徑已在維護 Linux 實測出畫面；Googlebook 原本的相機 HAL 只支援 IPU7，IPU6 用的上游 libcamera HAL 已做成 KANO 機型設定的選項（`camera.libcamera`，預設關；開發者用 `GBOS_CAMERA_OVERLAY` 建置）。2026-11-02 在 16658739 + drain 實讀 camera service：相機總數 0；2026-11-05 未發布 R8 實測 total 0、normal 0，原生診斷顯示 `No available camera`，未通過預覽或拍照。來源候選 0006–0009 已通過完整 Android NDK 編譯（8 個輸出檔），2026-11-06 新測試映像已完成 51 項映像檢查，獨立完整雜湊與讀回一致；最終 8 個相機檔案、開機設定、AVB 簽章及 10 個分割區描述子均已離線核對，簽署公鑰與擁有者金鑰一致，尚未經實機驗證，不能據此宣稱相機已修好。外接 USB 鏡頭走 `usb` provider |
 | USB-A | 可用 | 隨身碟開機與讀寫 |
-| USB-C 資料、外接螢幕 | 未驗證 | 需要實體裝置 |
+| USB-C 資料、外接螢幕 | 預設開啟，未由維護者實機確認 | KANO 建置未設定 `GBOS_EC` 時等於 `typec`（放行 `cros_ec`、`cros_ec_lpcs`、`cros_ec_dev`、`cros_ec_typec`、`cros_usbpd_notify`）。關掉用 `GBOS_EC=none` 或空的 `GBOS_EC`。`thunderbolt`、`cros_typec_switch`、`cros_ec_ucsi`、`cros_usbpd_charger` 仍封鎖。issue #12 的使用者回報 USB-C 畫面與底座可用；維護者尚未在實機確認。載入 EC transport 之後的硬體 S0ix 也尚未量到，休眠失敗的復原仍可能重設 AP |
 | 指紋 | 不適用／封鎖 | GSPI 由 pci-stub 佔住 |
 | TPM（Cr50） | 刻意封鎖 | 安全規則，見 SAFETY |
 
@@ -116,4 +116,4 @@ userdata、metadata、misc 三個分割區。
 
 哪一個事件會讓螢幕亮起來，目前不知道。`_Q03` 是 PWRB notify 路徑；`_Q1B` 不是。wakefilter 只在已 armed、沒有其他使用者輸入、而且選定的 PWRB wake count 沒有增加時，才丟掉 resume 的 `KEY_WAKEUP`；它放行 `KEY_POWER`。約 59 秒 ON 加 19 秒 OFF 和 Android timeout／autosuspend 相容，這是推論。不能說 MKBP 會自己偽造電源鍵；10-29 的 drain 實機觀察僅證明約 33 分鐘沒有自行亮屏，不能外推更長時間。
 
-實驗性 `GBOS_EC=drain` 不是預設；10-29 的實機觀察涵蓋 transport 載入、約 33 分鐘沒有自行亮屏與鍵盤喚醒，完整休眠／喚醒驗收仍未完成。這個值只解除 `cros_ec` 和 `cros_ec_lpcs`，仍封鎖 `cros_ec_hwmon`、`cros_ec_rpmsg`、`cros_ec_uart`、`cros_ec_wdt`、`gpio_cros_ec`、`rtc_cros_ec`。實機結果與未驗證範圍見本頁開頭及 [驗收紀錄](VERIFICATION-v0.3.0.md)；啟用前仍須核對實際模組原始碼與相依、EC／AML 版本，先在可丟棄資料的 USB 測試，不要直接以內建碟當成先決驗證。先備份資料，休眠失敗恢復可能重設 AP。預設 serial-debug 命令列仍是 1879 bytes、quiet 仍是 1787 bytes。drain 的 serial-debug 拿掉 `ignore_loglevel` 和 `loglevel=8`（quiet 本來就沒有這兩個），讓加上六個 `EC_EXTRA_BLOCK` 名字之後仍是 1909 bytes，64 bytes 的餘裕還在；earlycon 留著。沒有把 `cros_ec_lpcs` 加進 early-boot modprobe：這份 checkout 沒有出貨的 vendor_dlkm `modules.dep`，consumer 不是這兩個模組的必要相依，既有的 GOOG0004 uevent 路徑會載入它們。QEMU 沒有 EC，停在 `EC ID not detected` 不能當成 drain 或 `HOST_SLEEP` 通過。
+實驗性 `GBOS_EC=drain` 不是預設；10-29 的實機觀察涵蓋 transport 載入、約 33 分鐘沒有自行亮屏與鍵盤喚醒，完整休眠／喚醒驗收仍未完成。這個值只解除 `cros_ec` 和 `cros_ec_lpcs`，仍封鎖 `cros_ec_hwmon`、`cros_ec_rpmsg`、`cros_ec_uart`、`cros_ec_wdt`、`gpio_cros_ec`、`rtc_cros_ec`。實機結果與未驗證範圍見本頁開頭及 [驗收紀錄](VERIFICATION-v0.3.0.md)；啟用前仍須核對實際模組原始碼與相依、EC／AML 版本，先在可丟棄資料的 USB 測試，不要直接以內建碟當成先決驗證。先備份資料，休眠失敗恢復可能重設 AP。KANO 預設（`typec`）的 serial-debug 是 1892 bytes、quiet 是 1800 bytes。套用 EC 變體之前仍是 1879 與 1787。drain 的 serial-debug 拿掉 `ignore_loglevel` 和 `loglevel=8`（quiet 本來就沒有這兩個），讓加上六個 `EC_EXTRA_BLOCK` 名字之後仍是 1909 bytes，64 bytes 的餘裕還在；earlycon 留著。沒有把 `cros_ec_lpcs` 加進 early-boot modprobe：這份 checkout 沒有出貨的 vendor_dlkm `modules.dep`，consumer 不是這兩個模組的必要相依，既有的 GOOG0004 uevent 路徑會載入它們。QEMU 沒有 EC，停在 `EC ID not detected` 不能當成 drain 或 `HOST_SLEEP` 通過。

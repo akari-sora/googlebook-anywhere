@@ -156,13 +156,15 @@ NVMe 不是根目錄碟；NVMe 上沒有任何分割被掛載、當 swap 或被�
   （NVMe 版除了 `nvme_init`，而且 `nvme_init` 不可以被封鎖）；`efi=noruntime`；不可以有 `spi-intel.*`。
   分段印出的長命令列（每段結尾 `\`）會先接起來。讀不到機型設定（harness 不在 repo 的 `tools/harness/` 裡，
   或設定不合法）就不啟動（exit 5）。
-- 預設 `--ec-policy default` 不知道 `GBOS_EC` 的功能變體：少了任何黑名單模組就斷電。`GBOS_EC=drain` 必須另外加
-  `--ec-policy drain`。必要模組是 profile 基線去掉 `cros_ec` 與 `cros_ec_lpcs`，再加 `builder/image.py` 的
-  `EC_EXTRA_BLOCK`（從該檔解析）。少了其中任何一項就斷電。EC 危險正則還在；放行的只有 LPC 傳輸的
-  probe／registered，以及未綁定的平台裝置 `cros-ec-dev`。`cros_ec_dev` 模組、keyb、chardev、sysfs、debugfs、
-  「ChromeOS EC device at」和 `/dev/cros_ec` 仍然斷電。`Loaded kernel module` 載入被禁止的 EC 模組（consumers、
-  其他 transport、`EC_EXTRA_BLOCK`；檔名 `-` 與 `_` 相同）也斷電。`cros_ec`、`cros_ec_lpcs`、`cros_ec_proto` 可以載入。
-  讀不到 `EC_EXTRA_BLOCK` 就不啟動（exit 5）。沒有加這個參數時，不要拿看守程式配 drain 映像。
+- 預設 `--ec-policy default` 對的是 KANO 預設的 typec 映像：profile 黑名單去掉 `cros_ec`、`cros_ec_lpcs`、
+  `cros_ec_dev`、`cros_ec_typec`、`cros_usbpd_notify`（`builder/image.py` 的 `EC_CORE` 與 `EC_RELEASE["typec"]`，從該檔解析），
+  再加 `EC_EXTRA_BLOCK`。少了仍應封鎖的名字就斷電（fail-closed），包含 `GBOS_EC=none` 那種沒有 `EC_EXTRA_BLOCK` 的舊式完整黑名單，
+  以及 `sensors`／`buttons`／`drain` 多拿掉的模組。EC 危險正則還在。typec 映像上預期的 LPC probe／registered、`cros-ec-dev`、
+  「ChromeOS EC device at」，以及載入 `cros_ec`、`cros_ec_lpcs`、`cros_ec_dev`、`cros_ec_typec`、`cros_usbpd_notify`、`cros_ec_proto` 不斷電。
+  keyb、chardev、sysfs、debugfs、`/dev/cros_ec`、`thunderbolt`、`cros_typec_switch`、`cros_ec_ucsi`、`cros_usbpd_charger` 與 `EC_EXTRA_BLOCK` 的載入會斷電。
+  檔名 `-` 與 `_` 相同。`GBOS_EC=drain` 必須另外加 `--ec-policy drain`。drain 的必要模組是 profile 基線去掉 `cros_ec` 與 `cros_ec_lpcs`，
+  再加 `EC_EXTRA_BLOCK`。放行的只有 LPC 傳輸的 probe／registered，以及未綁定的平台裝置 `cros-ec-dev`。`cros_ec_dev` 模組、keyb、chardev、sysfs、debugfs、
+  「ChromeOS EC device at」和 `/dev/cros_ec` 在 drain 政策下仍然斷電。讀不到 `builder/image.py` 的 EC 名單就不啟動（exit 5）。
 - 攝影機截圖在背景跑，超過 `--camera-timeout` 就殺掉，不會卡住偵測；EC 呼叫有 timeout，斷電後用 `powerinfo`
   確認 AP 已在 G3/S5。exit status：0 正常、2 危險字串（已斷電）、3 命令列缺防呆參數（已斷電）、4 unobservable、
   5 沒有啟動（參數不合法、沒設 `KANO_EC_TTY` 所以無法斷電、讀不到機型設定，或 drain 讀不到 `EC_EXTRA_BLOCK`）、6 偵測到危險但無法確認斷電

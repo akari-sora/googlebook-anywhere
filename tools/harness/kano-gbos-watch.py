@@ -25,8 +25,8 @@ After the observe window a silent log only produces a note (Android legitimately
 Guards: this boot's kernel command line must carry every module of the module_blacklist of the device profile
 (profiles/kano/profile.toml, the single source the builder uses; read as TOML), every initcall of its initcall_blacklist (with --profile nvme:
 all but nvme_init, which must not be blacklisted) and efi=noruntime, and no spi-intel.* option. The kernel keeps the last module_blacklist= and adds up
-every initcall_blacklist=. The default policy does not know GBOS_EC feature variants and cuts power if any required module is absent (fail-closed).
---ec-policy drain is the only exception: the required modules are the profile baseline without cros_ec and cros_ec_lpcs, plus every EC_EXTRA_BLOCK name parsed from builder/image.py (not a second copy of that list). Each missing name is refused. It does not ignore the EC danger regex. The LPC transport probe/registered line and the unbound platform device named cros-ec-dev are the two lines that do not cut power; the cros_ec_dev module, keyb, chardev, sysfs, debugfs, "ChromeOS EC device at" and /dev/cros_ec still do. A "Loaded kernel module .../<file>.ko" line cuts power when <file> is a forbidden EC module (consumers, other transports, or those extras); "-" and "_" in the file name are the same module. cros_ec, cros_ec_lpcs and cros_ec_proto may load. This watcher is not a host-command allowlist.
+every initcall_blacklist=. The default policy is the KANO typec image: profile modules minus EC_CORE and EC_RELEASE["typec"] (cros_ec, cros_ec_lpcs, cros_ec_dev, cros_ec_typec, cros_usbpd_notify), plus every EC_EXTRA_BLOCK name, all parsed from builder/image.py (not a second copy of those lists). A missing required name cuts power (fail-closed), including an opt-out image that still has the old full blacklist and lacks EC_EXTRA_BLOCK, and a sensors/buttons/drain image that drops a module this policy still requires. It does not ignore the EC danger regex. Lines for the typec transport, the cros_ec_dev MFD, and "ChromeOS EC device at" do not cut power. keyb, chardev, sysfs, debugfs, /dev/cros_ec, and a loaded module outside that typec set (including thunderbolt, cros_typec_switch, cros_ec_ucsi, cros_usbpd_charger, and EC_EXTRA_BLOCK) do. "-" and "_" in a file name are the same module. cros_ec_proto may load.
+--ec-policy drain is the other exception: the required modules are the profile baseline without cros_ec and cros_ec_lpcs, plus every EC_EXTRA_BLOCK name. The LPC transport probe/registered line and the unbound platform device named cros-ec-dev are the two lines that do not cut power; the cros_ec_dev module, keyb, chardev, sysfs, debugfs, "ChromeOS EC device at" and /dev/cros_ec still do. cros_ec, cros_ec_lpcs and cros_ec_proto may load. This watcher is not a host-command allowlist.
 
 exit status: 0 window over, boot observed, no danger line; 2 danger line, EC power cut confirmed; 3 a kernel
 command line guard is missing, EC power cut confirmed; 4 unobservable (also when the window ends before this boot's
@@ -44,7 +44,7 @@ _spec = importlib.util.spec_from_file_location("kano_ser", K)
 ks = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(ks)                     # for load_env(); kano-ser.py itself runs as a subprocess
 
-# The EC bind regex stays in the default policy. --ec-policy drain does not delete it.
+# The EC bind regex stays in every policy. drain and the typec default each skip their own allowed hits.
 EC_BIND = r"cros-ec-dev|cros_ec_lpcs .*(probe|registered)|ChromeOS EC device at"
 DRAIN_RELEASED = frozenset({"cros_ec", "cros_ec_lpcs"})
 # Fatal under drain even when the line also contains an allowed transport or platform-device name.
@@ -53,6 +53,15 @@ DRAIN_CONSUMER = re.compile(
     r"cros_ec_dev\b|cros-ec-dev\.ko|cros_ec_keyb|cros-ec-keyb|cros_ec_chardev|cros-ec-chardev|"
     r"cros_ec_sysfs|cros-ec-sysfs|cros_ec_debugfs|cros-ec-debugfs|"
     r"ChromeOS EC device at|/dev/cros_(?:ec|fp|ish)\b")
+# Fatal on the typec default even on a line that also names an allowed driver.
+# cros_ec_dev and "ChromeOS EC device at" are expected on that image, so they are not here.
+TYPEC_FATAL_LINE = re.compile(
+    r"cros_ec_keyb|cros-ec-keyb|cros_ec_chardev|cros-ec-chardev|"
+    r"cros_ec_sysfs|cros-ec-sysfs|cros_ec_debugfs|cros-ec-debugfs|"
+    r"cros_usbpd_charger|cros-usbpd-charger|cros_usbpd-charger|"
+    r"cros_typec_switch|cros-typec-switch|"
+    r"cros_ec_ucsi|cros-ec-ucsi|"
+    r"/dev/cros_(?:ec|fp|ish)\b")
 COMMON_DANGER = [
     (r"spi-nor spi|\bmtd\d+:|mtdblock\d", "SPI flash / MTD device appeared"),
     (EC_BIND, "EC driver bound"),
@@ -169,15 +178,42 @@ def cmdline_tokens(text):
     return toks
 
 
+def typec_released_names():
+    """Modules the KANO typec image takes off module_blacklist. Parsed from builder/image.py."""
+    lists = image_ec_lists()
+    return set(lists["EC_CORE"]) | set(lists["EC_RELEASE"]["typec"])
+
+
+def typec_forbidden_module_keys():
+    """EC modules the typec default must not load.
+
+    The typec release set and cros_ec_proto are absent. EC_NEVER (including thunderbolt), every other
+    EC_RELEASE group, and EC_EXTRA_BLOCK stay. Keys use '_' for both spellings.
+    """
+    lists = image_ec_lists()
+    released = {module_key(name) for name in typec_released_names()}
+    blocked = {module_key(name) for name in lists["EC_EXTRA_BLOCK"]}
+    blocked |= {module_key(name) for name in lists["EC_CORE"]}
+    for group in lists["EC_RELEASE"].values():
+        blocked |= {module_key(name) for name in group}
+    blocked |= {module_key(name) for name in lists["EC_NEVER"]}
+    blocked -= released
+    blocked.discard("cros_ec_proto")
+    return blocked
+
+
 def missing_guards(tokens, guards, profile, ec_policy="default"):
     """What the command line `tokens` lacks of `guards` (expected_guards()), as readable items; [] = all there.
 
-    ec_policy "drain" requires (profile modules minus cros_ec and cros_ec_lpcs) union EC_EXTRA_BLOCK
-    from builder/image.py. Any other value keeps the profile list only.
+    ec_policy "default" requires (profile modules minus the typec release set) union EC_EXTRA_BLOCK.
+    ec_policy "drain" requires (profile modules minus cros_ec and cros_ec_lpcs) union EC_EXTRA_BLOCK.
+    Both lists come from builder/image.py. A name that is absent cuts power.
     """
     modules, initcalls, plain = guards
     if ec_policy == "drain":
         modules = (set(modules) - DRAIN_RELEASED) | set(image_ec_lists()["EC_EXTRA_BLOCK"])
+    elif ec_policy == "default":
+        modules = (set(modules) - typec_released_names()) | set(image_ec_lists()["EC_EXTRA_BLOCK"])
     mb = [t.split("=", 1)[1] for t in tokens if t.startswith("module_blacklist=")]
     have = set(mb[-1].split(",")) if mb else set()          # the kernel keeps the last module_blacklist=
     ic = set()
@@ -207,18 +243,35 @@ def drain_transport_exception(match, line):
     return match == "cros-ec-dev"
 
 
+def typec_bind_exception(match, line):
+    """True when this EC-regex hit is expected on the typec default and the line has no forbidden consumer.
+
+    Allowed: cros_ec_lpcs probe/registered, cros-ec-dev (the MFD the typec image loads), and
+    "ChromeOS EC device at". keyb, chardev, sysfs, debugfs, charger, typec switch, ucsi, and /dev/cros_* are not.
+    """
+    if TYPEC_FATAL_LINE.search(line):
+        return False
+    if re.fullmatch(r"cros_ec_lpcs .*(?:probe|registered)", match):
+        return True
+    if match == "cros-ec-dev":
+        return True
+    return match == "ChromeOS EC device at"
+
+
 def first_danger(body, patterns, ec_policy):
     """The first danger hit as (why, text), or None.
 
-    drain does not drop the EC regex. It skips only an allowed transport hit, then keeps looking.
-    Consumers are fatal under drain even when that regex did not name them.
+    drain and the typec default do not drop the EC regex. Each skips only its allowed hits, then keeps looking.
+    Consumers outside that set are fatal even when the EC regex did not name them.
     """
     for pat, why in patterns:
-        if ec_policy == "drain" and pat == EC_BIND:
+        if pat == EC_BIND and ec_policy in ("drain", "default"):
             found = None
             for m in re.finditer(pat, body):
                 line = body.splitlines()[body.count("\n", 0, m.start())]
-                if drain_transport_exception(m.group(0), line):
+                if ec_policy == "drain" and drain_transport_exception(m.group(0), line):
+                    continue
+                if ec_policy == "default" and typec_bind_exception(m.group(0), line):
                     continue
                 found = m
                 break
@@ -233,9 +286,16 @@ def first_danger(body, patterns, ec_policy):
         if m:
             return "EC consumer driver bound", m.group(0)
         forbidden = drain_forbidden_module_keys()
-        for hit in LOADED_KO.finditer(body):
-            if module_key(hit.group(1)) in forbidden:
-                return "forbidden EC module loaded", hit.group(0)
+    elif ec_policy == "default":
+        m = TYPEC_FATAL_LINE.search(body)
+        if m:
+            return "EC consumer driver bound", m.group(0)
+        forbidden = typec_forbidden_module_keys()
+    else:
+        return None
+    for hit in LOADED_KO.finditer(body):
+        if module_key(hit.group(1)) in forbidden:
+            return "forbidden EC module loaded", hit.group(0)
     return None
 
 
@@ -309,11 +369,10 @@ def main(argv):
         guards = expected_guards()
     except (OSError, SyntaxError, ValueError) as e:
         bad(f"cannot read the expected command line guards from {GUARD_SOURCE}: {e}")
-    if a.ec_policy == "drain":
-        try:
-            image_ec_lists()
-        except (OSError, SyntaxError, ValueError, TypeError) as e:
-            bad(f"cannot read the drain EC block list from builder/image.py: {e}")
+    try:
+        image_ec_lists()
+    except (OSError, SyntaxError, ValueError, TypeError) as e:
+        bad(f"cannot read the EC block list from builder/image.py: {e}")
     patterns = PROFILES[a.profile]
     a.frames.mkdir(parents=True, exist_ok=True)
 

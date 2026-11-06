@@ -30,9 +30,11 @@
 # GBOS_USB_SMOKE=1: isolated, mandatory-QEMU KANO backlight trial with fresh GPT GUIDs; see usb_smoke.py.
 # GBOS_ANDROID_MODEL=profile: experimental product model correction, KANO and Google build 16658739 only.
 # GBOS_SETUP_PIN_SKIP=1: optional normal setup Skip button; requires that model correction (default off).
-# GBOS_EC: opt-in ChromeOS EC features, a comma list of sensors (accelerometers -> auto-rotate), typec (USB-C
-# USB3/DisplayPort), buttons (side volume keys), or exactly drain (experimental: transport/core only).
-# Empty (default): the EC stays unreachable. drain,sensors and any duplicate or empty item are refused. See docs/SAFETY.md.
+# GBOS_EC: ChromeOS EC features. Unset on KANO is typec (USB-C USB3/DisplayPort), the default image.
+# Unset on any other profile is no features. GBOS_EC=none or an explicit empty value opts out (EC unreachable).
+# Also: sensors (accelerometers -> auto-rotate), buttons (side volume keys), a comma list of those,
+# or exactly drain (experimental: transport/core only). drain,sensors and any duplicate or empty item
+# are refused. Feature values are KANO only. See docs/SAFETY.md.
 # GBOS_TEST_AUTOOFF (developer-only; install/install.sh refuses it): empty = off. Otherwise seconds 60..7200.
 # A TEST image powers off only when /vendor/etc/kano-autooff.nonce and /data/kano-autooff.nonce are the same
 # 33 bytes (32 lowercase hex + LF). The session copies <out>/image/autooff.nonce onto the stick userdata
@@ -40,11 +42,11 @@
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 die() { echo "build.sh: $*" >&2; exit 2; }
-# Empty, exactly "drain", or sensors|typec|buttons with no duplicates and no empty items.
-# drain is exclusive: drain,sensors and buttons,drain do not match.
+# none (explicit opt-out), exactly "drain", or sensors|typec|buttons with no duplicates and no empty items.
+# drain is exclusive: drain,sensors and buttons,drain do not match. Empty is normalized to none before this.
 gbos_ec_ok() {
     local ec="$1" n u
-    if [ -z "$ec" ] || [ "$ec" = "drain" ]; then
+    if [ -z "$ec" ] || [ "$ec" = "none" ] || [ "$ec" = "drain" ]; then
         return 0
     fi
     [[ "$ec" =~ ^(sensors|typec|buttons)(,(sensors|typec|buttons))*$ ]] || return 1
@@ -81,16 +83,25 @@ if [ "${GBOS_USB_SMOKE:-}" = 1 ]; then
     command -v sgdisk >/dev/null || die "USB smoke requires sgdisk to regenerate GPT GUIDs"
 fi
 [[ "$GBOS_IMAGE_NAME" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*\.img$ ]] || die "GBOS_IMAGE_NAME must be a plain file name ending in .img"
-gbos_ec_ok "${GBOS_EC:-}" \
-    || die "GBOS_EC must be empty, drain, or a comma list of sensors, typec, buttons"
-if [ -n "${GBOS_EC:-}" ]; then
-    gbos_ec_model=$(python3 "$HERE/lib/devprofile.py" get "$GBOS_PROFILE" model.id)
+# Unset on KANO is typec. Unset elsewhere, GBOS_EC=none, and an explicit empty value are no EC features.
+# Same rule as install/install.sh and builder/vendor.sh. Do this before ${GBOS_EC:-} collapses unset and empty.
+gbos_ec_model=$(python3 "$HERE/lib/devprofile.py" get "$GBOS_PROFILE" model.id)
+if [ -z "${GBOS_EC+x}" ]; then
+    if [ "$gbos_ec_model" = kano ]; then export GBOS_EC=typec; else export GBOS_EC=none; fi
+elif [ -z "$GBOS_EC" ]; then
+    export GBOS_EC=none
+fi
+gbos_ec_ok "$GBOS_EC" \
+    || die "GBOS_EC must be empty, none, drain, or a comma list of sensors, typec, buttons"
+if [ "$GBOS_EC" != none ]; then
     [ "$gbos_ec_model" = kano ] || die "GBOS_EC is audited for the KANO only"
     if [ "$GBOS_EC" = drain ]; then
         echo "NOTE: GBOS_EC=drain: exclusive experimental KANO-only value (docs/SAFETY.md)"
     else
         echo "NOTE: GBOS_EC=$GBOS_EC: this image lets audited EC drivers talk to the EC (docs/SAFETY.md)"
     fi
+else
+    echo "NOTE: GBOS_EC=none: the EC stays unreachable (KANO default is typec; docs/SAFETY.md)"
 fi
 # Empty = off. A non-empty value must be an integer 60..7200 (canonical decimal, no leading zeros).
 # Check the text before any arithmetic: bash wraps 2^64+60 to 60, and 10#0060 becomes 60.

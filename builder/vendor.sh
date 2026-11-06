@@ -29,12 +29,12 @@ FW="${GBOS_FIRMWARE:?GBOS_FIRMWARE = firmware directory (builder/fetch-inputs.sh
 export GBOS_AUDIO_SRC="${GBOS_AUDIO_SRC:?GBOS_AUDIO_SRC = audio sources of the profile (builder/fetch-inputs.sh <dir> fills <dir>/audio-src)}"
 export GBOS_PROFILE GBOS_ADB_PUBKEY="${GBOS_ADB_PUBKEY:-}"
 PATCH_MODEL=$(python3 -c 'import os,sys; sys.path.insert(0, sys.argv[1]); import devprofile, product_model; print(str(product_model.validate_options(devprofile.load(os.environ["GBOS_PROFILE"]), os.environ)).lower())' "$HERE/lib")
-# GBOS_EC (opt-in EC features, see builder/image.py): empty, exactly drain, or sensors, typec, buttons.
-# drain is exclusive. Duplicates, empty items and unknown items are refused.
-export GBOS_EC="${GBOS_EC:-}"
+# GBOS_EC (see builder/image.py): unset on KANO is typec; unset elsewhere, "none", and an explicit
+# empty value are no features. drain is exclusive. Duplicates, empty items and unknown items are refused.
+# Do not collapse unset into empty before the profile id is known (same rule as builder/build.sh).
 gbos_ec_ok() {
     local ec="$1" n u
-    if [ -z "$ec" ] || [ "$ec" = "drain" ]; then
+    if [ -z "$ec" ] || [ "$ec" = "none" ] || [ "$ec" = "drain" ]; then
         return 0
     fi
     [[ "$ec" =~ ^(sensors|typec|buttons)(,(sensors|typec|buttons))*$ ]] || return 1
@@ -42,8 +42,6 @@ gbos_ec_ok() {
     u=$(printf '%s\n' "$ec" | tr ',' '\n' | sort -u | grep -c .)
     [ "$n" = "$u" ]
 }
-gbos_ec_ok "$GBOS_EC" \
-    || { echo "GBOS_EC must be empty, drain, or a comma list of sensors, typec, buttons, not $GBOS_EC"; exit 2; }
 # GBOS_TEST_AUTOOFF (developer-only; install/install.sh refuses it): empty = off; else seconds 60..7200.
 # Canonical decimal, no leading zeros. Check the text before any arithmetic: bash wraps 2^64+60 to 60.
 # Validate the optional module independently at each entry point.
@@ -92,9 +90,23 @@ if len(key) != 524 or struct.unpack_from("<I", key, 0)[0] != 64 or struct.unpack
 PY
 fi
 python3 "$HERE/lib/devprofile.py" check "$GBOS_PROFILE" || exit 2
-if [ -n "$GBOS_EC" ]; then
-    gbos_ec_model=$(python3 "$HERE/lib/devprofile.py" get "$GBOS_PROFILE" model.id)
+gbos_ec_model=$(python3 "$HERE/lib/devprofile.py" get "$GBOS_PROFILE" model.id)
+if [ -z "${GBOS_EC+x}" ]; then
+    if [ "$gbos_ec_model" = kano ]; then export GBOS_EC=typec; else export GBOS_EC=none; fi
+elif [ -z "${GBOS_EC:-}" ]; then
+    export GBOS_EC=none
+fi
+gbos_ec_ok "$GBOS_EC" \
+    || { echo "GBOS_EC must be empty, none, drain, or a comma list of sensors, typec, buttons, not $GBOS_EC"; exit 2; }
+if [ "$GBOS_EC" != none ]; then
     [ "$gbos_ec_model" = kano ] || { echo "GBOS_EC is audited for the KANO only"; exit 2; }
+    if [ "$GBOS_EC" = drain ]; then
+        echo "NOTE: GBOS_EC=drain: exclusive experimental KANO-only value (docs/SAFETY.md)"
+    else
+        echo "NOTE: GBOS_EC=$GBOS_EC: this image lets audited EC drivers talk to the EC (docs/SAFETY.md)"
+    fi
+else
+    echo "NOTE: GBOS_EC=none: the EC stays unreachable (KANO default is typec; docs/SAFETY.md)"
 fi
 if [ -n "$GBOS_DEV_KERNEL_DIR" ]; then
     python3 "$HERE/lib/devprofile.py" check-kconfig "$GBOS_PROFILE" "$GBOS_DEV_KERNEL_DIR" || exit 2
@@ -947,10 +959,10 @@ if prof["input"]["power_button"] == "acpi" and not (hooks and hasattr(hooks, "po
     raise SystemExit("profile input.power_button = acpi needs hooks.vendor with power_button()")
 if hooks and hasattr(hooks, "power_button"):
     hooks.power_button(ctx)
-# GBOS_EC (opt-in; unset = nothing here runs and the vendor tree is as before).
-# drain is exclusive and changes no vendor file: no overlay, IIO label, keylayout, or dependency.
+# GBOS_EC. The shell above already resolved unset KANO to typec and an opt-out to none.
+# typec changes no vendor file. drain and none change none. sensors and buttons do.
 raw_ec = os.environ.get("GBOS_EC", "")
-if raw_ec:
+if raw_ec not in ("", "none"):
     if not (hooks and hasattr(hooks, "ec_vendor_features")):
         raise SystemExit("GBOS_EC needs a profile whose hooks.vendor has ec_vendor_features() (profiles/kano/vendor.py)")
     EC = hooks.ec_vendor_features(raw_ec)
@@ -1462,7 +1474,7 @@ if prof["hooks"]["vendor"]:
     if hasattr(hooks, "expected"):
         p_new, p_changed = hooks.expected(prof)
     raw_ec = os.environ.get("GBOS_EC", "")
-    if raw_ec:
+    if raw_ec not in ("", "none"):
         if not hasattr(hooks, "ec_vendor_features"):
             raise SystemExit("GBOS_EC needs a profile whose hooks.vendor has ec_vendor_features() (profiles/kano/vendor.py)")
         EC = hooks.ec_vendor_features(raw_ec)

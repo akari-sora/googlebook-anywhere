@@ -17,6 +17,17 @@ LATE = "spi_intel_pci"                       # far down the list: a check of the
 EXPECT_EXTRA = ("gpio_cros_ec", "cros_ec_hwmon", "cros_ec_wdt", "rtc_cros_ec", "cros_ec_uart", "cros_ec_rpmsg")
 
 
+def image_assign(name):
+    path = REPO / "builder" / "image.py"
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and len(node.targets) == 1:
+            target = node.targets[0]
+            if isinstance(target, ast.Name) and target.id == name:
+                return ast.literal_eval(node.value)
+    raise AssertionError(f"{name} missing from builder/image.py")
+
+
 def image_extra_block():
     path = REPO / "builder" / "image.py"
     tree = ast.parse(path.read_text(encoding="utf-8"))
@@ -32,6 +43,17 @@ def image_extra_block():
 
 
 EXTRA = image_extra_block()
+TYPEC_RELEASED = set(image_assign("EC_CORE")) | set(image_assign("EC_RELEASE")["typec"])
+if TYPEC_RELEASED != {"cros_ec", "cros_ec_lpcs", "cros_ec_dev", "cros_ec_typec", "cros_usbpd_notify"}:
+    raise AssertionError(f"typec release set changed: {TYPEC_RELEASED}")
+
+
+def typec_modules():
+    mods = [m for m in BL if m not in TYPEC_RELEASED]
+    for name in EXTRA:
+        if name not in mods:
+            mods.append(name)
+    return mods
 
 
 def drain_cmdline(drop):
@@ -50,8 +72,8 @@ def cmdline(initcalls="nvme_init,mei_me_driver_init", modules=None, extra=""):
             f"module_blacklist={mods} console=ttyS0{extra}\n")
 
 
-GOOD_USB = cmdline()
-GOOD_NVME = cmdline("mei_me_driver_init")
+GOOD_USB = cmdline(modules=typec_modules())
+GOOD_NVME = cmdline("mei_me_driver_init", modules=typec_modules())
 OFF = {"apshutdown": "[12.0 chipset_force_shutdown(0x4)]", "powerinfo": "[13.0 power state 0 = G3, in 0x0000]"}
 STILL_ON = {"apshutdown": "[12.0 chipset_force_shutdown(0x4)]", "powerinfo": "[13.0 power state 4 = S0, in 0x7f]"}
 FAST = ["--observe-timeout", "3", "--stall-timeout", "2", "--camera-every", "0"]
@@ -175,9 +197,12 @@ class Watch(HarnessCase):
 
     def test_only_the_last_module_blacklist_counts(self):
         # the kernel keeps the last module_blacklist=; a short one after the full one replaces it
-        self.writer([cmdline(extra=" module_blacklist=cros_ec_lpcs"), "[    2.000000] x\n"], then_idle=False)
+        # start from the good typec line, so only the short trailing module_blacklist= can cut power
+        self.writer([cmdline(modules=typec_modules(), extra=" module_blacklist=cros_ec_lpcs"), "[    2.000000] x\n"],
+                    then_idle=False)
         r = self.watch(30, *FAST)
         self.assertEqual(r.returncode, 3, self.explain(r))
+        self.reason("module_blacklist entry", r.stdout)
 
     def test_spi_intel_option_cuts_power(self):
         self.writer([cmdline(extra=" spi-intel.writeable=1"), "[    2.000000] x\n"], then_idle=False)
@@ -322,12 +347,37 @@ class Watch(HarnessCase):
         self.assertEqual(r.returncode, 2, self.explain(r))
         self.reason("EC consumer driver bound", r.stdout)
 
-    def test_default_policy_still_cuts_when_the_transport_pair_is_absent(self):
-        self.writer([self._drain_line({"cros_ec", "cros_ec_lpcs"}),
+    def test_default_policy_accepts_typec_lines_and_fails_closed(self):
+        self.writer([GOOD_USB,
+                     "[    2.000000] cros_ec_lpcs GOOG0004:00: probe\n",
+                     "[    2.100000] cros-ec-dev cros-ec-dev.0: ChromeOS EC device at LPC\n",
+                     "[    2.200000] cros-ec-typec GOOG0014:00: waiting\n",
+                     "[    2.300000] init: Loaded kernel module /vendor/lib/modules/cros_ec.ko\n",
+                     "[    2.400000] init: Loaded kernel module /vendor/lib/modules/cros_ec_dev.ko\n",
+                     "[    2.500000] init: Loaded kernel module /vendor/lib/modules/cros-ec-typec.ko\n"],
+                    then_idle=False)
+        r = self.watch(5, *FAST)
+        self.assertEqual(r.returncode, 0, self.explain(r))
+        self.reason("this boot observed, no danger line seen", r.stdout)
+        self._restart()
+        self.writer([cmdline(modules=[m for m in typec_modules() if m != "thunderbolt"]),
                      "[    2.000000] x\n"], then_idle=False)
         r = self.watch(30, *FAST)
         self.assertEqual(r.returncode, 3, self.explain(r))
-        self.reason("module_blacklist entry cros_ec", r.stdout)
+        self.reason("module_blacklist entry thunderbolt", r.stdout)
+        self._restart()
+        self.writer([GOOD_USB,
+                     "[    2.000000] init: Loaded kernel module /vendor/lib/modules/cros_usbpd_charger.ko\n"],
+                    then_idle=False)
+        r = self.watch(30, *FAST)
+        self.assertEqual(r.returncode, 2, self.explain(r))
+        self._restart()
+        self.writer([GOOD_USB,
+                     "[    2.000000] init: Loaded kernel module /vendor/lib/modules/thunderbolt.ko\n"],
+                    then_idle=False)
+        r = self.watch(30, *FAST)
+        self.assertEqual(r.returncode, 2, self.explain(r))
+        self.reason("forbidden EC module loaded", r.stdout)
 
     def test_hung_ec_port_times_out(self):
         self.writer([GOOD_USB, "[    2.000000] x\n", "[    3.000000] tpm tpm0: starting up\n"], then_idle=False)

@@ -15,11 +15,11 @@ Googlebook（lapis）映像本來是給另一台機器用的，裡面帶著那�
 2. **核心模組封鎖（`module_blacklist=`）**：TPM（tpm、tpm_tis*、tpm_tis_i2c_cr50）、EC 傳輸與核心（cros_ec、cros_ec_lpcs、
    cros_ec_dev、cros_ec_chardev、cros_ec_spi/i2c/ishtp、cros_ec_sysfs、cros_ec_vbc、cros_ec_debugfs …，共 30 多個）、
    SPI flash（spi_intel、spi_intel_pci、mtd、spi_nor、spidev）、gsmi、chromeos_acpi、nvram、i2c_dev、at24、thunderbolt。
-   只放行 `cros_ec_proto`（純函式庫）給 ACPI 鍵盤背光驅動用。預設 KANO 映像仍封鎖 EC transport/core，沒有可送 Linux EC host command 的已註冊 cros_ec 通道，所以送不出 EC 指令。
-   這是預設映像。實驗選項 `GBOS_EC=drain`（只能單獨這個值，不能和功能並列）只解除 `cros_ec` 與 `cros_ec_lpcs`，並使用本來就放行的 `cros_ec_proto`。
-   `cros_ec_dev`、`cros_ec_keyb`、`cros_ec_chardev`、`cros_ec_sysfs`、`cros_ec_debugfs` 以及其他 consumers／transports 維持封鎖。
+   只放行 `cros_ec_proto`（純函式庫）給 ACPI 鍵盤背光驅動用。KANO 的預設映像是 `GBOS_EC=typec`（變數沒設定時就是這個）：放行 `cros_ec`、`cros_ec_lpcs`、`cros_ec_dev`、`cros_ec_typec`、`cros_usbpd_notify`，所以有已註冊的 cros_ec 通道，送得出下面稽核過的 EC 指令。「沒有 EC 裝置、送不出 EC 指令」只適用於 `GBOS_EC=none`、把 `GBOS_EC` 設成空字串，以及其他機型的預設映像。
+   實驗選項 `GBOS_EC=drain`（只能單獨這個值，不能和功能並列）只解除 `cros_ec` 與 `cros_ec_lpcs`，並使用本來就放行的 `cros_ec_proto`。
+   drain 仍封鎖 `cros_ec_dev`、`cros_ec_keyb`、`cros_ec_chardev`、`cros_ec_sysfs`、`cros_ec_debugfs` 以及其他 consumers／transports。
    drain 會建立 transport/core 裝置並消費 MKBP 佇列，所以「沒有 EC 裝置、送不出 EC 指令」的保證不適用於它。它不是預設，也還沒有實機驗收。
-   另一個開發者選項 `GBOS_EC`（`sensors`、`typec`、`buttons`，預設關閉）會放行一組經過稽核的 EC 驅動，見下面「EC 功能變體」。
+   `sensors` 與 `buttons` 仍是開發者選項，預設不開。`typec` 是 KANO 的預設。三者放行的驅動見下面「EC 功能變體」。
    原映像的 `spi-intel.writeable=1` 也拿掉了。清單在機型設定（`profiles/kano/profile.toml`）；全專案一定要封鎖的模組與參數在
    `profiles/_safety.toml`（`blacklist.required` 就是上面這整份 57 個模組，每個機型都一樣），機型設定只能加、不能減（`builder/lib/devprofile.py` 拒絕），`builder/image.py` 再對每個開機選項逐一檢查，並確認 ESP 上只有 quiet 與 serial-debug 兩個選項
    （base ESP 原本那個沒有封鎖的 `lapis.conf` 會被刪掉）。
@@ -31,8 +31,7 @@ Googlebook（lapis）映像本來是給另一台機器用的，裡面帶著那�
    `GBOS_LOADER_EDITOR=yes` 打開。
 7. **開發用看守程式**（`tools/harness/kano-gbos-watch*.py`）：序列埠出現 NVMe、SPI、EC、TPM、gsmi、fwupd、rollforward
    等字串就透過 EC 斷電。它只是補充偵測：只在 serial-debug 開機選項下有序列埠輸出可看，看不到紀錄時會回報「無法觀測」，
-   不保證在任何情況下都能及時攔下。預設政策仍拿 KANO 機型設定的整份 `module_blacklist` 核對，不知道 `GBOS_EC` 的功能變體：
-   那些映像少了被放行的 `cros_ec*` 時會被當成少了防護參數而斷電（fail-closed）。`GBOS_EC=drain` 要另外指定 `--ec-policy drain`。
+   不保證在任何情況下都能及時攔下。預設政策對的是 KANO 預設的 typec 映像：機型黑名單去掉 `cros_ec`、`cros_ec_lpcs`、`cros_ec_dev`、`cros_ec_typec`、`cros_usbpd_notify`，再加上 `builder/image.py` 的 `EC_EXTRA_BLOCK`。少了仍應封鎖的名字（含 `thunderbolt`、`cros_typec_switch`、`cros_ec_ucsi`、`cros_usbpd_charger` 與那六個額外模組）就斷電（fail-closed）。`GBOS_EC=none` 的舊式完整黑名單沒有 `EC_EXTRA_BLOCK`，預設政策也會斷電。`sensors`、`buttons` 多放行的模組若從黑名單消失，同樣斷電。`GBOS_EC=drain` 要另外指定 `--ec-policy drain`。
    這個政策的必要模組是（profile 基線去掉 `cros_ec` 與 `cros_ec_lpcs`）再加上 `builder/image.py` 的 `EC_EXTRA_BLOCK`（從該檔解析，不另抄一份）。少了其中任何一項就斷電。EC 危險正則沒有拿掉。`Loaded kernel module` 若是被禁止的 EC 模組（功能 consumers、其他 transport、`EC_EXTRA_BLOCK` 的每一項；檔名的 `-` 與 `_` 視為同一個名字）也斷電。
    允許的兩種例外只是 LPC 傳輸的 probe／registered，以及核心自己建立、但 MFD 驅動仍被封鎖時那個未綁定的平台裝置 `cros-ec-dev`。
    `cros_ec_dev` 模組、keyb、chardev、sysfs、debugfs，以及「ChromeOS EC device at」和 `/dev/cros_ec` 仍然斷電。
@@ -53,10 +52,11 @@ Googlebook（lapis）映像本來是給另一台機器用的，裡面帶著那�
    - 依賴順序不看列是 `vendor` 還是 `dev`：allowlist 裡較早的每一列都必須先被選到，所以 `bluetooth` 在 `btusb` 前面。同一張表內照 allowlist 順序；所有 `load` 行都在 `unblock` 行之前輸出（codec 先於 `snd_hda_intel`）。`exec` 會等這次 `modprobe` 結束。模組 probe 之後的 codec／韌體路徑是非同步的，這不表示裝置已經綁定。
    - 這層只把模組載入排進 early-boot。喇叭、Wi-Fi、藍牙是否可用，以實機紀錄為準。
 
-## EC 功能變體（`GBOS_EC`，預設關閉）
+## EC 功能變體（`GBOS_EC`）
 
-`GBOS_EC=sensors,typec,buttons`（可以只選其中幾項；只稽核過 KANO，其他機型的設定會被拒絕）是給想要自動旋轉、USB-C 的 USB3／DisplayPort、側邊音量鍵的人用的。
-它會改寫上面第 2 層的保證：從「沒有任何 EC 裝置被註冊，送不出 EC 指令」，變成
+KANO 沒有設定 `GBOS_EC` 時就是 `typec`。`GBOS_EC=none` 或把變數設成空字串會回到「沒有 EC 裝置」。`sensors` 與 `buttons` 仍須明確加上。`drain` 只能單獨使用。只稽核過 KANO；其他機型設了任何功能（含單獨的 `typec`）會被拒絕，沒設定則維持不放行。
+`typec` 給 USB-C 的 USB3／DisplayPort。再加上 `sensors` 才有自動旋轉，再加上 `buttons` 才有側邊音量鍵。
+有放行功能時，上面第 2 層的保證改寫成
 「**只有下面這組經過稽核的核心驅動會送 EC 指令。就這組指令而言，沒有寫 EC 或周邊的 flash、CBI、I²C，也沒有讓 EC 重開**」。
 這不是「完全不改變任何 EC 狀態」：`GET_NEXT_EVENT`、`HOST_SLEEP_EVENT`、`RWSIG_ACTION(CONTINUE)` 的分類見指令表。
 這組包括放行的模組，以及每個選項本來就放行、在變體下也會走 EC 的 `cros_kbd_led_backlight`（見稽核表）。
@@ -87,7 +87,7 @@ Googlebook（lapis）映像本來是給另一台機器用的，裡面帶著那�
 `cros_ec_dev`、`cros_ec_keyb`、`cros_ec_chardev`、`cros_ec_sysfs`、`cros_ec_debugfs` 以及其他 consumers／transports 維持封鎖，六個 `EC_EXTRA_BLOCK` 照加。
 不把 `cros_ec_dev` 放進全域 `EC_NEVER`，因為上面三種功能變體需要它。drain 不載入 `cros_ec_dev`，所以 MFD 的那些子裝置不建立；transport/core 自己的普通 sysfs 節點可以存在。raw EC chardev、EC 指令屬性、EC debugfs 不可以。SELinux 維持 enforcing，不要為這些介面加 allow。
 
-drain 會建立 transport/core 裝置並消費 MKBP 佇列，所以預設映像「沒有 EC 裝置、送不出 EC 指令」的保證不適用。
+drain 會建立 transport/core 裝置並消費 MKBP 佇列，所以 `GBOS_EC=none` 那種「沒有 EC 裝置、送不出 EC 指令」的保證不適用。KANO 預設的 `typec` 也不適用那句保證。
 `GET_NEXT_EVENT` 是消費性讀取。`HOST_SLEEP_EVENT` 會改休眠追蹤與計時器。`RWSIG_ACTION(CONTINUE)` 是切換執行映像的請求。
 對公開原始碼的稽核：這條路徑沒有 flash、CBI、電池或充電的寫入指令；休眠失敗的復原可以重設 AP，進行中的寫入會丟掉。
 
@@ -137,7 +137,7 @@ drain 會建立 transport/core 裝置並消費 MKBP 佇列，所以預設映像�
 | `cros_ec_typec` | `TYPEC_STATUS`、`TYPEC_DISCOVERY`、`USB_PD_PORTS`、`USB_PD_MUX_INFO`、`USB_PD_MUX_ACK`、`TYPEC_CONTROL`（`ENTER_MODE`、`EXIT_MODES`、`CLEAR_EVENTS`、`SEND_VDM_REQ`）、`USB_PD_CONTROL`（使用者寫 typec 的 `data_role`／`power_role` 時做角色交換）、`TYPEC_VDM_RESPONSE`（`cros_typec_vdm.c:32,70`，讀對接裝置回的 VDM） | PD 的執行期動作：進出 DP 模式、角色交換、送 DP 的 VDM 給對接的裝置；沒有韌體更新 |
 | `cros_usbpd_notify` | `PD_HOST_EVENT_STATUS`（`cros_usbpd_notify.c:77`） | 只讀 |
 | `cros_ec_keyb` | `MKBP_INFO`（`cros_ec_keyb.c:368`） | 只讀 |
-| `cros_kbd_led_backlight`（每個選項都放行，給鍵盤背光用） | `PWM_GET_KEYBOARD_BACKLIGHT`、`PWM_SET_KEYBOARD_BACKLIGHT`（`cros_kbd_led_backlight.c:146,164`）。EC 回報 `EC_FEATURE_PWM_KEYB` 時，`cros_ec_dev` 會建立 `cros-keyboard-leds` 子裝置（`cros_ec_dev.c:106,150-152`），這個驅動也綁上它 | 讀、改 EC RAM 裡的背光 PWM，不碰 flash。這個子裝置沒辦法單獨封鎖。drain 不載入 `cros_ec_dev`，所以不建立這顆 cell，也不新增這兩條 EC PWM 指令；背光仍走 ACPI GOOG0002。預設映像沒有 EC 裝置。同一個 LED 名稱會註冊兩次（第二個自動改名），idc 用的是 GOOG0002 那條路徑；變體下沒有在實機驗證過 |
+| `cros_kbd_led_backlight`（每個選項都放行，給鍵盤背光用） | `PWM_GET_KEYBOARD_BACKLIGHT`、`PWM_SET_KEYBOARD_BACKLIGHT`（`cros_kbd_led_backlight.c:146,164`）。EC 回報 `EC_FEATURE_PWM_KEYB` 時，`cros_ec_dev` 會建立 `cros-keyboard-leds` 子裝置（`cros_ec_dev.c:106,150-152`），這個驅動也綁上它 | 讀、改 EC RAM 裡的背光 PWM，不碰 flash。這個子裝置沒辦法單獨封鎖。drain 不載入 `cros_ec_dev`，所以不建立這顆 cell，也不新增這兩條 EC PWM 指令；背光仍走 ACPI GOOG0002。`GBOS_EC=none` 與其他機型的預設沒有 EC 裝置。KANO 預設的 `typec` 會載入 `cros_ec_dev`，所以這顆 cell 可能出現。同一個 LED 名稱會註冊兩次（第二個自動改名），idc 用的是 GOOG0002 那條路徑；變體下沒有在實機驗證過 |
 
 就這張表裡會被放行的驅動所送的指令而言，沒有 `FLASH_*`、`REBOOT_EC`、`I2C_PASSTHRU`、`SET_CROS_BOARD_INFO`、`VBNV_CONTEXT`、`BATTERY_CUT_OFF`、
 `CHARGE_CONTROL`、`USB_PD_FW_UPDATE`、`EXTERNAL_POWER_LIMIT` 或 `PWM_SET_FAN_DUTY`。這不是「完全不寫任何 EC 狀態」：`GET_NEXT_EVENT` 消費佇列，`HOST_SLEEP_EVENT` 改休眠追蹤與計時器，`RWSIG_ACTION(CONTINUE)` 是切換執行映像的請求。vendor_dlkm 的這些 `.ko` 是另一棵樹編的
@@ -148,7 +148,7 @@ drain 會建立 transport/core 裝置並消費 MKBP 佇列，所以預設映像�
 **休眠（最重要的使用風險）**：載入 `cros_ec_lpcs` 之後，核心在休眠時送 `HOST_SLEEP_EVENT`。第一次轉換逾時的預設是 10 秒，到時送 `HANG_DETECT`，並再設一顆預設 10 秒的硬計時器；沒被取消的話可以重設 AP。持續失敗可能強制關機。這是資料遺失，和變磚不是同一件事。
 任何 chipset 的 suspend／resume／reset／shutdown hook 都可以取消那顆硬計時器；S0ix resume 通知也會取消轉換計時器。「Android 已經恢復」不能證明計時器是安全的。`PM: suspend entry (s2idle)` 不能證明硬體真的進了 S0ix。
 `suspend_timeout_ms` 只在被封鎖的 `cros_ec_debugfs` 裡，不是預設的修法。
-所以 **drain 和功能變體都要在量到硬體 S0ix 之後才考慮啟用**，並且先在可丟棄資料的 USB 上測，不要直接裝到內建碟。這次變更沒有做那項實機驗收。
+文件原本寫 **drain 和功能變體都要在量到硬體 S0ix 之後才考慮啟用**，並且先在可丟棄資料的 USB 上測，不要直接裝到內建碟。維護者已接受把 KANO 的預設改成 `typec`，這項實機驗收仍然沒有做：載入 EC transport 之後的硬體 S0ix 尚未量到，休眠失敗的復原仍可能重設 AP。USB-C 外接畫面與底座能用，是 issue #12 的使用者回報，不是維護者的實機確認。
 
 **沒有在 build 時驗證的部分**：`sensors` 為了自動旋轉，就地改了 vendor 的 framework RRO（`config_supportAutoRotation`）。
 PackageManager 是否仍啟用這個 overlay，build 與 QEMU 都沒有檢查；在實機上用 `cmd overlay list` 確認。如果它被停用，同一個

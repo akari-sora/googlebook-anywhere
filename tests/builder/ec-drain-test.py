@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """GBOS_EC=drain: KANO-only experimental variant. No hardware, no image build.
 
-The default profile blacklist is not edited. Empty GBOS_EC stays the default image.
-Later sections lock the parsers, the two-module release, the vendor no-op, the QEMU
-assertions and the watcher policy.
+The profile blacklist is not edited. A KANO build with GBOS_EC unset is typec.
+GBOS_EC=none and an explicit empty value are the opt-out (every entry unchanged).
+Later sections lock the parsers, the typec default, the two-module drain release,
+the vendor no-op, the QEMU assertions and the watcher policy.
 """
 import ast
 import importlib.util
@@ -32,7 +33,8 @@ def check(name, cond):
         fail_n += 1
 
 
-# Item 1: the default KANO image still blocks the EC transport/core and every consumer.
+# Item 1: the KANO profile blacklist still lists the EC transport/core and every consumer.
+# The image builder, not the profile, releases the typec set when GBOS_EC is unset.
 # GBOS_EC is not a profile key; power_button stays the ACPI button.
 kano = devprofile.load(ROOT / "profiles" / "kano")
 safety = devprofile.load_safety()
@@ -42,7 +44,7 @@ STILL_BLOCKED = (
     "cros_ec", "cros_ec_lpcs", "cros_ec_dev", "cros_ec_keyb", "cros_ec_chardev",
     "cros_ec_sysfs", "cros_ec_debugfs",
 )
-check("default KANO blacklist still has transport, MFD, keyb and userspace EC drivers",
+check("KANO profile blacklist still lists transport, MFD, keyb and userspace EC drivers",
       all(m in mods for m in STILL_BLOCKED))
 check("cros_ec_proto stays allowed (not on the KANO blacklist)", "cros_ec_proto" not in mods)
 check("safety required still blocks cros_ec and cros_ec_lpcs",
@@ -93,11 +95,11 @@ def parser_refuses(script, ec, profile="kano", needle="GBOS_EC must be"):
         return r.returncode == 2 and needle in text
 
 
-ACCEPT = ("", "drain", "sensors", "typec", "buttons", "sensors,typec", "typec,buttons",
+ACCEPT = ("", "none", "drain", "sensors", "typec", "buttons", "sensors,typec", "typec,buttons",
           "buttons,sensors,typec")
 REFUSE = ("drain,sensors", "sensors,drain", "buttons,drain", "drain,buttons", "drain,drain",
           "DRAIN", "drain ", " sensors", "sensors,sensors", "sensors,", "sensors,,typec",
-          ",sensors", "sensors,chardev", "sensors,typec,sensors", "none", "drain,buttons,sensors")
+          ",sensors", "sensors,chardev", "sensors,typec,sensors", "drain,buttons,sensors")
 
 check("build.sh accepts empty, drain and the original feature lists",
       all(not parser_refuses(ROOT / "builder" / "build.sh", ec) for ec in ACCEPT))
@@ -116,7 +118,52 @@ check("vendor.sh keeps GBOS_EC KANO-only",
       parser_refuses(ROOT / "builder" / "vendor.sh", "drain", profile="generic-x86",
                      needle="GBOS_EC is audited for the KANO only")
       and parser_refuses(ROOT / "builder" / "vendor.sh", "buttons,typec", profile="generic-x86",
+                         needle="GBOS_EC is audited for the KANO only")
+      and parser_refuses(ROOT / "builder" / "build.sh", "typec", profile="generic-x86",
+                         needle="GBOS_EC is audited for the KANO only")
+      and parser_refuses(ROOT / "builder" / "vendor.sh", "typec", profile="amd-hx370",
                          needle="GBOS_EC is audited for the KANO only"))
+
+
+def parser_text(script, ec, profile="kano"):
+    """(exit, output) of a preflight. ec is None when GBOS_EC is unset."""
+    with tempfile.TemporaryDirectory(prefix="gbos-ec-") as raw:
+        tmp = Path(raw)
+        (tmp / "base.img").write_bytes(b"x")
+        (tmp / "initrd.img").write_bytes(b"x")
+        (tmp / "key.pem").write_text("-----BEGIN PRIVATE KEY-----\n")
+        (tmp / "ota").mkdir()
+        (tmp / "in").mkdir()
+        env = base_env(tmp, profile)
+        if ec is not None:
+            env["GBOS_EC"] = ec
+        r = run(["bash", str(script)], env)
+        return r.returncode, r.stdout + r.stderr
+
+
+def resolved_note(script, ec, profile="kano"):
+    _rc, text = parser_text(script, ec, profile)
+    return text
+
+
+for label, path in (("build.sh", ROOT / "builder" / "build.sh"),
+                    ("vendor.sh", ROOT / "builder" / "vendor.sh")):
+    unset_kano = resolved_note(path, None, "kano")
+    empty_kano = resolved_note(path, "", "kano")
+    none_kano = resolved_note(path, "none", "kano")
+    unset_generic = resolved_note(path, None, "generic-x86")
+    check(f"{label} unset on KANO resolves to typec",
+          "NOTE: GBOS_EC=typec: this image lets audited EC drivers talk to the EC" in unset_kano
+          and "GBOS_EC must be" not in unset_kano)
+    check(f"{label} explicit empty and none on KANO opt out",
+          "NOTE: GBOS_EC=none: the EC stays unreachable" in empty_kano
+          and "NOTE: GBOS_EC=none: the EC stays unreachable" in none_kano
+          and "lets audited EC drivers" not in empty_kano
+          and "lets audited EC drivers" not in none_kano)
+    check(f"{label} unset on generic-x86 stays none and does not apply typec",
+          "NOTE: GBOS_EC=none: the EC stays unreachable" in unset_generic
+          and "GBOS_EC=typec" not in unset_generic
+          and "GBOS_EC is audited for the KANO only" not in unset_generic)
 
 
 def shell_accepts_drain_buttons(script_text):
@@ -216,14 +263,23 @@ def _kano_only(ns, raw):
     return False
 
 
-check("image.py accepts empty, drain and the original feature lists",
+check("image.py accepts empty, none, drain and the original feature lists",
       IMAGE_NS["parse_gbos_ec"]("", "kano") == []
+      and IMAGE_NS["parse_gbos_ec"]("none", "kano") == []
+      and IMAGE_NS["parse_gbos_ec"]("none", "generic-x86") == []
+      and IMAGE_NS["parse_gbos_ec"](None, "generic-x86") == []
       and IMAGE_NS["parse_gbos_ec"]("drain", "kano") == ["drain"]
-      and all(IMAGE_NS["parse_gbos_ec"](ec, "kano") == ec.split(",") for ec in ACCEPT if ec not in ("", "drain")))
+      and all(IMAGE_NS["parse_gbos_ec"](ec, "kano") == ec.split(",")
+               for ec in ACCEPT if ec not in ("", "none", "drain")))
+check("unset GBOS_EC on KANO is typec",
+      IMAGE_NS["parse_gbos_ec"](None, "kano") == ["typec"]
+      and IMAGE_NS["parse_gbos_ec"]("typec", "kano") == ["typec"])
 check("image.py refuses mixed drain, duplicates, empty items and unknown items",
       all(parse_refuses(IMAGE_NS, ec) for ec in REFUSE))
 check("image.py keeps GBOS_EC KANO-only",
-      all(_kano_only(IMAGE_NS, raw) for raw in ("drain", "sensors", "typec,buttons")))
+      all(_kano_only(IMAGE_NS, raw) for raw in ("drain", "sensors", "typec", "typec,buttons"))
+      and not _kano_only(IMAGE_NS, "none")
+      and not _kano_only(IMAGE_NS, ""))
 
 
 def bl_of(opts):
@@ -258,9 +314,43 @@ def drain_entry_ok(ns, base):
     return True
 
 
-check("empty GBOS_EC leaves every KANO entry unchanged",
+check("GBOS_EC=none leaves every KANO entry unchanged",
       all(IMAGE_NS["ec_blacklist"](ENTRIES[name], []) == list(ENTRIES[name]) for name in ("normal", "debug", "quiet"))
       and IMAGE_NS["ec_released"]([]) == set())
+TYPEC_RELEASED = set(IMAGE_NS["EC_CORE"]) | set(IMAGE_NS["EC_RELEASE"]["typec"])
+STAY_BLOCKED = ("thunderbolt", "cros_typec_switch", "cros_ec_ucsi", "cros_usbpd_charger")
+
+
+def typec_entry_ok(ns, base):
+    out = ns["ec_blacklist"](base, ["typec"])
+    _toks, bls = bl_of(out)
+    _base_toks, base_bl = bl_of(base)
+    if bls is None or base_bl is None:
+        return False
+    if set(bls) != (set(base_bl) - TYPEC_RELEASED) | set(EXTRA):
+        return False
+    if TYPEC_RELEASED & set(bls) or not set(EXTRA) <= set(bls):
+        return False
+    if any(name not in bls for name in STAY_BLOCKED):
+        return False
+    return "efi=noruntime" in out and not any(o.startswith("spi-intel.") for o in out)
+
+
+typec_normal, typec_debug, typec_quiet = IMAGE_NS["ec_variant_entries"](
+    ENTRIES["normal"], ENTRIES["debug"], ENTRIES["quiet"], ["typec"])
+check("KANO default typec releases EC_CORE plus the typec drivers and keeps the writers blocked",
+      all(typec_entry_ok(IMAGE_NS, ENTRIES[name]) for name in ("normal", "debug", "quiet"))
+      and IMAGE_NS["ec_released"](["typec"]) == TYPEC_RELEASED
+      and TYPEC_RELEASED == {"cros_ec", "cros_ec_lpcs", "cros_ec_dev", "cros_ec_typec", "cros_usbpd_notify"})
+check("KANO default typec cmdline stays inside the documented limit",
+      devprofile.boot_cmdline_len(typec_debug) == 1892
+      and devprofile.boot_cmdline_len(typec_quiet) == 1800
+      and devprofile.cmdline_within_limit(devprofile.boot_cmdline_len(typec_debug))
+      and devprofile.cmdline_within_limit(devprofile.boot_cmdline_len(typec_quiet))
+      and "ignore_loglevel" in typec_debug and "loglevel=8" in typec_debug
+      and "earlycon=uart8250,mmio32,0xfe03e000,115200n8" in typec_debug
+      and "keep_bootcon" in typec_debug and "printk.devkmsg=on" in typec_debug
+      and "loglevel=4" in typec_quiet and "ignore_loglevel" not in typec_quiet)
 check("drain releases exactly cros_ec and cros_ec_lpcs on normal, quiet and serial-debug",
       all(drain_entry_ok(IMAGE_NS, ENTRIES[name]) for name in ("normal", "debug", "quiet")))
 drain_normal, drain_debug, drain_quiet = IMAGE_NS["ec_variant_entries"](
@@ -322,10 +412,13 @@ def load_vendor(path):
 
 
 VENDOR = load_vendor(ROOT / "profiles" / "kano" / "vendor.py")
-check("drain changes no vendor file",
+check("drain and the opt-out change no vendor file",
       VENDOR.ec_vendor_features("drain") == []
       and VENDOR.ec_vendor_features("") == []
-      and VENDOR.ec_expected(["drain"]) == ([], []))
+      and VENDOR.ec_vendor_features("none") == []
+      and VENDOR.ec_expected(["drain"]) == ([], [])
+      and VENDOR.ec_vendor_features("typec") == ["typec"]
+      and VENDOR.ec_expected(["typec"]) == ([], []))
 check("feature lists still name their vendor files",
       VENDOR.ec_vendor_features("sensors,typec") == ["sensors", "typec"]
       and VENDOR.ec_vendor_features("buttons") == ["buttons"]
@@ -462,7 +555,7 @@ check("drain QEMU log rejects Type-C, sensorhub, an extra transport, and each EC
       and all(not all(EC_LOG(drain_log + ko(name), ["drain"]).values())
               and not all(EC_LOG(drain_log + ko(name.replace("_", "-")), ["drain"]).values())
               for name in EXTRA))
-check("default and feature QEMU checks stay on Loaded-module lines",
+check("opt-out and feature QEMU checks stay on Loaded-module lines",
       all(EC_LOG(UNBOUND, []).values())
       and not all(EC_LOG(ko("cros_ec"), []).values())
       and all(EC_LOG(ko("cros_ec") + ko("cros_ec_lpcs") + ko("cros_ec_dev") + PROBE, ["sensors"]).values())
@@ -527,23 +620,39 @@ def run_watch_policy():
         return [f"module_blacklist={','.join(mods)}",
                 "initcall_blacklist=" + ",".join(guard_ic), *guard_plain]
 
+    def typec_tokens(extra_drop=()):
+        drop = set(TYPEC_RELEASED) | set(extra_drop)
+        mods = [m for m in guard_modules if m not in drop]
+        for name in EXTRA:
+            if name not in drop and name not in mods:
+                mods.append(name)
+        return [f"module_blacklist={','.join(mods)}",
+                "initcall_blacklist=" + ",".join(guard_ic), *guard_plain]
+
     pair_gone = watch.missing_guards(drain_tokens(transport_pair), guards, "usb", "drain")
-    default_pair = watch.missing_guards(guard_tokens(transport_pair), guards, "usb")
     third_gone = watch.missing_guards(drain_tokens(transport_pair | {"cros_ec_dev"}), guards, "usb", "drain")
     tpm_gone = watch.missing_guards(drain_tokens(transport_pair | {"tpm"}), guards, "usb", "drain")
     check("drain watcher policy allows only cros_ec and cros_ec_lpcs to be absent",
           pair_gone == []
-          and "module_blacklist entry cros_ec" in default_pair
-          and "module_blacklist entry cros_ec_lpcs" in default_pair
           and third_gone == ["module_blacklist entry cros_ec_dev"]
           and "module_blacklist entry tpm" in tpm_gone
           and "module_blacklist entry cros_ec" not in tpm_gone
           and "module_blacklist entry cros_ec_lpcs" not in tpm_gone)
     bare = watch.missing_guards(guard_tokens(transport_pair), guards, "usb", "drain")
+    old_full = watch.missing_guards(guard_tokens(set()), guards, "usb", "default")
+    stay_blocked = ("thunderbolt", "cros_typec_switch", "cros_ec_ucsi", "cros_usbpd_charger")
     check("drain watcher policy refuses a blacklist that omits every EC_EXTRA_BLOCK name",
           tuple(IMAGE_NS["EC_EXTRA_BLOCK"]) == EXTRA
-          and all(f"module_blacklist entry {name}" in bare for name in EXTRA)
-          and watch.missing_guards(guard_tokens(set()), guards, "usb") == [])
+          and all(f"module_blacklist entry {name}" in bare for name in EXTRA))
+    check("default watcher policy accepts the typec image and fails closed otherwise",
+          watch.missing_guards(typec_tokens(), guards, "usb", "default") == []
+          and all(f"module_blacklist entry {name}" in old_full for name in EXTRA)
+          and "module_blacklist entry cros_ec" not in watch.missing_guards(
+              guard_tokens(transport_pair), guards, "usb", "default")
+          and all(
+              f"module_blacklist entry {name}" in watch.missing_guards(
+                  typec_tokens({name}), guards, "usb", "default")
+              for name in stay_blocked + EXTRA))
     check("drain watcher policy refuses each missing EC_EXTRA_BLOCK name",
           all(
               f"module_blacklist entry {name}" in watch.missing_guards(
@@ -565,14 +674,19 @@ def run_watch_policy():
           and any("nvme_init" in x for x in watch.missing_guards(
               drain_tokens(transport_pair), guards, "nvme", "drain")))
     ok_body = "cros_ec_lpcs GOOG0004:00: probe\ncros-ec-dev cros-ec-dev.0: no EC behind it\n"
+    typec_body = ok_body + "ChromeOS EC device at 0\ncros-ec-typec GOOG0014:00: waiting\n"
     check("drain watcher still uses the EC regex and only skips the two transport lines",
           watch.first_danger(ok_body, watch.PROFILES["usb"], "drain") is None
-          and watch.first_danger(ok_body, watch.PROFILES["usb"], "default") is not None
           and watch.first_danger("cros_ec_lpcs GOOG0004:00: probe cros_ec_keyb\n", watch.PROFILES["usb"], "drain") is not None
           and all(watch.first_danger(ok_body + extra + "\n", watch.PROFILES["usb"], "drain") is not None
                    for extra in ("cros_ec_dev", "cros-ec-dev.ko", "cros_ec_keyb", "cros-ec-keyb",
                                  "cros_ec_chardev", "cros_ec_sysfs", "cros_ec_debugfs",
                                  "ChromeOS EC device at 0", "/dev/cros_ec")))
+    check("default watcher accepts typec EC lines and still cuts on consumers",
+          watch.first_danger(typec_body, watch.PROFILES["usb"], "default") is None
+          and all(watch.first_danger(typec_body + extra + "\n", watch.PROFILES["usb"], "default") is not None
+                  for extra in ("cros_ec_keyb", "cros_ec_chardev", "cros_ec_sysfs", "cros_ec_debugfs",
+                                "/dev/cros_ec", "cros_usbpd_charger", "cros_typec_switch", "cros_ec_ucsi")))
 
     def loaded(stem):
         return f"init: Loaded kernel module /vendor/lib/modules/{stem}.ko\n"
@@ -586,7 +700,15 @@ def run_watch_policy():
           and all(watch.first_danger(loaded(stem), watch.PROFILES["usb"], "drain") is not None
                   for stem in ("cros-ec-typec", "cros_ec_sensorhub", "cros_ec_spi", "cros-ec-usb", "cros_ec_dev"))
           and watch.first_danger(ok_body + allowed_loads, watch.PROFILES["usb"], "drain") is None
-          and watch.first_danger(loaded("cros_ec_uart"), watch.PROFILES["usb"], "default") is None)
+          and watch.first_danger(loaded("cros_ec"), watch.PROFILES["usb"], "default") is None
+          and watch.first_danger(loaded("cros_ec_lpcs"), watch.PROFILES["usb"], "default") is None
+          and watch.first_danger(loaded("cros_ec_dev"), watch.PROFILES["usb"], "default") is None
+          and watch.first_danger(loaded("cros-ec-typec"), watch.PROFILES["usb"], "default") is None
+          and watch.first_danger(loaded("cros_usbpd_notify"), watch.PROFILES["usb"], "default") is None
+          and watch.first_danger(loaded("cros_ec_proto"), watch.PROFILES["usb"], "default") is None
+          and all(watch.first_danger(loaded(stem), watch.PROFILES["usb"], "default") is not None
+                  for stem in ("cros_ec_uart", "thunderbolt", "cros_usbpd_charger",
+                               "cros_typec_switch", "cros_ec_ucsi", "cros_ec_keyb", "gpio_cros_ec")))
     watch_src = watch_path.read_text(encoding="utf-8")
     check("watcher parses EC_EXTRA_BLOCK from builder/image.py",
           "gpio_cros_ec" not in watch_src and "image_ec_lists" in watch_src)
