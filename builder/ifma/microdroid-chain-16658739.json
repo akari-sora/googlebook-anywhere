@@ -1,0 +1,151 @@
+{
+  "schema": 1,
+  "scope": "rog-ally-fresh-opt-in-only",
+  "virtualization_revision": "22f1c9ee92b146e10c8f5e71338618f77ab1631e",
+  "tools": {
+    "sign_virt_apex.py": "90ddc59bfbd6dca03526a3eac2339420549fc9a0d656e204c74241520574684b",
+    "initrd_bootconfig": "9d975dfcafbda3e78a0a6912cc46354f96669720886eb9e44d6d56bdf8c5af98",
+    "avbtool": "e32e02591c36e4c2871578c3f57f377766b1366f84e6197b4cfb7f34c63fa6d5",
+    "lz4": "f67a41cb488eccc3105c71f52df2ad885db23232a7c8a1845748a52c79505069"
+  },
+  "sources": {
+    "builder/ifma/patch-ifma.py": "789321f8b063d375554d660b8d9820d7aef1b2fef841dc6d22d1178d0c94ae79",
+    "builder/ifma/microdroid-manager.json": "4dc035949d55c4985c9f36c3d90012317261dce01cd07cb2d961434ac310d326"
+  },
+  "files": {
+    "etc/fs/microdroid.img": {
+      "size": 28815360,
+      "sha256": "4bd5c1c8833f9076af702e675dc1c6e58c78b8a68590b4f9544a1b29482640e4",
+      "info_image": "Footer version:           1.0\nImage size:               28815360 bytes\nOriginal image size:      28430336 bytes\nVBMeta offset:            28659712\nVBMeta size:              2432 bytes\n--\nMinimum libavb version:   1.0\nHeader Block:             256 bytes\nAuthentication Block:     576 bytes\nAuxiliary Block:          1600 bytes\nPublic key (sha1):        414462ef5f0ec4b776c92fb66433aa8958ec83f4\nAlgorithm:                SHA256_RSA4096\nRollback Index:           0\nFlags:                    0\nRollback Index Location:  0\nRelease String:           'avbtool 1.4.0'\nDescriptors:\n    Hashtree descriptor:\n      Version of dm-verity:  1\n      Image Size:            28430336 bytes\n      Tree Offset:           28430336\n      Tree Size:             229376 bytes\n      Data Block Size:       4096 bytes\n      Hash Block Size:       4096 bytes\n      FEC num roots:         0\n      FEC offset:            0\n      FEC size:              0 bytes\n      Hash Algorithm:        sha256\n      Partition Name:        system\n      Salt:                  b53452d5ebc24186bafdaa793bd88677dd47b913b7176ff1b950fa761c67e59d\n      Root Digest:           a809af1d58f442f0d1862e8594a6668e093127a0ba30a9a81946928f97eb1ca0\n      Flags:                 0\n    Prop: com.android.build.system.os_version -> '17'\n    Prop: com.android.build.system.fingerprint -> 'Android/desktop_system/desktop:17/CL3B.260622.276.R4/16658739:user/dev-keys'\n    Prop: com.android.build.system.security_patch -> '2026-10-01'\n"
+    },
+    "etc/fs/microdroid_vbmeta.img": {
+      "size": 65536,
+      "sha256": "5315ebd6901df35604e25c7cd88679f1c76899f360a375bc5e1888c4fbf9ea50",
+      "info_image": "Minimum libavb version:   1.0\nHeader Block:             256 bytes\nAuthentication Block:     576 bytes\nAuxiliary Block:          1600 bytes\nPublic key (sha1):        414462ef5f0ec4b776c92fb66433aa8958ec83f4\nAlgorithm:                SHA256_RSA4096\nRollback Index:           1790812800\nFlags:                    0\nRollback Index Location:  0\nRelease String:           'avbtool 1.4.0'\nDescriptors:\n    Prop: com.android.build.system.os_version -> '17'\n    Prop: com.android.build.system.fingerprint -> 'Android/desktop_system/desktop:17/CL3B.260622.276.R4/16658739:user/dev-keys'\n    Prop: com.android.build.system.security_patch -> '2026-10-01'\n    Hashtree descriptor:\n      Version of dm-verity:  1\n      Image Size:            28430336 bytes\n      Tree Offset:           28430336\n      Tree Size:             229376 bytes\n      Data Block Size:       4096 bytes\n      Hash Block Size:       4096 bytes\n      FEC num roots:         0\n      FEC offset:            0\n      FEC size:              0 bytes\n      Hash Algorithm:        sha256\n      Partition Name:        system\n      Salt:                  b53452d5ebc24186bafdaa793bd88677dd47b913b7176ff1b950fa761c67e59d\n      Root Digest:           a809af1d58f442f0d1862e8594a6668e093127a0ba30a9a81946928f97eb1ca0\n      Flags:                 0\n"
+    },
+    "etc/fs/microdroid_kernel": {
+      "size": 10047488,
+      "sha256": "ab11a15a034c43cfc204169bfd27b46723d65260b0171f5db8e15184d1866557",
+      "info_image": "Footer version:           1.0\nImage size:               10047488 bytes\nOriginal image size:      9974784 bytes\nVBMeta offset:            9977856\nVBMeta size:              2624 bytes\n--\nMinimum libavb version:   1.0\nHeader Block:             256 bytes\nAuthentication Block:     576 bytes\nAuxiliary Block:          1792 bytes\nPublic key (sha1):        414462ef5f0ec4b776c92fb66433aa8958ec83f4\nAlgorithm:                SHA256_RSA4096\nRollback Index:           1790812800\nFlags:                    0\nRollback Index Location:  0\nRelease String:           'avbtool 1.4.0'\nDescriptors:\n    Hash descriptor:\n      Image Size:            9974784 bytes\n      Hash Algorithm:        sha256\n      Partition Name:        boot\n      Salt:                  3b4a12881d11f33cff968a24d7c53723a8232cde9a8d91e29fdbd6a95ae6adf0\n      Digest:                b3bd827585d09444f58de6bc376f7a38d57244bad0fd67bffdce59b508674ef5\n      Flags:                 0\n    Prop: com.android.virt.cap -> 'secretkeeper_protection'\n    Hash descriptor:\n      Image Size:            837916 bytes\n      Hash Algorithm:        sha256\n      Partition Name:        initrd_debug\n      Salt:                  8ab9dc9cb7e6456700ff6ef18c6b4c3acc24c5fa5381b829563f8d7a415d869a\n      Digest:                771f48c018257c5822132f4fde5b1bba4b77eb25cfc6d83a0cc5079ba1f0de13\n      Flags:                 0\n    Hash descriptor:\n      Image Size:            837752 bytes\n      Hash Algorithm:        sha256\n      Partition Name:        initrd_normal\n      Salt:                  8041a07d54ac82290f6d90bac1fa8d7fdbc4db974d101d60faf294749d1ebaf8\n      Digest:                c3c40fc1001ffe168ba2287733c54f356fcc868f5a60ac7c567eb816bb64971d\n      Flags:                 0\n"
+    },
+    "etc/microdroid_initrd_normal.img": {
+      "size": 837752,
+      "sha256": "f9cc0c9db4b90579ddb27387cba3219a426cc60ba3ee3364a2f4bb6f49ddaa48"
+    },
+    "etc/microdroid_initrd_debuggable.img": {
+      "size": 837916,
+      "sha256": "5a687b7fe0041378643a5ff1acc23b81c91a2679acb082f76553bd90a637a35f"
+    }
+  },
+  "runtime": {
+    "path": "system/apex/com.android.runtime.apex",
+    "sha256": "917a98300b0ccecdb05e5a413ea650d1a4c061c4bcb02fdcf8efa68ce10fb2b0",
+    "payload_sha256": "5ebccf5d395e5be85159d52eb46a5d5c2229ee4ef155f1252afcdf6e698b5962"
+  },
+  "system_original_size": 28430336,
+  "kernel_original_size": 9974784,
+  "vbmeta_meaningful_size": 2432,
+  "policy_rows": {
+    "residuals": [
+      {
+        "partition": "system_a",
+        "container_chain": [
+          {
+            "kind": "tree_file",
+            "path": "system/apex/com.google.android.virt.apex"
+          },
+          {
+            "kind": "zip_member",
+            "path": "apex_payload.img"
+          },
+          {
+            "kind": "erofs_file",
+            "path": "etc/fs/microdroid.img",
+            "sha256": "4bd5c1c8833f9076af702e675dc1c6e58c78b8a68590b4f9544a1b29482640e4"
+          },
+          {
+            "kind": "erofs_file",
+            "path": "system/bin/microdroid_manager",
+            "sha256": "32efab45a5653acc33c440fc0761744e70a95caf45b807209764185da747bb15"
+          }
+        ],
+        "file_offset": "0x17b96d",
+        "instruction": "vpmadd52luq",
+        "reason": "Microdroid guest-only f64 formatter; left unpatched to preserve its vbmeta/DICE chain; a guest may SIGILL without AVX-IFMA."
+      },
+      {
+        "partition": "system_a",
+        "container_chain": [
+          {
+            "kind": "tree_file",
+            "path": "system/apex/com.google.android.virt.apex"
+          },
+          {
+            "kind": "zip_member",
+            "path": "apex_payload.img"
+          },
+          {
+            "kind": "erofs_file",
+            "path": "etc/fs/microdroid_kernel",
+            "sha256": "ab11a15a034c43cfc204169bfd27b46723d65260b0171f5db8e15184d1866557"
+          },
+          {
+            "kind": "bzimage_payload",
+            "path": "vmlinux",
+            "sha256": "ac5b5281c859544b388080331087633e287e1e6217725614a8f28886fde592e3"
+          }
+        ],
+        "file_offset": "0x4a0d71",
+        "instruction": "vpmadd52huq",
+        "reason": "Microdroid guest kernel aes_ctr64_crypt_vaes_avx512: raw candidate at 0x4a0d71 lies inside EVEX vpxord (ModRM c4), not an IFMA instruction; AES registration checks CPU features and xstate. Guest residual per FOLLOWUP-5 C."
+      },
+      {
+        "partition": "system_a",
+        "container_chain": [
+          {
+            "kind": "tree_file",
+            "path": "system/apex/com.google.android.virt.apex"
+          },
+          {
+            "kind": "zip_member",
+            "path": "apex_payload.img"
+          },
+          {
+            "kind": "erofs_file",
+            "path": "etc/fs/microdroid_kernel",
+            "sha256": "ab11a15a034c43cfc204169bfd27b46723d65260b0171f5db8e15184d1866557"
+          },
+          {
+            "kind": "bzimage_payload",
+            "path": "vmlinux",
+            "sha256": "ac5b5281c859544b388080331087633e287e1e6217725614a8f28886fde592e3"
+          }
+        ],
+        "file_offset": "0x4a0f07",
+        "instruction": "vpmadd52huq",
+        "reason": "Microdroid guest kernel aes_ctr64_crypt_vaes_avx512: raw candidate at 0x4a0f07 lies inside EVEX vpxord (ModRM c4), not an IFMA instruction; AES registration checks CPU features and xstate. Guest residual per FOLLOWUP-5 C."
+      }
+    ],
+    "unsupported_allowlist": [
+      {
+        "partition": "system_a",
+        "container_chain": [
+          {
+            "kind": "tree_file",
+            "path": "system/apex/com.google.android.virt.apex"
+          },
+          {
+            "kind": "zip_member",
+            "path": "apex_payload.img"
+          },
+          {
+            "kind": "erofs_file",
+            "path": "etc/fs/microdroid_vbmeta.img"
+          }
+        ],
+        "sha256": "5315ebd6901df35604e25c7cd88679f1c76899f360a375bc5e1888c4fbf9ea50",
+        "reason": "Microdroid AVB metadata blob: 65536 bytes, AVB0 libavb 1.0, algorithm 2, auth block 576 bytes, aux block 1600 bytes, avbtool 1.4.0; no executable filesystem payload (FOLLOWUP-5 H3)."
+      }
+    ]
+  }
+}

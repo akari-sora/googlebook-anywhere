@@ -642,6 +642,35 @@ def stage2_modules_load(text, prof):
     return "\n".join(stub + [line for line in text.splitlines() if line and line not in drop]) + "\n"
 
 
+def drop_builtin_mfd_load(text):
+    rows = text.splitlines()
+    if rows.count("mfd-core.ko") != 1:
+        raise ProfileError("expected one first-stage mfd-core.ko load entry")
+    return "\n".join(x for x in rows if x != "mfd-core.ko") + "\n"
+
+
+def drop_builtin_mfd_dependencies(text):
+    out = []
+    own = refs = 0
+    target = "/lib/modules/mfd-core.ko"
+    for line in text.splitlines():
+        if ":" not in line:
+            raise ProfileError("malformed first-stage modules.dep")
+        name, rest = line.split(":", 1)
+        tokens = rest.split()
+        if name == target:
+            if tokens:
+                raise ProfileError("built-in mfd-core unexpectedly has dependencies")
+            own += 1
+            continue
+        refs += tokens.count(target)
+        tokens = [x for x in tokens if x != target]
+        out.append(name + ":" + (" " + " ".join(tokens) if tokens else ""))
+    if own != 1 or refs == 0:
+        raise ProfileError("unexpected first-stage mfd-core dependency topology")
+    return "\n".join(out) + "\n"
+
+
 def module_specs(prof):
     """(module, dir) for this profile: [modules].load, then [modules].unblock."""
     dirs = prof["_module_dirs"]

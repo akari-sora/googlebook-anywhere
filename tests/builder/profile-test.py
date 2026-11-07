@@ -2243,7 +2243,7 @@ def _image_install_checked():
         if isinstance(stmt, ast.FunctionDef):
             return
         if (
-            isinstance(stmt, ast.Expr)
+            isinstance(stmt, (ast.Expr, ast.Assign))
             and isinstance(stmt.value, ast.Call)
             and isinstance(stmt.value.func, ast.Name)
             and stmt.value.func.id == "install_checked_kernel"

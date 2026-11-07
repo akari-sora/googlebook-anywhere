@@ -23,6 +23,11 @@ _VERIFIED = {}
 ROOT = Path(__file__).resolve().parents[2]
 CONTRACT = ROOT / "builder/ifma/microdroid-chain.json"
 CONTRACT_SHA256 = "94f67c26c56cacfb139f1aa8a5d6db41a445ff729bac9e6e305736d4c7b732d7"
+CONTRACTS = {
+    "16452207": (CONTRACT, CONTRACT_SHA256),
+    "16658739": (ROOT / "builder/ifma/microdroid-chain-16658739.json", "446a4f21da48cef4461682632e4bd24ff59390a6a6d9c1add2fb02935b5898b4"),
+}
+
 RUNTIME_ALIAS = "microdroid/system/apex/com.android.runtime.apex"
 SYSTEM = "etc/fs/microdroid.img"
 VBMETA = "etc/fs/microdroid_vbmeta.img"
@@ -58,8 +63,11 @@ def enabled(prof):
 
 
 def _contract():
-    _require(_sha(CONTRACT) == CONTRACT_SHA256, "Microdroid contract changed")
-    c = json.loads(CONTRACT.read_text())
+    build = os.environ.get("GBOS_LAPIS_BUILD", "16452207")
+    _require(build in CONTRACTS, "unsupported Microdroid source build")
+    path, digest = CONTRACTS[build]
+    _require(_sha(path) == digest, "Microdroid contract changed")
+    c = json.loads(path.read_text())
     for rel, pin in c["sources"].items():
         _require(_sha(ROOT / rel) == pin, "Microdroid source changed: " + rel)
     return c
@@ -69,7 +77,7 @@ def source_identity(tools_dir=None):
     """No private keys, product inputs, tool execution or implicit downloads."""
     c = _contract()
     identity = {
-        "contract_sha256": CONTRACT_SHA256,
+        "contract_sha256": CONTRACTS[os.environ.get("GBOS_LAPIS_BUILD", "16452207")][1],
         "module_sha256": _sha(__file__),
         "sources": c["sources"],
         "required_tools": c["tools"],

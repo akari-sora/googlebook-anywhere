@@ -197,6 +197,11 @@ digest = (GBOS_OUT / "vendor/logs/vbmeta.digest.txt").read_text().split()[0]
 assert re.fullmatch(r"[0-9a-f]{64}", digest) and f"androidboot.vbmeta.digest={digest}\n".encode() in bc, \
     "ESP bootconfig must carry the re-signed vbmeta digest"
 STUB = bool(PROF["cmdline"]["pci_stub_ids"])
+# Bind first-stage treatment to the embedded config of the exact shipped kernel.
+DEV_KERNEL_DIR = os.environ.get("GBOS_DEV_KERNEL_DIR", "")
+initrd_checked_kernel = devprofile.check_kconfig(PROF, DEV_KERNEL_DIR) if DEV_KERNEL_DIR else None
+builtin_mfd = bool(initrd_checked_kernel and initrd_checked_kernel.get("CONFIG_MFD_CORE") == "y")
+mfd_depchanged = 0
 out = bytearray(); off = 0; changed = 0; added = 0; depchanged = 0
 while off < len(body):
     if body[off:off+6] != b"070701":
@@ -207,7 +212,10 @@ while off < len(body):
     nend = (off + 110 + ns + 3) & ~3; name = body[off+110:off+110+ns-1].decode(); data = body[nend:nend+fs]
     nxt = (nend + fs + 3) & ~3
     if name == "lib/modules/modules.load":
-        data = devprofile.stage2_modules_load(data.decode(), PROF).encode()
+        load_text = devprofile.stage2_modules_load(data.decode(), PROF)
+        if builtin_mfd:
+            load_text = devprofile.drop_builtin_mfd_load(load_text)
+        data = load_text.encode()
         if USB_SMOKE and any("nvme" in x.lower() for x in data.decode().splitlines()):
             sys.exit("USB smoke first-stage modules.load contains NVMe")
         h[54:62] = b"%08X" % len(data); changed += 1
@@ -221,13 +229,20 @@ while off < len(body):
         hdr = b"070701" + b"".join(b"%08X" % v for v in fields)
         out += hdr + nm + b"\0" * ((-(110 + len(nm))) % 4) + ko + b"\0" * ((-len(ko)) % 4)
         added += 1
-    elif name == "lib/modules/modules.dep" and STUB:
-        data = data + b"/lib/modules/pci-stub.ko:\n"
-        h[54:62] = b"%08X" % len(data); depchanged += 1
+    elif name == "lib/modules/modules.dep" and (STUB or builtin_mfd):
+        if builtin_mfd:
+            data = devprofile.drop_builtin_mfd_dependencies(data.decode()).encode()
+            mfd_depchanged += 1
+        if STUB:
+            data = data + b"/lib/modules/pci-stub.ko:\n"
+        h[54:62] = b"%08X" % len(data); depchanged += int(STUB)
         out += h + body[off+110:nend] + data + b"\0" * ((-len(data)) % 4)
     else:
+        if builtin_mfd and name in ("lib/modules/modules.alias", "lib/modules/modules.softdep"):
+            assert b"mfd-core" not in data and b"mfd_core" not in data, "unexpected mfd alias/softdep"
         out += body[off:nxt]
     off = nxt
+assert mfd_depchanged == int(builtin_mfd)
 assert changed == 1 and added == depchanged == (1 if STUB else 0), (changed, added, depchanged)
 (OUT / "initrd.img").write_bytes(bytes(out) + bc)
 
@@ -488,9 +503,11 @@ if DEV_KERNEL_DIR:
         run("mcopy", "-o", "-i", f"{IMG}{ESP}", "::/kernel.efi", OUT / "kernel.efi")
         return (OUT / "kernel.efi").read_bytes()
 
-    install_checked_kernel(
+    installed = install_checked_kernel(
         PROF, DEV_KERNEL_DIR, debug, quiet, _read_checked_bz, _copy_kernel, _read_shipped_kernel
     )
+    if installed.bzimage_sha256 != initrd_checked_kernel.bzimage_sha256:
+        sys.exit("kernel changed after first-stage module selection")
 else:
     run("mcopy", "-o", "-i", f"{IMG}{ESP}", "::/kernel.efi", OUT / "kernel.efi")
 if KMOD_KBD_BACKLIGHT and hashlib.sha256((OUT / "kernel.efi").read_bytes()).hexdigest() != "7816c5d5b3500093e597b7362ecab103d5a32141b100d3eb7a8b33221fce7f41":
