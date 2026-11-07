@@ -175,6 +175,34 @@ USERDATA = PARTS["userdata"]
 def mtype(img, path):
     return subprocess.run(["mtype", "-i", f"{img}{ESP}", path], check=True, capture_output=True, text=True).stdout.replace("\r", "")
 
+def ally_storage_module(prof, checked, kernel_dir):
+    """Load only the known Ally first-stage USB BOT module with checked kernel ABI."""
+    if prof["model"]["id"] != "rog-ally":
+        return None
+    required = {"CONFIG_USB_STORAGE": "m", "CONFIG_SCSI": "y", "CONFIG_BLK_DEV_SD": "y"}
+    if checked is None or any(checked.get(k) != v for k, v in required.items()):
+        raise ValueError("Ally USB storage kernel config mismatch")
+    root = Path(kernel_dir)
+    ko, dep, symvers = root / "modules/usb-storage.ko", root / "modules/modules.dep", root / "Module.symvers"
+    for path in (ko, dep, symvers):
+        if path.is_symlink() or not path.is_file(): raise ValueError("missing Ally storage input: " + str(path))
+    content = ko.read_bytes()
+    if hashlib.sha256(content).hexdigest() != "f429104c8803c8156f8278d37b08147d11eb3f287b58320a10fda9bf286fffd4":
+        raise ValueError("Ally storage module pin mismatch")
+    lines = [x for x in dep.read_text().splitlines() if x.split(":", 1)[0] == "usb-storage.ko"]
+    if lines != ["usb-storage.ko:"]:
+        raise ValueError("Ally storage dependencies changed")
+    # This pinned in-tree module intentionally exports usb_stor symbols. The
+    # generic checker rejects exports, but all its other checks remain mandatory.
+    checked_module = subprocess.run([sys.executable, str(Path(__file__).resolve().parent / "kmod/check-ko.py"),
+                                     str(ko), str(symvers), "SMP preempt mod_unload modversions "],
+                                    capture_output=True, text=True)
+    failures = [line for line in checked_module.stdout.splitlines() if line.startswith("FAIL ")]
+    if checked_module.returncode != 1 or failures != ["FAIL the module exports symbols"] or checked_module.stderr:
+        raise ValueError("Ally USB storage ABI verification failed")
+    if ko.read_bytes() != content: raise ValueError("Ally storage module changed during ABI check")
+    return content
+
 # initrd: drop the LPSS UART drivers from first-stage modules.load, keep the bootconfig as built
 IMG.unlink(missing_ok=True)
 run("cp", "--reflink=auto", SRC, IMG)
@@ -200,6 +228,9 @@ STUB = bool(PROF["cmdline"]["pci_stub_ids"])
 # Bind first-stage treatment to the embedded config of the exact shipped kernel.
 DEV_KERNEL_DIR = os.environ.get("GBOS_DEV_KERNEL_DIR", "")
 initrd_checked_kernel = devprofile.check_kconfig(PROF, DEV_KERNEL_DIR) if DEV_KERNEL_DIR else None
+storage_ko = ally_storage_module(PROF, initrd_checked_kernel, DEV_KERNEL_DIR)
+if storage_ko is not None and STUB: raise ValueError("Ally storage with pci stub unsupported")
+storage_load = storage_dep = storage_added = 0
 builtin_mfd = bool(initrd_checked_kernel and initrd_checked_kernel.get("CONFIG_MFD_CORE") == "y")
 mfd_depchanged = 0
 out = bytearray(); off = 0; changed = 0; added = 0; depchanged = 0
@@ -211,15 +242,27 @@ while off < len(body):
     h = bytearray(body[off:off+110]); ns = int(h[94:102], 16); fs = int(h[54:62], 16)
     nend = (off + 110 + ns + 3) & ~3; name = body[off+110:off+110+ns-1].decode(); data = body[nend:nend+fs]
     nxt = (nend + fs + 3) & ~3
+    if storage_ko is not None and name == "lib/modules/usb-storage.ko":
+        raise ValueError("duplicate USB storage module")
     if name == "lib/modules/modules.load":
         load_text = devprofile.stage2_modules_load(data.decode(), PROF)
         if builtin_mfd:
             load_text = devprofile.drop_builtin_mfd_load(load_text)
+        if storage_ko is not None:
+            if "usb-storage.ko" in load_text.splitlines(): raise ValueError("duplicate USB storage load")
+            load_text += "usb-storage.ko\n"
+            storage_load += 1
         data = load_text.encode()
         if USB_SMOKE and any("nvme" in x.lower() for x in data.decode().splitlines()):
             sys.exit("USB smoke first-stage modules.load contains NVMe")
         h[54:62] = b"%08X" % len(data); changed += 1
         out += h + body[off+110:nend] + data + b"\0" * ((-len(data)) % 4)
+        if storage_ko is not None:
+            nm = b"lib/modules/usb-storage.ko\0"
+            fields = [0x7FFF0002, 0o100644, 0, 0, 1, int(h[46:54], 16), len(storage_ko), 0, 0, 0, 0, len(nm), 0]
+            hdr = b"070701" + b"".join(b"%08X" % v for v in fields)
+            out += hdr + nm + b"\0" * ((-(110 + len(nm))) % 4) + storage_ko + b"\0" * ((-len(storage_ko)) % 4)
+            storage_added += 1
         if not STUB:
             off = nxt; continue
         # new entry: lib/modules/pci-stub.ko (first stage loads it before ueventd can load intel-lpss-pci)
@@ -229,10 +272,14 @@ while off < len(body):
         hdr = b"070701" + b"".join(b"%08X" % v for v in fields)
         out += hdr + nm + b"\0" * ((-(110 + len(nm))) % 4) + ko + b"\0" * ((-len(ko)) % 4)
         added += 1
-    elif name == "lib/modules/modules.dep" and (STUB or builtin_mfd):
+    elif name == "lib/modules/modules.dep" and (STUB or builtin_mfd or storage_ko is not None):
         if builtin_mfd:
             data = devprofile.drop_builtin_mfd_dependencies(data.decode()).encode()
             mfd_depchanged += 1
+        if storage_ko is not None:
+            if b"usb-storage.ko" in data: raise ValueError("duplicate USB storage dependency")
+            data += b"/lib/modules/usb-storage.ko:\n"
+            storage_dep += 1
         if STUB:
             data = data + b"/lib/modules/pci-stub.ko:\n"
         h[54:62] = b"%08X" % len(data); depchanged += int(STUB)
@@ -243,6 +290,7 @@ while off < len(body):
         out += body[off:nxt]
     off = nxt
 assert mfd_depchanged == int(builtin_mfd)
+assert storage_load == storage_dep == storage_added == int(storage_ko is not None)
 assert changed == 1 and added == depchanged == (1 if STUB else 0), (changed, added, depchanged)
 (OUT / "initrd.img").write_bytes(bytes(out) + bc)
 
