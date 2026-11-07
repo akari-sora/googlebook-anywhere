@@ -840,8 +840,21 @@ if AMD_HX370:
             "console=ttyS0,115200n8", "earlycon=uart8250,io,0x3f8,115200n8"])
 else:
     q = [o for o in debug if not o.startswith(("console=", "earlycon="))] + ["console=ttyS0,115200n8", "earlycon=uart8250,io,0x3f8,115200n8"]
+def functional_cmdline(options, token, builtin):
+    """Fit the exact direct-QEMU -append without dropping any safety options."""
+    result = list(options) + ["androidboot.gbos_qemu_nonce=" + token]
+    fits = lambda values: devprofile.x86_cmdline_fits(len(" ".join(values).encode("utf-8")), builtin)
+    if not fits(result):
+        # QEMU-only earlycon; the normal COM1 console and every image option stay.
+        result = [x for x in result if x != "earlycon=uart8250,io,0x3f8,115200n8"]
+    if not fits(result):
+        raise ValueError("functional QEMU command line exceeds x86 kernel limit")
+    return result
+
 probe_token = uuid.uuid4().hex
-q.append("androidboot.gbos_qemu_nonce=" + probe_token)
+qemu_builtin = (devprofile.builtin_cmdline_text(initrd_checked_kernel) if initrd_checked_kernel is not None
+                else devprofile.KERNEL_CONFIG_CMDLINE)
+q = functional_cmdline(q, probe_token, qemu_builtin)
 def ec_ssdt(kbd_backlight=False):
     """GBOS_EC self-test only: an SSDT with the KANO's EC ACPI devices (\\_SB.CREC = GOOG0004 with GOOG0014, GOOG0007 and
     GOOG0003 below it) and no EC behind them, so ueventd loads the released drivers under this kernel and they must

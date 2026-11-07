@@ -44,6 +44,7 @@ expect "optional KANO backlight profile" 0 "Ran [0-9]+ tests" -- python3 "$ROOT/
 expect "built-in MFD first-stage dependencies" 0 "^OK$" -- python3 "$ROOT/tests/builder/test_builtin_mfd.py"
 expect "Ally first-stage USB storage" 0 "^OK$" -- python3 "$ROOT/tests/builder/test_ally_storage.py"
 expect "QEMU functional wake" 0 "^OK$" -- python3 "$ROOT/tests/builder/qemu-wake-test.py"
+expect "QEMU functional command line" 0 "^OK$" -- python3 "$ROOT/tests/builder/qemu-cmdline-test.py"
 expect "KANO backlight PWM rounding" 0 "101/101 levels round-trip" -- python3 "$ROOT/builder/kmod/test_gbos_kbd_backlight_math.py"
 expect "optional KANO backlight build guards" 0 "Ran [0-9]+ tests" -- python3 "$ROOT/tests/builder/kano-backlight-build-test.py"
 expect "isolated USB backlight trial" 0 "^OK$" -- python3 "$ROOT/tests/builder/usb-smoke-test.py"
