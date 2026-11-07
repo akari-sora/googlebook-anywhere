@@ -52,6 +52,44 @@ with open(sys.argv[1],"rb") as f: print(hashlib.sha256(f.read()).hexdigest(),sys
         (self.d/'out/firmware/regulatory.db.p7s').unlink(); (self.source/'regulatory.db.p7s').write_bytes(b'changed')
         r=self.fetch(); self.assertNotEqual(r.returncode,0); self.assertIn('sha256 mismatch',r.stdout)
         self.assertFalse((self.d/'out/firmware/regulatory.db.p7s').exists())
+    def test_vendor_existing_pair_replaced_and_accounted(self):
+        script=(ROOT/'builder/vendor.sh').read_text()
+        stage=script.split('# Device firmware of the profile.',1)[1].split('import re as _re',1)[0]
+        accounting=script.split('fw_new, fw_changed = [], []',1)[1].split('expect_new = sorted(',1)[0]
+        tree=self.d/'tree'; (tree/'firmware').mkdir(parents=True)
+        fw=self.d/'fw'; fw.mkdir()
+        entries=[]
+        for n,v in self.data.items():
+            (fw/n).write_bytes(v)
+            entries.append({'path':n,'from':'wireless-regdb','sha256':hashlib.sha256(v).hexdigest()})
+        vmap={'firmware/i915':{'mode':755},'firmware/i915/xe2lpd_dmc.bin':{'mode':644}}
+        def run_stage():
+            exec('import os, shutil\nfrom pathlib import Path\n# '+stage, {'tree':tree,'tmp':self.d,'prof':{'firmware':entries},'vmap':vmap})
+        def account(old,new):
+            ns={'prof':{'firmware':entries},'old':old,'new':new,'p_changed':[]}
+            exec('fw_new, fw_changed = [], []'+accounting, ns)
+            return ns['fw_new'],ns['fw_changed']
+        old={}
+        for entry in entries:
+            path=tree/'firmware'/entry['path'];path.write_bytes(b'old');path.chmod(0o600)
+            rel='firmware/'+entry['path']; vmap[rel]={'mode':600,'selinux':'existing'}
+            old[rel]=('file',hashlib.sha256(b'old').hexdigest())
+        run_stage()
+        for entry in entries:
+            rel='firmware/'+entry['path']; path=tree/rel
+            self.assertEqual(path.read_bytes(),self.data[entry['path']]);self.assertEqual(path.stat().st_mode & 0o777,0o600)
+            self.assertEqual(vmap[rel],{'mode':600,'selinux':'existing'})
+        new={'firmware/'+e['path']:('file',e['sha256']) for e in entries}
+        self.assertEqual(account(old,new),([],sorted(new)))
+        self.assertEqual(account(new,new),([],[]))
+        self.assertEqual(account({},new),(list(new),[]))
+        broken=dict(new); broken[next(iter(broken))]=('file','bad')
+        with self.assertRaisesRegex(SystemExit,'output differs'): account(old,broken)
+        collision=tree/'firmware/regulatory.db';collision.unlink();collision.symlink_to(fw/'regulatory.db')
+        with self.assertRaisesRegex(SystemExit,'already present'): run_stage()
+        collision.unlink();collision.write_bytes(b'base');entries[0]['from']='linux-firmware'
+        with self.assertRaisesRegex(SystemExit,'already present'): run_stage()
+
     def test_vendor_pair_never_drifts(self):
         text=(ROOT/'builder/vendor.sh').read_text(); block=text.split('# Signed database bytes form one reviewed pair;',1)[1].split('if [ -n "$FWLIST" ]',1)[0]
         fw=self.d/'fw';fw.mkdir();

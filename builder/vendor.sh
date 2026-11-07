@@ -370,11 +370,16 @@ for fwe in prof["firmware"]:
             (tree / d).chmod(0o755)
             vmap[d] = dict(vmap["firmware/i915"])
     dst = tree / "firmware" / rel
-    if dst.exists():
-        raise SystemExit("already present: " + rel)
-    shutil.copyfile(tmp / "fw" / rel, dst)
-    dst.chmod(0o644)
-    vmap["firmware/" + rel] = dict(vmap["firmware/i915/xe2lpd_dmc.bin"])
+    if os.path.lexists(dst):
+        if (fwe["from"] != "wireless-regdb" or rel not in ("regulatory.db", "regulatory.db.p7s")
+                or dst.is_symlink() or not dst.is_file() or "firmware/" + rel not in vmap):
+            raise SystemExit("already present: " + rel)
+        # Retain the base inode metadata; the preflight pinned both signed members.
+        shutil.copyfile(tmp / "fw" / rel, dst)
+    else:
+        shutil.copyfile(tmp / "fw" / rel, dst)
+        dst.chmod(0o644)
+        vmap["firmware/" + rel] = dict(vmap["firmware/i915/xe2lpd_dmc.bin"])
 import re as _re
 fst = tree / "etc/fstab.android-desktop"
 ft = fst.read_text()
@@ -1500,12 +1505,21 @@ if prof["hooks"]["vendor"]:
     if os.environ.get("GBOS_CAMERA_OVERLAY") and hasattr(hooks, "camera_expected"):
         c_new, c_changed = hooks.camera_expected(Path(os.environ["GBOS_CAMERA_OVERLAY"]), set(old))
         p_new, p_changed = p_new + c_new, p_changed + c_changed
-fw_new = []
+fw_new, fw_changed = [], []
 for fwe in prof["firmware"]:
     parts = fwe["path"].split("/")
     fw_new += ["firmware/" + "/".join(parts[:i]) for i in range(1, len(parts)) if "firmware/" + "/".join(parts[:i]) not in old]
-    fw_new.append("firmware/" + fwe["path"])
-expect_changed = sorted(set(["build.prop", "etc/fstab.android-desktop", "etc/init/android.hardware.security.secretkeeper.trusty.desktop.rc", "etc/init/hal_desktop_charge_control_default.rc", "etc/selinux/vendor_sepolicy.cil"] + p_changed))
+    rel = "firmware/" + fwe["path"]
+    if fwe["from"] == "wireless-regdb" and new.get(rel) != ("file", fwe["sha256"]):
+        raise SystemExit("signed wireless-regdb output differs from profile pin: " + rel)
+    if rel in old:
+        if fwe["from"] != "wireless-regdb" or fwe["path"] not in ("regulatory.db", "regulatory.db.p7s") or old[rel][0] != "file":
+            raise SystemExit("unexpected existing firmware: " + rel)
+        if old[rel] != new[rel]:
+            fw_changed.append(rel)
+    else:
+        fw_new.append(rel)
+expect_changed = sorted(set(["build.prop", "etc/fstab.android-desktop", "etc/init/android.hardware.security.secretkeeper.trusty.desktop.rc", "etc/init/hal_desktop_charge_control_default.rc", "etc/selinux/vendor_sepolicy.cil"] + p_changed + fw_changed))
 expect_new = sorted(set(["etc/kano-adb_keys", "etc/kano-adb.sh", "etc/init/kano-adb.rc", "etc/init/kano-services.rc", "etc/kano-tone-1k.wav", "etc/kano-audiotest.sh", "etc/init/kano-audiotest.rc", "etc/init/kano-bootfix.rc", "etc/init/gbos-no-ota.rc", "etc/init/kano-diag.rc", "etc/init/kano-hw.rc", "etc/init/kano-logcat.rc", "etc/kano-diag.sh", "etc/kano-logcat.sh", "etc/kano-wifi.sh"] + p_new + fw_new))
 if not os.environ.get("GBOS_ADB_PUBKEY"):
     expect_new = sorted(x for x in expect_new if "kano-adb" not in x)
