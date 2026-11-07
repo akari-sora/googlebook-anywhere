@@ -104,6 +104,26 @@ class SharedMediumTest(unittest.TestCase):
         self.assertFalse((self.root / 'usr/local/sbin/gbos-install').exists())
         self.assertTrue((self.root / 'opt/googlebook/profiles/kano/profile.toml').exists())
 
+    def test_unselected_ally_profile_in_maintenance_root_is_refused(self):
+        # Empty and overlapping rules both disrupt otherwise valid two-profile detection.
+        ally = self.root / 'opt/googlebook/profiles/rog-ally'
+        ally.mkdir(parents=True)
+        rule_file = ally / 'profile.toml'
+        for rule in ('{}', '{sys_vendor = "Google", product_name = "Kano"}'):
+            with self.subTest(rule=rule):
+                raw = '[model]\nid = "rog-ally"\ndmi = ' + rule + '\n'
+                rule_file.write_text(raw)
+                with self.assertRaisesRegex(ValueError, 'unselected optional profile'):
+                    u.setup_root(self.root, 'e' * 64, 'guid')
+                self.assertEqual(rule_file.read_text(), raw)
+                self.assertFalse((self.root / 'opt/googlebook/install').exists())
+        rule_file.unlink()
+        ally.rmdir()
+        u.setup_root(self.root, 'e' * 64, 'guid')
+        self.assertTrue((self.root / 'opt/googlebook/profiles/kano/profile.toml').exists())
+        self.assertTrue((self.root / 'opt/googlebook/profiles/amd-hx370/profile.toml').exists())
+        self.assertFalse(ally.exists())
+
     def test_inherited_writable_fstab_mount_is_removed(self):
         etc = self.root / 'etc'
         etc.mkdir()
@@ -324,7 +344,7 @@ class SharedMediumTest(unittest.TestCase):
         for item in payloads:
             profile, image = item['profile'], item['image']
             record = {'schema': 1, 'profile': profile,
-                      'profile_sha256': sha((ROOT / 'profiles' / profile / 'profile.toml').read_bytes()),
+                      'profile_sha256': sha((u.PROFILES_ROOT / profile / 'profile.toml').read_bytes()),
                       'declared_build_id': item['build_id'], 'build_id_basis': 'selected_pins',
                       'image': {'basename': Path(image['path']).name, 'size': image['size'], 'sha256': image['sha256']},
                       'selftest': 'passed', 'not_run': [],
@@ -335,11 +355,88 @@ class SharedMediumTest(unittest.TestCase):
             raw = u.RECORD.encode(record)
             path = self.base / (profile + '.json')
             path.write_bytes(raw)
-            arg = 'kano' if profile == 'kano' else 'hx370'
+            arg = u.PROFILE_ARGS[profile]
             setattr(self.args, arg + '_build_record', str(path))
             setattr(self.args, arg + '_build_record_sha256', sha(raw))
             result[profile] = (path, raw, record)
         return result
+
+    def add_synthetic_ally(self):
+        raw = b'not a real Ally image'
+        path = self.bundle / 'payloads/rog-ally.img'
+        path.write_bytes(raw)
+        obj = json.loads(self.raw)
+        obj['payloads'].append({'profile': 'rog-ally', 'build_id': 'synthetic',
+                                'image': {'path': 'payloads/rog-ally.img', 'size': len(raw), 'sha256': sha(raw)},
+                                'boot_entries': ['expected entry'], 'hardware_validation': 'unvalidated'})
+        self.raw = json.dumps(obj).encode()
+        (self.bundle / 'catalog.json').write_bytes(self.raw)
+        self.args.catalog_sha256 = sha(self.raw)
+        profiles = self.base / 'profiles'
+        import shutil
+        shutil.copytree(ROOT / 'profiles', profiles)
+        (profiles / 'rog-ally').mkdir()
+        (profiles / 'rog-ally/profile.toml').write_text(
+            '[model]\nid = "rog-ally"\ndmi = {sys_vendor = "Fixture", product_name = "Fixture Ally"}\n')
+        return profiles
+
+    def test_three_profile_recorded_assembly_with_synthetic_ally(self):
+        profiles = self.add_synthetic_ally()
+        with mock.patch.object(u, 'PROFILES_ROOT', profiles):
+            self.record_fixture = self.make_records()
+            self.test_regular_file_assembly_with_simulated_fs_tools()
+
+    def test_three_profiles_require_all_records_and_configured_ally(self):
+        profiles = self.add_synthetic_ally()
+        with (mock.patch.object(u, 'PROFILES_ROOT', profiles),
+              mock.patch.object(u.sys, 'platform', 'linux'), mock.patch.object(u.os, 'geteuid', return_value=0),
+              mock.patch.object(u.shutil, 'which', side_effect=lambda name: '/usr/bin/' + name),
+              mock.patch.object(u.shutil, 'copytree') as copy):
+            with self.assertRaisesRegex(ValueError, 'Ally requires all build records'):
+                u.build(self.args)
+            records = self.make_records()
+            self.args.rog_ally_build_record_sha256 = None
+            with self.assertRaises(ValueError): u.build(self.args)
+            self.args.rog_ally_build_record_sha256 = sha(records['rog-ally'][1])
+            rule = profiles / 'rog-ally/profile.toml'
+            rule.unlink()
+            with self.assertRaises((OSError, ValueError)): u.build(self.args)
+            rule.write_text('[model]\nid = "rog-ally"\ndmi = {}\n')
+            with self.assertRaises(ValueError): u.build(self.args)
+            rule.write_text('[model]\nid = "rog-ally"\ndmi = {sys_vendor = "Fixture", product_name = "Fixture Ally"}\n')
+            self.args.rog_ally_build_record_sha256 = '0' * 64
+            with self.assertRaises(ValueError): u.build(self.args)
+            path, _, record = records['rog-ally']
+            for key, value in [('profile', 'kano'), ('profile_sha256', '0' * 64),
+                               ('declared_build_id', 'wrong'), ('selftest', 'skipped')]:
+                bad = u.RECORD.encode(dict(record, **{key: value}))
+                path.write_bytes(bad)
+                self.args.rog_ally_build_record_sha256 = sha(bad)
+                with self.subTest(key=key), self.assertRaises(ValueError): u.build(self.args)
+            copy.assert_not_called()
+
+    def test_changed_ally_rule_cannot_bypass_staged_validation(self):
+        profiles = self.add_synthetic_ally()
+        with (mock.patch.object(u, 'PROFILES_ROOT', profiles),
+              mock.patch.object(u.sys, 'platform', 'linux'), mock.patch.object(u.os, 'geteuid', return_value=0),
+              mock.patch.object(u.shutil, 'which', side_effect=lambda name: '/usr/bin/' + name)):
+            records = self.make_records()
+            ally_rule = profiles / 'rog-ally/profile.toml'
+            empty_rule = '[model]\nid = "rog-ally"\ndmi = {}\n'
+            record_path, _, record = records['rog-ally']
+            changed = u.RECORD.encode(dict(record, profile_sha256=sha(empty_rule.encode())))
+            record_path.write_bytes(changed)
+            self.args.rog_ally_build_record_sha256 = sha(changed)
+            original = u.DETECT.load_rules
+            def swap_after_check(directory):
+                result = original(directory)
+                if directory == profiles:
+                    ally_rule.write_text(empty_rule)
+                return result
+            with mock.patch.object(u.DETECT, 'load_rules', side_effect=swap_after_check):
+                with self.assertRaisesRegex(ValueError, 'staged model rules are incomplete'):
+                    u.build(self.args)
+            self.assertFalse(Path(self.args.out).exists())
 
     def test_recorded_assembly(self):
         self.record_fixture = self.make_records()
@@ -411,7 +508,8 @@ class SharedMediumTest(unittest.TestCase):
         self.assertTrue(image.is_file())
         self.assertTrue(Path(str(image) + '.not-self-tested').is_file())
         self.assertEqual(u.STICK.LAYOUT.load(str(image))[0], image.stat().st_size // 512)
-        self.assertEqual(readback.call_count, 25 if hasattr(self, 'record_fixture') else 21)
+        self.assertEqual(readback.call_count, 21 + (2 * len(self.record_fixture) if hasattr(self, 'record_fixture') else 0)
+                         + (2 if hasattr(self, 'record_fixture') and 'rog-ally' in self.record_fixture else 0))
         if hasattr(self, 'record_fixture'):
             self.assertEqual(staged_records, {p: values[1] for p, values in self.record_fixture.items()})
         expected_readback = {'etc/systemd/system/gbos-universal-menu.service',
@@ -427,6 +525,11 @@ class SharedMediumTest(unittest.TestCase):
         self.assertNotIn(b'gbos.install', mtools_files['::/loader/entries/gbos-universal.conf'])
         self.assertIn('payloads/kano.img', mkfs_contents['data.img'])
         self.assertIn('payloads/amd-hx370.img', mkfs_contents['data.img'])
+        if hasattr(self, 'record_fixture') and 'rog-ally' in self.record_fixture:
+            self.assertIn('payloads/rog-ally.img', mkfs_contents['data.img'])
+            self.assertIn('opt/googlebook/profiles/rog-ally/profile.toml', mkfs_contents['root.img'])
+            self.assertIn('opt/googlebook/profiles/rog-ally/profile.toml',
+                          {call.args[2] for call in readback.call_args_list})
         self.assertIn('etc/gbos-universal/catalog.sha256', mkfs_contents['root.img'])
         self.assertNotIn('usr/local/sbin/gbos-install', mkfs_contents['root.img'])
         del real_run

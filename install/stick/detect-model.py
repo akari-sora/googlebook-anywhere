@@ -6,11 +6,13 @@ sys.dont_write_bytecode = True
 
 import argparse  # noqa: E402
 import json  # noqa: E402
+import os  # noqa: E402
 import tomllib  # noqa: E402
 from pathlib import Path  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
 PROFILE_IDS = ("amd-hx370", "kano")
+OPTIONAL_PROFILE_IDS = ("rog-ally",)
 # Only non-unique DMI fields. Do not read product/board serials, UUIDs, or asset tags.
 DMI_FIELDS = frozenset({"sys_vendor", "product_name", "product_version",
                         "board_vendor", "board_name", "board_version"})
@@ -40,7 +42,11 @@ def validate_rules(rules):
 def load_rules(profiles_dir):
     """Read only the model identity rules from the supported profile files."""
     rules = []
-    for profile_id in PROFILE_IDS:
+    profile_ids = PROFILE_IDS + tuple(
+        profile_id for profile_id in OPTIONAL_PROFILE_IDS
+        if os.path.lexists(profiles_dir / profile_id)
+    )
+    for profile_id in profile_ids:
         with (profiles_dir / profile_id / "profile.toml").open("rb") as f:
             profile = tomllib.load(f)
         model = profile.get("model")

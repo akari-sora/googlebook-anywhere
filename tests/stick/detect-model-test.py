@@ -52,6 +52,31 @@ class DetectorTests(unittest.TestCase):
                           potential=("amd-hx370", "kano"))
         self.check_result(self.rules, {"sys_vendor": "Synthetic HX", "product_name": "Synthetic"}, "unknown")
 
+    def test_optional_ally_rule_matches_and_remains_fail_closed(self):
+        # Synthetic fixture, not a real device identity.
+        with tempfile.TemporaryDirectory() as temp:
+            profiles = Path(temp)
+            for name in detector.PROFILE_IDS:
+                (profiles / name).mkdir()
+                (profiles / name / 'profile.toml').write_bytes((ROOT / 'profiles' / name / 'profile.toml').read_bytes())
+            self.assertEqual({p for p, _ in detector.load_rules(profiles)}, set(detector.PROFILE_IDS))
+            ally = profiles / 'rog-ally'
+            ally.mkdir()
+            rule_file = ally / 'profile.toml'
+            rule_file.write_text('[model]\nid = "rog-ally"\ndmi = {sys_vendor = "Fixture", product_name = "Fixture Ally"}\n')
+            rules = detector.load_rules(profiles)
+            self.check_result(rules, {'sys_vendor': 'Fixture', 'product_name': 'Fixture Ally'},
+                              'matched', matches=('rog-ally',))
+            self.check_result(rules, {'sys_vendor': 'Fixture'}, 'incomplete', potential=('rog-ally',))
+            self.check_result(rules, {'sys_vendor': 'Fixture', 'product_name': 'Other'}, 'unknown')
+            rule_file.write_text('[model]\nid = "rog-ally"\ndmi = {}\n')
+            rules = detector.load_rules(profiles)
+            self.check_result(rules, {'sys_vendor': 'Google', 'product_name': 'Kano'},
+                              'matched', matches=('kano',), unconfigured=('rog-ally',))
+            rule_file.unlink()
+            with self.assertRaises(OSError):
+                detector.load_rules(profiles)
+
     def test_empty_map_is_explicitly_unconfigured(self):
         rules = [("amd-hx370", {}), ("kano", {"sys_vendor": "Google", "product_name": "Kano"})]
         self.check_result(rules, {"sys_vendor": "Google", "product_name": "Kano"}, "matched",

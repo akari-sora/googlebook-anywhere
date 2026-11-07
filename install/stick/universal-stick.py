@@ -22,6 +22,7 @@ import uuid
 
 sys.dont_write_bytecode = True
 HERE = Path(__file__).resolve().parent
+PROFILES_ROOT = HERE.parents[1] / 'profiles'
 CHUNK = 4 * 1024 * 1024
 MIB = 1024 * 1024
 ALIGN = 128 * MIB
@@ -42,6 +43,9 @@ def load(name, path):
 CAT = load('gbos_catalog', HERE / 'catalog.py')
 STICK = load('gbos_maint_stick', HERE / 'maint-stick.py')
 RECORD = load('gbos_build_record', HERE.parents[1] / 'builder/lib/build_record.py')
+DETECT = load('gbos_detector', HERE / 'detect-model.py')
+BASE_PROFILES = ('kano', 'amd-hx370')
+PROFILE_ARGS = {'kano': 'kano', 'amd-hx370': 'hx370', 'rog-ally': 'rog_ally'}
 
 
 def need(condition, message):
@@ -157,7 +161,13 @@ def make_entry(root_guid):
             commandline(root_guid) + '\n').encode()
 
 
-def setup_root(root, catalog_sha, data_guid, records=None):
+def setup_root(root, catalog_sha, data_guid, records=None, profiles=BASE_PROFILES):
+    # Unselected optional profiles must not leak from the supplied maintenance root:
+    # the detector reads every present optional profile, including stale rules.
+    for profile in DETECT.OPTIONAL_PROFILE_IDS:
+        if profile not in profiles:
+            need(not os.path.lexists(root / 'opt/googlebook/profiles' / profile),
+                 'root contains unselected optional profile')
     # An assembled, unmodified maintenance root must not already have installer payloads.
     for rel in ('usr/local/sbin/gbos-install', 'usr/lib/systemd/system/gbos-installer.service',
                 'etc/systemd/system/gbos-installer.service', 'usr/local/sbin/gbos-update.py'):
@@ -168,9 +178,9 @@ def setup_root(root, catalog_sha, data_guid, records=None):
         write_new(app / name, (HERE / name).read_bytes())
     for name in ('gbos-update.py', 'gbos-fresh.py'):
         write_new(app.parent / name, (HERE.parent / name).read_bytes())
-    for profile in ('kano', 'amd-hx370'):
+    for profile in profiles:
         target = safe_dir(root, 'opt/googlebook/profiles/' + profile)
-        write_new(target / 'profile.toml', (HERE.parents[1] / 'profiles' / profile / 'profile.toml').read_bytes())
+        write_new(target / 'profile.toml', (PROFILES_ROOT / profile / 'profile.toml').read_bytes())
     config = safe_dir(root, 'etc/gbos-universal')
     write_new(config / 'catalog.sha256', (catalog_sha + '\n').encode())
     if records:
@@ -363,10 +373,14 @@ def copy_part(src, dest_fd, offset):
 
 
 def build(args):
-    record_args = [(getattr(args, p + '_build_record', None), getattr(args, p + '_build_record_sha256', None))
-                   for p in ('kano', 'hx370')]
-    need(not any(x for pair in record_args for x in pair) or all(x for pair in record_args for x in pair),
-         'all build record paths and pins are required')
+    record_args = {profile: (getattr(args, arg + '_build_record', None),
+                             getattr(args, arg + '_build_record_sha256', None))
+                   for profile, arg in PROFILE_ARGS.items()}
+    need(not any(x for pair in record_args.values() for x in pair) or
+         all(all(record_args[p]) for p in BASE_PROFILES),
+         'both base build record paths and pins are required')
+    need(all(all(pair) or not any(pair) for pair in record_args.values()),
+         'each build record requires its independent pin')
     need(os.name == 'posix' and sys.platform.startswith('linux'), 'Linux required')
     need(os.geteuid() == 0, 'root required to pack root filesystem owners')
     out = Path(args.out).absolute()
@@ -392,15 +406,23 @@ def build(args):
          hash_file(root / 'boot/initramfs-linux.img') == args.initrd_sha256, 'root and boot inputs differ')
     root_bytes = tree_bytes(root)
     with CAT.validate(args.bundle, 'catalog.json', args.catalog_sha256) as verified:
-        need(set(verified.descriptors) == {'kano', 'amd-hx370'}, 'both profiles required')
+        profiles = tuple(p for p in (*BASE_PROFILES, 'rog-ally') if p in verified.descriptors)
+        need(set(BASE_PROFILES).issubset(profiles), 'both base profiles required')
+        need(not any(record_args['rog-ally']) or 'rog-ally' in profiles,
+             'Ally record requires Ally payload')
+        if 'rog-ally' in profiles:
+            need(all(all(record_args[p]) for p in profiles), 'Ally requires all build records and pins')
+            rules = DETECT.load_rules(PROFILES_ROOT)
+            need({p for p, _ in rules} == set(profiles) and all(rule for _, rule in rules),
+                 'Ally requires configured model rules for every profile')
         records = {}
-        if all(x for pair in record_args for x in pair):
-            for item, (path, pin) in zip((next(x for x in verified.payloads if x['profile'] == p)
-                                          for p in ('kano', 'amd-hx370')), record_args):
+        if all(record_args['kano']):
+            for item in verified.payloads:
+                path, pin = record_args[item['profile']]
                 raw, record = RECORD.read_pinned(path, pin)
                 image = item['image']
                 profile = item['profile']
-                profile_raw = (HERE.parents[1] / 'profiles' / profile / 'profile.toml').read_bytes()
+                profile_raw = (PROFILES_ROOT / profile / 'profile.toml').read_bytes()
                 need(record['selftest'] == 'passed' and record['profile'] == profile and
                      record['declared_build_id'] == item['build_id'] and
                      record['profile_sha256'] == hashlib.sha256(profile_raw).hexdigest() and
@@ -437,7 +459,11 @@ def build(args):
             with CAT.validate(str(data_dir), 'catalog.json', args.catalog_sha256):
                 pass
             rg, dg, eg, disk_guid = uuid.uuid4(), uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
-            setup_root(stage, args.catalog_sha256, dg, records)
+            setup_root(stage, args.catalog_sha256, dg, records, profiles)
+            if 'rog-ally' in profiles:
+                rules = DETECT.load_rules(stage / 'opt/googlebook/profiles')
+                need({p for p, _ in rules} == set(profiles) and all(rule for _, rule in rules),
+                     'staged model rules are incomplete')
             for profile, (raw, _) in records.items():
                 staged = stage / 'opt/googlebook/profiles' / profile / 'profile.toml'
                 need(hashlib.sha256(staged.read_bytes()).hexdigest() ==
@@ -479,7 +505,7 @@ def build(args):
                               'universal-menu.py', 'universal-controller.py')]
             root_members += ['opt/googlebook/install/' + name for name in ('gbos-update.py', 'gbos-fresh.py')]
             root_members += ['opt/googlebook/profiles/' + name + '/profile.toml'
-                             for name in ('kano', 'amd-hx370')]
+                             for name in profiles]
             for profile in records:
                 root_members += ['etc/gbos-universal/build-records/' + profile + suffix
                                  for suffix in ('.json', '.sha256')]
@@ -554,7 +580,7 @@ def main():
                 'bundle', 'catalog-sha256', 'out'):
         parser.add_argument('--' + arg, required=True)
     parser.add_argument('--max-bytes', type=int)
-    for profile in ('kano', 'hx370'):
+    for profile in ('kano', 'hx370', 'rog-ally'):
         parser.add_argument('--' + profile + '-build-record')
         parser.add_argument('--' + profile + '-build-record-sha256')
     args = parser.parse_args()

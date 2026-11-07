@@ -63,6 +63,19 @@ class CatalogTest(unittest.TestCase):
         with self.assertRaises(OSError):
             os.fstat(fd)
 
+    def test_three_profiles_and_ally_corruption_are_checked_offline(self):
+        self.contents['rog-ally'] = b'ally image'
+        path = self.root / 'payloads/rog-ally.img'
+        path.write_bytes(self.contents['rog-ally'])
+        self.obj['payloads'].append(self.item('rog-ally'))
+        self.save()
+        with self.validate() as result:
+            self.assertEqual(set(result.descriptors), {'kano', 'amd-hx370', 'rog-ally'})
+            self.assertFalse(result.report()['write_allowed'])
+            self.assertEqual(result.report()['hardware'], 'NOT_VERIFIED')
+        path.write_bytes(b'wrong data')
+        self.denied()
+
     def test_bad_independent_catalog_digest_even_with_matching_adjacent_digest(self):
         (self.root / 'catalog.json.sha256').write_text(self.digest)
         with self.assertRaises(catalog.Refused):
