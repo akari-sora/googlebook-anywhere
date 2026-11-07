@@ -6,6 +6,8 @@ Android gralloc import still requires reliable format, stride, plane and access 
 
 Patch `0007-jpeg-bounds-and-stride.patch` bounds the libjpeg destination, checks JPEG BLOB trailer capacity, and uses the configured source stride. Patch `0008-native-buffer-safety.patch` rejects missing plane descriptors and invalid capacities, and handles descriptor duplication failures without terminating the HAL. These patches passed a full Android NDK build. They do not establish correct Android buffer import, camera enumeration, preview or photo capture. Patch `0009-thumbnail-stride.patch` uses the configured NV12 stride for thumbnails, clears stale output on invalid input, and bounds geometry and plane access. Its host ASan/UBSan checks and full NDK build passed; actual Android buffer mapping remains unverified.
 
+Patch `0010-camera-init-diagnostics.patch` reports the failing initialization stage, return value and, when available, stream format and size. It preserves the existing return values and release paths and does not log images. The patched source passed a full Android NDK build; the resulting HAL contains the diagnostic messages. It has not been tested on the KANO. The current USB still reports zero cameras, and this patch adds diagnostics rather than a camera fix.
+
 ## Focused host tests
 
 Run the tests against an already-patched libcamera source tree and a host-built libyuv static library:

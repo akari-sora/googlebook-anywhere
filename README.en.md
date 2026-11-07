@@ -48,7 +48,8 @@ Each record below applies to its recorded image and one 12th-generation KANO eng
 
 | Feature | Status |
 |---|---|
-| Desktop, Wi-Fi, touchpad, keyboard, speakers, microphone, power button | ✅ Works |
+| Desktop, Wi-Fi, touchpad, keyboard, power button | ✅ Works on the respective recorded images |
+| Speakers, microphone | 🟡 Tested on earlier images; playback/recording on the current test USB is not verified. On 2026-11-07 the probe stopped before installation because of diagnostic connection problems |
 | Bluetooth | 🟡 Can be turned on; the unreleased R8 candidate discovers nearby devices, while pairing, use and reconnection are unverified |
 | Lid sleep/wake, battery level, "charging" indicator | ✅ Works (since v0.2) |
 | Touchscreen, stylus | 🟡 Detected, no real tap test yet |

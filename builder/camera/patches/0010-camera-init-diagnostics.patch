@@ -1,0 +1,98 @@
+--- a/src/android/camera_capabilities.cpp
++++ b/src/android/camera_capabilities.cpp
+@@ -412,17 +412,20 @@
+ 	/* Acquire the camera and initialize available stream configurations. */
+ 	int ret = camera_->acquire();
+ 	if (ret) {
+-		LOG(HAL, Error) << "Failed to temporarily acquire the camera";
++		LOG(HAL, Error) << "Camera init stage=acquire ret=" << ret;
+ 		return ret;
+ 	}
+ 
+ 	ret = initializeStreamConfigurations();
+ 	if (ret) {
++		LOG(HAL, Error) << "Camera init stage=stream-configurations ret=" << ret;
+ 		camera_->release();
+ 		return ret;
+ 	}
+ 
+ 	ret = initializeStaticMetadata();
++	if (ret)
++		LOG(HAL, Error) << "Camera init stage=static-metadata ret=" << ret;
+ 	camera_->release();
+ 	return ret;
+ }
+@@ -435,7 +438,7 @@
+ 	std::unique_ptr<CameraConfiguration> cameraConfig =
+ 		camera_->generateConfiguration({ StreamRole::Viewfinder });
+ 	if (!cameraConfig) {
+-		LOG(HAL, Error) << "Failed to get supported YUV resolutions";
++		LOG(HAL, Error) << "Camera init stage=generate-yuv returned-null";
+ 		return supportedResolutions;
+ 	}
+ 
+@@ -466,7 +469,7 @@
+ 	std::unique_ptr<CameraConfiguration> cameraConfig =
+ 		camera_->generateConfiguration({ StreamRole::Raw });
+ 	if (!cameraConfig) {
+-		LOG(HAL, Error) << "Failed to get supported Raw resolutions";
++		LOG(HAL, Error) << "Camera init stage=generate-raw returned-null";
+ 		return supportedResolutions;
+ 	}
+ 
+@@ -492,7 +495,7 @@
+ 	std::unique_ptr<CameraConfiguration> cameraConfig =
+ 		camera_->generateConfiguration({ StreamRole::StillCapture });
+ 	if (!cameraConfig) {
+-		LOG(HAL, Error) << "Failed to get maximum resolution";
++		LOG(HAL, Error) << "Camera init stage=generate-still ret=" << -EINVAL;
+ 		return -EINVAL;
+ 	}
+ 	StreamConfiguration &cfg = cameraConfig->at(0);
+@@ -654,8 +657,12 @@
+ 			 */
+ 			cfg.size = res;
+ 			int ret = camera_->configure(cameraConfig.get());
+-			if (ret)
++			if (ret) {
++				LOG(HAL, Error) << "Camera init stage=configure-stream ret=" << ret
++						<< " format=" << cfg.pixelFormat
++						<< " size=" << cfg.size;
+ 				return ret;
++			}
+ 
+ 			const ControlInfoMap &controls = camera_->controls();
+ 			const auto frameDurations = controls.find(
+@@ -774,14 +781,18 @@
+ 	std::unique_ptr<CameraConfiguration> cameraConfig =
+ 		camera_->generateConfiguration({ StreamRole::Viewfinder });
+ 	if (!cameraConfig) {
+-		LOG(HAL, Error) << "Failed to generate camera configuration";
++		LOG(HAL, Error) << "Camera init stage=generate-viewfinder ret=" << -ENODEV;
+ 		staticMetadata_.reset();
+ 		return -ENODEV;
+ 	}
+ 
+ 	int ret = camera_->configure(cameraConfig.get());
+ 	if (ret) {
+-		LOG(HAL, Error) << "Failed to initialize the camera state";
++		LOG(HAL, Error) << "Camera init stage=configure-static ret=" << ret;
++		if (cameraConfig->size())
++			LOG(HAL, Error) << "Camera init static format="
++					<< cameraConfig->at(0).pixelFormat
++					<< " size=" << cameraConfig->at(0).size;
+ 		staticMetadata_.reset();
+ 		return ret;
+ 	}
+--- a/src/android/camera_hal_manager.cpp
++++ b/src/android/camera_hal_manager.cpp
+@@ -175,7 +175,8 @@
+ 
+ 	int ret = camera->initialize(cameraConfigData);
+ 	if (ret) {
+-		LOG(HAL, Error) << "Failed to initialize camera: " << cam->id();
++		LOG(HAL, Error) << "Failed to initialize camera: " << cam->id()
++				<< " ret=" << ret;
+ 		return;
+ 	}
+ 

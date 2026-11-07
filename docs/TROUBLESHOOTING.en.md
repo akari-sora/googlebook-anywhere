@@ -106,8 +106,7 @@ The candidate used Google build `16658739` and was built with both `GBOS_SETUP_P
   - The matching audio needs `intel/sof/community/sof-rpl.ri` and
     `intel/sof-tplg/sof-rpl-max98373-nau8825.tplg`.
   - This path was **untested on hardware** in v0.3.0; v0.3.1 adds no hardware evidence for this SKU.
-  - The 12th-gen KANO (ADL-P/U, `8086:51c8` → `sof-adl.ri`) has working speakers
-    on the verified unit.
+  - The 12th-gen KANO (ADL-P/U, `8086:51c8` → `sof-adl.ri`) had working speakers on the verified unit with the earlier recorded image. Playback/recording on the current test USB remains unverified; see [KANO status](STATUS-KANO.md).
 
 ## Sleep and wake
 

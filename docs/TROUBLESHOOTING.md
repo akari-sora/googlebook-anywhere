@@ -92,7 +92,7 @@
   - 對應的音效需要 `intel/sof/community/sof-rpl.ri` 與
     `intel/sof-tplg/sof-rpl-max98373-nau8825.tplg`。
   - 當時的 v0.3.0 對這條路徑**未實機測試**；v0.3.1 也未新增這個 SKU 的實測證據。
-  - 12 代的 KANO（ADL-P/U，`8086:51c8` → `sof-adl.ri`）在驗證機上喇叭正常。
+  - 12 代的 KANO（ADL-P/U，`8086:51c8` → `sof-adl.ri`）在較早記錄的映像上曾實測喇叭正常；目前測試 USB 的播放／收音仍待驗證，見 [KANO 狀態](STATUS-KANO.md)。
 
 ## 休眠與喚醒
 
