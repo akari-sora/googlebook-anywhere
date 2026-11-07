@@ -16,7 +16,7 @@ FACTS = {'rdev', 'syspath', 'nbytes', 'logical_sector_size', 'identity_kind', 'd
 
 
 def _source(value):
-    if (type(value) is not tuple or len(value) != 3 or value[0] not in ('kano', 'amd-hx370')
+    if (type(value) is not tuple or len(value) != 3 or value[0] not in ('kano', 'amd-hx370', 'rog-ally')
             or not isinstance(value[1], str) or not TOKEN.fullmatch(value[1])
             or not isinstance(value[2], str) or not HASH.fullmatch(value[2])):
         raise ValueError('invalid source observation')

@@ -1155,7 +1155,7 @@ class SharedBinding:
         self.catalog_sha256 = catalog_sha256
         self.image_sha256 = image['sha256']
         self.source_fds = tuple(source_fds)
-        if (self.profile not in ('kano', 'amd-hx370') or type(self.size) is not int or self.size <= 0
+        if (self.profile not in ('kano', 'amd-hx370', 'rog-ally') or type(self.size) is not int or self.size <= 0
                 or self.size > 128 * 1024 ** 3
                 or not re.fullmatch('[0-9a-f]{64}', self.catalog_sha256)
                 or not re.fullmatch('[0-9a-f]{64}', self.image_sha256)

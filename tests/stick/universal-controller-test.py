@@ -39,8 +39,8 @@ class ControllerTest(unittest.TestCase):
         self.shared.install_observed_block.assert_not_called()
         self.shared.apply_observed_block.assert_not_called()
 
-    def test_both_profiles_and_operations(self):
-        for profile in ('kano', 'amd-hx370'):
+    def test_profiles_and_operations(self):
+        for profile in ('kano', 'amd-hx370', 'rog-ally'):
             for op in ('fresh', 'update'):
                 with self.subTest(profile=profile, op=op):
                     self.setUp()
@@ -53,6 +53,36 @@ class ControllerTest(unittest.TestCase):
                                                     expected_target=self.facts, dmi_root='/dmi')
                     self.assertEqual(self.shared.plan_observed_block.call_count, 2 if op == 'update' else 0)
                     self.assertIn(f'Type {"INSTALL" if op == "fresh" else "UPDATE"} /dev/nvme0n1 to confirm, or press Enter to cancel:', self.output)
+
+    def test_ally_refuses_changed_or_invalid_identity_before_backend(self):
+        for failure in ('missing', 'invalid_hash', 'changed_source', 'wrong_plan', 'changed_target', 'sd_card'):
+            with self.subTest(failure=failure):
+                self.setUp()
+                self.source = ('rog-ally', self.source[1], self.source[2])
+                self.plan['profile'] = 'rog-ally'
+                self.lines = iter(['1\n', 'UPDATE /dev/nvme0n1\n'])
+                if failure == 'missing':
+                    self.snapshot.side_effect = [None]
+                elif failure == 'invalid_hash':
+                    self.source = ('rog-ally', self.source[1], 'bad')
+                elif failure == 'changed_source':
+                    self.snapshot.side_effect = [self.source, ('amd-hx370', self.source[1], self.source[2])]
+                elif failure == 'wrong_plan':
+                    self.plan['profile'] = 'kano'
+                elif failure == 'changed_target':
+                    self.shared.observe_block_target.side_effect = [self.facts, dict(self.facts, nbytes=42)]
+                elif failure == 'sd_card':
+                    self.targets = ['/dev/mmcblk0']
+                self.assertEqual(self.run_op('update')['status'], 'REFUSED')
+                self.no_write()
+
+    def test_ally_backend_profile_mismatch_is_unknown_after_dispatch(self):
+        self.source = ('rog-ally', self.source[1], self.source[2])
+        self.shared.install_observed_block.side_effect = lambda *a, **k: {
+            'result': 'INSTALLED_OBSERVED_BLOCK', 'profile': 'kano', 'build_id': self.source[1]}
+        self.assertEqual(self.run_op(), {'status': 'UNKNOWN', 'hardware': 'NOT_VERIFIED',
+                                         'target_may_be_modified': True})
+        self.shared.install_observed_block.assert_called_once()
 
     def test_cancel_invalid_confirmation_and_selection(self):
         for lines in ([], ['1\n'], ['1\n', 'INSTALL /dev/nvme0n1' + 'x' * 200 + '\n'],

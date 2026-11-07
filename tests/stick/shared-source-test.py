@@ -175,6 +175,77 @@ class Tests(unittest.TestCase):
             with self.assertRaises(OSError):
                 reader.pread(0, 1)
 
+    def test_optional_ally_catalog_binding_and_invalid_sources(self):
+        content = b'synthetic ally image' * 40
+        image = self.root / 'rog-ally.img'
+        image.write_bytes(content)
+        self.items.append({'profile': 'rog-ally', 'build_id': '16658739',
+                           'image': {'path': image.name, 'size': len(content),
+                                     'sha256': hashlib.sha256(content).hexdigest()},
+                           'boot_entries': ['lapis-debug.conf', 'lapis-quiet.conf'],
+                           'hardware_validation': 'unvalidated'})
+        self.save()
+        with m.shared_release(str(self.root), 'catalog.json', self.sha, 'rog-ally', str(self.root)) as (rel, binding):
+            identity = binding.verify(rel)
+            self.assertEqual(identity['profile'], 'rog-ally')
+            self.assertEqual(identity['catalog_sha256'], self.sha)
+            self.assertEqual(identity['image_sha256'], hashlib.sha256(content).hexdigest())
+            with self.assertRaisesRegex(m.update.Refuse, 'not tied'):
+                binding.verify(FakeRelease())
+            image.write_bytes(b'x' * len(content))
+            with self.assertRaises(m.update.Refuse):
+                binding.verify(rel)
+        image.write_bytes(content)
+        with self.assertRaises(ValueError):
+            with m.shared_release(str(self.root), 'catalog.json', '0' * 64, 'rog-ally', str(self.root)):
+                pass
+        image.unlink()
+        with self.assertRaises((OSError, ValueError)):
+            with m.shared_release(str(self.root), 'catalog.json', self.sha, 'rog-ally', str(self.root)):
+                pass
+        self.items.pop()
+        self.save()
+        with self.assertRaisesRegex(ValueError, 'profile absent'):
+            with m.shared_release(str(self.root), 'catalog.json', self.sha, 'rog-ally', str(self.root)):
+                pass
+
+    def test_optional_ally_synthetic_dmi_through_catalog_and_update_plan(self):
+        content = b'synthetic ally image' * 40
+        (self.root / 'rog-ally.img').write_bytes(content)
+        self.items.append({'profile': 'rog-ally', 'build_id': '16658739',
+                           'image': {'path': 'rog-ally.img', 'size': len(content),
+                                     'sha256': hashlib.sha256(content).hexdigest()},
+                           'boot_entries': ['lapis-debug.conf', 'lapis-quiet.conf'],
+                           'hardware_validation': 'unvalidated'})
+        self.save()
+        dmi = self.root / 'synthetic-dmi'
+        dmi.mkdir()
+        (dmi / 'sys_vendor').write_text('fixture vendor\n')
+        (dmi / 'product_name').write_text('fixture model\n')
+        target = self.root / 'regular-target.img'
+        target.write_bytes(b'untouched target')
+        inst = type('Installed', (), {'current': 'a', 'target': 'b', 'resume': None})()
+        space = {'fits': True, 'new_first': True, 'free': 10, 'reclaim': 1,
+                 'need': 3, 'cluster': 1, 'prev': {}}
+        rules = [('rog-ally', {'sys_vendor': 'fixture vendor', 'product_name': 'fixture model'})]
+        with patch.object(m.detector, 'load_rules', return_value=rules), \
+             patch.object(m, 'safe_open_relative', opener), \
+             patch.object(m.update, 'PreviewMetadataSnapshot', return_value=object()), \
+             patch.object(m.update, 'Installed', return_value=inst), \
+             patch.object(m.update, 'check', return_value={'sizes': {'system_b': 1}}), \
+             patch.object(m.update, 'boot_files', return_value=space):
+            result = m.plan_observed_image(str(self.root), 'catalog.json', self.sha, str(target), dmi)
+            self.assertEqual(result['profile'], 'rog-ally')
+            self.assertEqual(result['build_id'], '16658739')
+            self.assertFalse(result['write_allowed'])
+            (dmi / 'product_name').unlink()
+            with self.assertRaisesRegex(ValueError, 'not uniquely'):
+                m.plan_observed_image(str(self.root), 'catalog.json', self.sha, str(target), dmi)
+            (dmi / 'product_name').write_text('other model\n')
+            with self.assertRaisesRegex(ValueError, 'not uniquely'):
+                m.plan_observed_image(str(self.root), 'catalog.json', self.sha, str(target), dmi)
+        self.assertEqual(target.read_bytes(), b'untouched target')
+
     def test_build_and_entry_mismatch(self):
         for key, value in [('build_id', '1'), ('boot_entries', ['lapis-debug.conf'])]:
             old = self.items[0][key]
