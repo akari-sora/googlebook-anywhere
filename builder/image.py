@@ -520,16 +520,44 @@ print("ESP free:", subprocess.run(["mdir", "-i", f"{IMG}{ESP}", "::/"], capture_
 # QEMU still running at the end means the guest neither crashed nor powered off; disk statistics come over QMP.
 blank = OUT / "blank-nvme.img"
 with open(blank, "wb") as fh: fh.truncate(1 << 30)
-def qmp_query(path, *cmds):
-    s = socket.socket(socket.AF_UNIX); s.settimeout(30); s.connect(str(path)); f = s.makefile("rwb")
-    def call(cmd):
-        cmd, args = cmd if isinstance(cmd, tuple) else (cmd, None)
-        f.write(json.dumps({"execute": cmd, **({"arguments": args} if args else {})}).encode() + b"\n"); f.flush()
-        while True:
-            r = json.loads(f.readline())
-            if "return" in r or "error" in r: return r
-    json.loads(f.readline()); call("qmp_capabilities")
-    res = [call(c) for c in cmds]; f.close(); s.close(); return res   # QMP takes one client at a time
+def qmp_query(path, *cmds, timeout=30):
+    s = socket.socket(socket.AF_UNIX)
+    f = None
+    try:
+        s.settimeout(timeout); s.connect(str(path)); f = s.makefile("rwb")
+        def call(cmd):
+            cmd, args = cmd if isinstance(cmd, tuple) else (cmd, None)
+            f.write(json.dumps({"execute": cmd, **({"arguments": args} if args else {})}).encode() + b"\n"); f.flush()
+            while True:
+                r = json.loads(f.readline())
+                if "return" in r or "error" in r: return r
+        json.loads(f.readline()); call("qmp_capabilities")
+        return [call(c) for c in cmds]   # QMP takes one client at a time
+    finally:
+        try:
+            if f is not None: f.close()
+        finally:
+            s.close()
+def functional_wake_check(path, query=qmp_query):
+    """Wake only a proven S3 functional-test guest; any ambiguous QMP is failure."""
+    try:
+        response = query(path, "query-status", timeout=2)[0]
+        state = response.get("return")
+        if not isinstance(state, dict) or type(state.get("running")) is not bool:
+            return False, False
+        if state.get("status") == "running" and state["running"] is True:
+            return True, False
+        if state.get("status") != "suspended" or state["running"] is not False:
+            return False, False
+        machine = query(path, "query-current-machine", timeout=2)[0].get("return")
+        if not isinstance(machine, dict) or machine.get("wakeup-suspend-support") is not True:
+            return False, False
+        response = query(path, "system_wakeup", timeout=2)[0]
+        return (True, True) if response == {"return": {}} else (False, False)
+    except (OSError, EOFError, ValueError, TypeError, KeyError, IndexError, AttributeError):
+        return False, False
+
+FUNCTIONAL_QMP_OK = None
 QMP_DIR = Path(tempfile.mkdtemp(prefix="gbos-qmp-"))   # unix socket paths are limited to about 108 bytes
 def ac_ssdt(path):
     """An SSDT with one ACPI AC adapter, \\_SB.AC (ACPI0003, _PSR = 1: on line), for the functional test of ac.ko;
@@ -549,6 +577,7 @@ def ac_ssdt(path):
     t = bytearray(hdr + body); t[9] = (-sum(t)) & 0xFF
     Path(path).write_bytes(bytes(t))
 def qemu(tag, extra, probe_token=None):
+    global FUNCTIONAL_QMP_OK
     serial, sock, vars_fd = OUT / f"{tag}-serial.log", QMP_DIR / f"{tag}.qmp", OUT / f"{tag}-vars.fd"
     for p in (serial, sock): p.unlink(missing_ok=True)
     trace, events = OUT / f"{tag}-write.trace", QMP_DIR / f"{tag}-trace-events"
@@ -574,11 +603,16 @@ def qemu(tag, extra, probe_token=None):
     print("+", " ".join(map(str, cmd)), flush=True)
     p = subprocess.Popen(list(map(str, cmd)), env=env)
     end = time.monotonic() + QEMU_SECONDS
+    if tag == "functional": FUNCTIONAL_QMP_OK = None
     last_probe = None
     serial_offset = 0
     pending = ""
     while time.monotonic() < end and p.poll() is None:
         time.sleep(2)
+        if tag == "functional" and time.monotonic() >= end - min(60, QEMU_SECONDS):
+            healthy, woke = functional_wake_check(sock)
+            FUNCTIONAL_QMP_OK = healthy if FUNCTIONAL_QMP_OK is None else FUNCTIONAL_QMP_OK and healthy
+            if woke: print("functional QMP requested guest wake from S3", flush=True)
         if probe_token and serial.exists():
             with serial.open("rb") as stream:
                 stream.seek(serial_offset)
@@ -786,6 +820,7 @@ if KMOD_KBD_BACKLIGHT:
 alive, _stats, log, probe_age = qemu("functional", ["-kernel", OUT / "kernel.efi", "-initrd", OUT / "initrd.img", "-append", " ".join(q)] + extra_acpi, probe_token)
 if USB_SMOKE:
     checks["USB smoke functional: QEMU NVMe received no writes"] = (_stats or {}).get("usb_smoke_nvme_wr_bytes") == 0
+checks["functional QMP wake control healthy"] = FUNCTIONAL_QMP_OK is True
 boot_completed = serial_boot_completed(log, probe_token, probe_age)
 print("functional device getprop sys.boot_completed:", "1" if boot_completed else "not confirmed", flush=True)
 has = lambda p: re.search(p, log) is not None
