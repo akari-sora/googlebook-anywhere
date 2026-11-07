@@ -51,7 +51,8 @@
 | 桌面、Wi-Fi、觸控板、鍵盤、電源鍵 | ✅ 在各自記載的映像上可用 |
 | 喇叭、麥克風 | 🟡 舊映像曾實測可用；目前測試 USB 的播放／收音尚未通過，2026-11-07 探針在安裝前因診斷連線問題停止 |
 | 藍牙 | 🟡 可開啟；未發布 R8 候選可搜尋到附近裝置，配對、使用及重連未驗證 |
-| 上蓋休眠／喚醒、電池電量、「充電中」顯示 | ✅ 可用（v0.2 起） |
+| 上蓋休眠／喚醒 | 🟡 較早映像曾觀察到闔蓋與開蓋反應；目前候選的闔蓋、S0ix 與耗電尚未驗收 |
+| 電池電量、「充電中」顯示 | ✅ 較早映像曾實測可用 |
 | 觸控螢幕、觸控筆 | 🟡 偵測得到，還沒做實際點擊測試 |
 | 耳機孔 | ⚪ 未驗證 |
 | USB-C 資料與外接螢幕 | 🟡 預設開啟（`typec`）。issue #12 使用者回報可用；維護者尚未實機確認。載入 EC 後的 S0ix 也尚未量到 |
@@ -74,7 +75,7 @@
 `gbos_wakefilter.ko`，電源鍵沒有喚醒系統時就丟掉它。KANO 實機上闔蓋 300 秒期間暗中喚醒 10 次，螢幕都沒亮；螢幕關閉時按電源鍵會亮、開蓋會亮螢幕。
 **已知問題**：螢幕關著時按鍵盤可能叫不醒螢幕（喚醒那一下按鍵送到 Android 之前，模組已經把 `KEY_WAKEUP` 丟掉了）。這是較早映像的已知問題，v0.2.1 沒有修。10-29 選用 16658739＋實驗性 drain 的 KANO 已通過 keep-data 更新與限定範圍的資料保留比對，timeout 入睡約 33 分鐘沒有自行亮屏，之後鍵盤喚醒成功；該候選的 S0ix、電源鍵、闔蓋／開蓋、音訊與成功更新後退回未驗證，詳見 [驗收紀錄](docs/VERIFICATION-v0.3.0.md)。
 
-**實機驗證僅在一台 KANO（`8086:46a6` Alder Lake-P K0 工程樣機）上完成**：`profiles/kano` 的 12 個內顯 ID 裡，7 個對到零售 KANO SKU，5 個（`46a3`、`46b2`、`a721`、`a7ac`、`a7ad`）是平台候選（ADL-P/RPL-U 巨集成員），KANO 對照未確認，見 [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md)。零售對照寫在 STATUS-KANO 與 COMPATIBILITY（Acer 零售型號與 coreboot 的 KANO 清單）。涵蓋 12 代 CP714-1WN 的 ADL-P/U 與 13 代 CP714-2WN／Zydron 的 RPL-U，含單通道變體；是 `adl_p_desc` 的子集（不用 `*`）以及 ADL／RPL SOF 韌體，但除 `46a6` 工程樣機外的量產 SKU 均尚未實機測試（各 SKU 狀態與待測項目見 [docs/STATUS-KANO.md](docs/STATUS-KANO.md)、[docs/FIRMWARE.md](docs/FIRMWARE.md)）。v0.2 起另有實驗性的 `profiles/generic-x86`，給 GPU 在 Googlebook 核心裡沒有驅動的
+**KANO 僅有一台工程樣機（`8086:46a6` Alder Lake-P K0）做過部分實機測試**：`profiles/kano` 的 12 個內顯 ID 裡，7 個對到零售 KANO SKU，5 個（`46a3`、`46b2`、`a721`、`a7ac`、`a7ad`）是平台候選（ADL-P/RPL-U 巨集成員），KANO 對照未確認，見 [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md)。零售對照寫在 STATUS-KANO 與 COMPATIBILITY（Acer 零售型號與 coreboot 的 KANO 清單）。涵蓋 12 代 CP714-1WN 的 ADL-P/U 與 13 代 CP714-2WN／Zydron 的 RPL-U，含單通道變體；是 `adl_p_desc` 的子集（不用 `*`）以及 ADL／RPL SOF 韌體，但除 `46a6` 工程樣機外的量產 SKU 均尚未實機測試（各 SKU 狀態與待測項目見 [docs/STATUS-KANO.md](docs/STATUS-KANO.md)、[docs/FIRMWARE.md](docs/FIRMWARE.md)）。v0.2 起另有實驗性的 `profiles/generic-x86`，給 GPU 在 Googlebook 核心裡沒有驅動的
 x86-64 UEFI 電腦（例如 AMD；CPU 要 Intel 第 12 代或 AMD Zen 5 及更新，更舊的預期開不了機，見 [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md)「CPU 最低需求」）：用韌體的畫面輸出（GOP framebuffer）加 CPU 繪圖（SwiftShader），在 QEMU（`-cpu host`）開到設定精靈，沒有
 GPU 加速，尚未在任何實體 PC 上測試，見下面「其他 x86-64 電腦（實驗性）」。新機型的適配見 [docs/NEW-DEVICE.md](docs/NEW-DEVICE.md)。
 開起來的機器請用「回報你的機器」產生 `summary.md`，貼到 [`.gitlab/issue_templates/new-machine.md`](https://gitlab.com/aa22396584/googlebook-anywhere/-/blob/main/.gitlab/issue_templates/new-machine.md)

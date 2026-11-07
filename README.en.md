@@ -16,7 +16,7 @@ Installs Google's official **Googlebook OS** (lapis, the desktop edition of Andr
 
 | Item | Status |
 |---|---|
-| Verified on hardware | Only one KANO: an Alder Lake-P K0 engineering sample with iGPU `8086:46a6` |
+| Hardware tested (limited) | One KANO: an Alder Lake-P K0 engineering sample with iGPU `8086:46a6`; camera and sleep/power acceptance remain open |
 | Other KANO models | 12th-gen CP714-1WN and 13th-gen CP714-2WN/Zydron (i3/i5/i7): their iGPU IDs and the 13th-gen audio firmware have been added; they should work, **not yet tested on hardware** |
 | Minimum CPU | Intel 12th gen or AMD Zen 5 and newer; older CPUs are expected not to boot ([docs/COMPATIBILITY.en.md](docs/COMPATIBILITY.en.md) "Minimum CPU") |
 | Other x86-64 computers | Experimental `generic-x86` and `amd-hx370`, verified only in QEMU |
@@ -51,7 +51,8 @@ Each record below applies to its recorded image and one 12th-generation KANO eng
 | Desktop, Wi-Fi, touchpad, keyboard, power button | ✅ Works on the respective recorded images |
 | Speakers, microphone | 🟡 Tested on earlier images; playback/recording on the current test USB is not verified. On 2026-11-07 the probe stopped before installation because of diagnostic connection problems |
 | Bluetooth | 🟡 Can be turned on; the unreleased R8 candidate discovers nearby devices, while pairing, use and reconnection are unverified |
-| Lid sleep/wake, battery level, "charging" indicator | ✅ Works (since v0.2) |
+| Lid sleep/wake | 🟡 Lid-close and open responses were observed on an earlier image; lid behavior, S0ix and power consumption remain unverified on the current candidate |
+| Battery level and "charging" indicator | ✅ Tested on an earlier image |
 | Touchscreen, stylus | 🟡 Detected, no real tap test yet |
 | Headphone jack | ⚪ Not verified |
 | USB-C data and external display | 🟡 On by default (`typec`). A user reported it working in issue #12; maintainers have not confirmed it on hardware. S0ix with the EC transport loaded has not been measured |
