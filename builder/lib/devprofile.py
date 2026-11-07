@@ -764,8 +764,8 @@ def guards(prof):
 #   - CONFIG_HAS_IOPORT=y and CONFIG_X86_IOPL_IOPERM=y remain enabled in stock lapis and the Track 2 dev kernel because
 #     standard x86_64 PCI/legacy drivers select HAS_IOPORT; privileged root processes holding CAP_SYS_RAWIO are part of
 #     the documented root-equivalency boundary in docs/SAFETY.md.
-#   - Internal SD/eMMC over PCI/ACPI is blocked via CONFIG_MMC_SDHCI_PCI / CONFIG_MMC_SDHCI_ACPI (sdhci_pci, sdhci_acpi);
-#     other non-PCI/ACPI MMC host drivers remain a documented limitation (HX 370 uses NVMe).
+#   - CONFIG_MMC_SDHCI_PCI / CONFIG_MMC_SDHCI_ACPI gate only the sdhci_pci / sdhci_acpi drivers;
+#     other MMC host drivers, including PCI card readers using rtsx, remain a documented limitation.
 
 # Built-in (=y) drivers in stock GKI 3938c8d97142 that the safety tail blocks at boot via initcall_blacklist=
 # (init/main.c:1270 initcall_blacklist(), :1292 initcall_blacklisted(), :1302 sprint_symbol_no_offset()).
