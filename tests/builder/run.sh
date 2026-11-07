@@ -974,6 +974,16 @@ print("AUTOOFF OK")
 PY
 expect "GBOS_TEST_AUTOOFF runs the generated script" 0 "^AUTOOFF SCRIPT OK$" -- python3 "$ROOT/tests/builder/autooff-script-test.py"
 expect "vendor.sh switch off writes no autooff files" 0 "^VENDOR OFF OK$" -- python3 "$ROOT/tests/builder/autooff-vendor-off-test.py"
+noota_out=$(python3 -B "$ROOT/tests/builder/noota/run.py" 2>&1); noota_rc=$?
+if [ "$noota_rc" = 77 ]; then
+    echo "$noota_out"
+elif [ "$noota_rc" = 0 ] && printf '%s\n' "$noota_out" | grep -q '^PASS duplicate/null/malformed/capacity/dead-reclaim/unbind/deny-OTA$'; then
+    ok "read-only update engine Binder lifecycle"
+else
+    bad "read-only update engine Binder lifecycle (rc=$noota_rc)"
+    printf '%s\n' "$noota_out"
+fi
+expect "read-only update engine integration" 0 "^OK$" -- python3 -B "$ROOT/tests/builder/readonly-update-engine-test.py"
 expect "gbos-no-ota rc fixture and QEMU log checks" 0 "^NO-OTA OK$" -- python3 "$ROOT/tests/builder/no-ota-test.py"
 expect "image.py autooff log checks" 0 "^AUTOOFF LOG OK$" -- python3 - "$ROOT/builder/image.py" << 'PY'
 import ast, re, sys

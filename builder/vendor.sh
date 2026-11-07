@@ -1149,6 +1149,12 @@ if prof["model"]["id"] == "amd-hx370":
     script = (root / "tools/mesa/build-radv.sh").read_text()
     checker = root / "tools/mesa/check-radv-elf.py"
 
+    if prof["services"]["readonly_update_engine"]:
+        notice = root / "builder/noota/THIRD-PARTY-NOTICES.txt"
+        if not notice.is_file() or notice.is_symlink():
+            raise SystemExit("missing read-only update engine notice")
+        place_notice = notice  # Installed below after place() is defined.
+
     def pinned(name):
         m = re.search(rf"^{name}=([0-9a-f]{{64}})$", script, re.M)
         if not m:
@@ -1166,6 +1172,9 @@ if prof["model"]["id"] == "amd-hx370":
         meta = dict(vmap[like])
         meta["mode"] = mode
         vmap[rel] = meta
+
+    if prof["services"]["readonly_update_engine"]:
+        place("etc/NOTICES-readonly-update-engine.txt", place_notice, "etc/init/fwupd.rc", 0o644)
 
     radv = Path(os.environ["GBOS_RADV"])
     probe = Path(os.environ["GBOS_RADV_PROBE"])
@@ -1542,6 +1551,8 @@ if os.environ.get("GBOS_TEST_AUTOOFF"):
 if os.environ.get("GBOS_USB_SMOKE") == "1":
     expect_new = sorted(expect_new + ["etc/kano-usb-collect.sh", "etc/kano-usb-evidence.sh", "etc/init/kano-usb-evidence.rc"])
     expect_changed = sorted(set(expect_changed + ["etc/selinux/vendor_file_contexts"]))
+if prof["services"]["readonly_update_engine"]:
+    expect_new = sorted(expect_new + ["etc/NOTICES-readonly-update-engine.txt"])
 if prof["model"]["id"] == "amd-hx370":
     expect_new = sorted(expect_new + [
         "bin/radv-probe", "etc/NOTICES-amd-hx370-radv.txt", "etc/amd-hx370-graphics.sh", "etc/gbos-efifb.sh",
@@ -1555,6 +1566,11 @@ if os.environ.get("GBOS_DEV_KERNEL_DIR"):
     )
     expect_new = sorted(expect_new + ["lib/dev-modules"] + [f"lib/dev-modules/{f}" for f in dev_files])
 import ifma
+if prof["services"]["readonly_update_engine"]:
+    rel = "etc/NOTICES-readonly-update-engine.txt"
+    source = Path(sys.argv[2]).resolve().parents[1] / "builder/noota/THIRD-PARTY-NOTICES.txt"
+    if new.get(rel) != ("file", hashlib.sha256(source.read_bytes()).hexdigest()):
+        raise SystemExit("read-only update engine notice mismatch")
 expect_changed = ifma.changed_vendor_paths(prof, expect_changed)
 import gralloc
 expect_changed = gralloc.changed_paths(prof, expect_changed)

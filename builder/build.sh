@@ -237,6 +237,10 @@ if [ "$(python3 "$HERE/lib/devprofile.py" get "$GBOS_PROFILE" cpu_compat.patch_a
         'import sys,json; sys.path.insert(0,sys.argv[1]); import devprofile,ifma; print(json.dumps(ifma.microdroid_preflight(devprofile.load(sys.argv[2]),sys.argv[3]),sort_keys=True,separators=(",",":")))' \
         "$HERE/lib" "$GBOS_PROFILE" "$GBOS_OTATOOLS" || die "Ally Microdroid preflight failed"
 fi
+if [ "$(python3 "$HERE/lib/devprofile.py" get "$GBOS_PROFILE" services.readonly_update_engine)" = true ]; then
+    python3 -B -c 'import sys; sys.path.insert(0, sys.argv[1]); import readonly_update_engine; readonly_update_engine.checked_shim()' "$HERE/lib" \
+        || die "read-only update engine binary missing or mismatched"
+fi
 mkdir -p "$GBOS_OUT"
 if [ "${GBOS_SKIP_SPACE_CHECK:-}" != 1 ]; then
     free=$(df -Pk "$GBOS_OUT" | awk 'NR==2 {print $4}')

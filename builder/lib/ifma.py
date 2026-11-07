@@ -33,6 +33,7 @@ from pathlib import Path
 
 sys.dont_write_bytecode = True
 import rebuild  # noqa: E402 - suppress bytecode before loading local helpers.
+import readonly_update_engine  # noqa: E402
 from container_alignment import check_zip_layout  # noqa: E402
 
 HERE = Path(__file__).resolve().parent
@@ -2209,6 +2210,7 @@ def rebuild_system_partition(prof, img_path, tmp, otatools=None, keys_dir=None, 
     )
     old_index = _index_tree(sys_tree)
 
+    service_report = readonly_update_engine.apply(prof, sys_tree)
     adler_report = ally_adler_tree(prof, "system", sys_tree)
     plain_report_path = tmp / "ifma-system-plain.json"
     try:
@@ -2294,11 +2296,12 @@ def rebuild_system_partition(prof, img_path, tmp, otatools=None, keys_dir=None, 
     only_new = sorted(set(new_index) - set(old_index))
     changed = sorted(k for k in set(old_index) & set(new_index) if old_index[k] != new_index[k])
     expected_changed = sorted(set(SYSTEM_EXPECTED_CHANGED) | set(ally_adler_changed_paths(prof, "system"))
-                              | set(adler_apex_specs))
+                              | set(adler_apex_specs) | set(service_report))
     if only_old or only_new or changed != expected_changed:
         raise SystemExit(
             f"system tree diff is not the exact CPU patch set: only_old={only_old}, only_new={only_new}, changed={changed}"
         )
+    readonly_update_engine.verify(new_tree, service_report)
     adler_readback = ally_adler_tree(prof, "system", new_tree, verify=True)
     if adler_readback != adler_report:
         raise SystemExit("Ally Adler system readback receipt changed")

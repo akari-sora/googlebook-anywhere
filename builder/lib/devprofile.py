@@ -48,6 +48,7 @@ SCHEMA = {
     "kmods": LSTR,
     "camera": {"libcamera": bool},
     "cpu_compat": {"patch_ifma": bool, "patch_ally_bootstrap": bool},
+    "services": {"readonly_update_engine": bool},
 }
 # display.density bounds (dpi): DisplayMetrics.DENSITY_LOW (120) to DENSITY_XXHIGH (480). 0 = unset.
 DENSITY_RANGE = (120, 480)
@@ -433,6 +434,9 @@ def load(profile_dir, safety_path=SAFETY):
     if isinstance(p["cpu_compat"], dict):
         p["cpu_compat"].setdefault("patch_ifma", False)
         p["cpu_compat"].setdefault("patch_ally_bootstrap", False)
+    p.setdefault("services", {})
+    if isinstance(p["services"], dict):
+        p["services"].setdefault("readonly_update_engine", False)
     if "modules" not in p:
         p["modules"] = {"unblock": [], "load": []}
     elif isinstance(p.get("modules"), dict):
@@ -457,6 +461,8 @@ def load(profile_dir, safety_path=SAFETY):
     m = p["model"]
     if m["android_model"] and not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9 ._-]{0,90}", m["android_model"]):
         raise ProfileError("model.android_model must be a printable ASCII model name (at most 91 characters)")
+    if p["services"]["readonly_update_engine"] and (m["id"] != "amd-hx370" or not p["cpu_compat"]["patch_ifma"]):
+        raise ProfileError("services.readonly_update_engine requires amd-hx370 and cpu_compat.patch_ifma")
     if p["cpu_compat"]["patch_ally_bootstrap"] and m["id"] != "rog-ally":
         raise ProfileError("cpu_compat.patch_ally_bootstrap is restricted to rog-ally")
     if p["cpu_compat"]["patch_ally_bootstrap"] and not p["cpu_compat"]["patch_ifma"]:

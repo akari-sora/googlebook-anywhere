@@ -300,3 +300,6 @@ vendor = "vendor.py"
 # without this table (kano, generic-x86) do not replace the stock library.
 [gralloc]
 sha256 = "297457940c9090754e71d4027e157167825edab4139eb7d8828d1660b98e0d42"
+
+[services]
+readonly_update_engine = true
