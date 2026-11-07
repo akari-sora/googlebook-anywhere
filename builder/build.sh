@@ -54,6 +54,11 @@ gbos_ec_ok() {
     u=$(printf '%s\n' "$ec" | tr ',' '\n' | sort -u | grep -c .)
     [ "$n" = "$u" ]
 }
+# Opt-in owned-key rebuild: reject invalid policy before output or key writes.
+case "${GBOS_APEX_KEYS_EXISTING_ONLY-0}" in
+    0|1) ;;
+    *) die "GBOS_APEX_KEYS_EXISTING_ONLY must be 0 or 1" ;;
+esac
 export GBOS_PROFILE="${GBOS_PROFILE:-$HERE/../profiles/kano}"
 : "${GBOS_BASE:?}" "${GBOS_INITRD:?}" "${GBOS_OUT:?}" "${GBOS_OTATOOLS:?}" "${GBOS_AVB_KEY:?}"
 [ -n "${GBOS_INPUTS:-}" ] || { [ -n "${GBOS_FIRMWARE:-}" ] && [ -n "${GBOS_AUDIO_SRC:-}" ]; } \
@@ -146,6 +151,9 @@ MODEL=$(python3 "$HERE/lib/devprofile.py" get "$GBOS_PROFILE" model.id)
 if [ "$MODEL" = amd-hx370 ]; then
     [ -n "${GBOS_DEV_KERNEL_DIR:-}" ] || die "profiles/amd-hx370 needs the self-built Track 2 GKI: set GBOS_DEV_KERNEL_DIR (stock lapis has no amdgpu)"
 fi
+if [ "$MODEL" = rog-ally ]; then
+    [ -n "${GBOS_DEV_KERNEL_DIR:-}" ] || die "rog-ally needs the self-built Track 2 GKI: set GBOS_DEV_KERNEL_DIR (stock lapis lacks Ally drivers)"
+fi
 if [ -n "${GBOS_DEV_KERNEL_DIR:-}" ]; then
     [ -d "$GBOS_DEV_KERNEL_DIR" ] && [ -f "$GBOS_DEV_KERNEL_DIR/bzImage" ] && [ -d "$GBOS_DEV_KERNEL_DIR/modules" ] \
         && [ -f "$GBOS_DEV_KERNEL_DIR/modules/modules.dep" ] && compgen -G "$GBOS_DEV_KERNEL_DIR/modules/*.ko" >/dev/null \
@@ -223,6 +231,12 @@ for b in avbtool mkfs.erofs fsck.erofs; do [ -x "$GBOS_OTATOOLS/bin/$b" ] || die
 LD_LIBRARY_PATH="$GBOS_OTATOOLS/lib64" "$GBOS_OTATOOLS/bin/avbtool" update_partition_descriptor --help >/dev/null 2>&1 \
     || die "this avbtool has no update_partition_descriptor (use the otatools from base/build-base.sh, AOSP build 16373615)"
 head -c 64 "$GBOS_AVB_KEY" | grep -q "PRIVATE KEY" || die "GBOS_AVB_KEY is not a PEM private key"
+# Repeat external-tool identity checks before any output-tree/image mutation.
+if [ "$(python3 "$HERE/lib/devprofile.py" get "$GBOS_PROFILE" cpu_compat.patch_ally_bootstrap)" = true ]; then
+    python3 -B -c \
+        'import sys,json; sys.path.insert(0,sys.argv[1]); import devprofile,ifma; print(json.dumps(ifma.microdroid_preflight(devprofile.load(sys.argv[2]),sys.argv[3]),sort_keys=True,separators=(",",":")))' \
+        "$HERE/lib" "$GBOS_PROFILE" "$GBOS_OTATOOLS" || die "Ally Microdroid preflight failed"
+fi
 mkdir -p "$GBOS_OUT"
 if [ "${GBOS_SKIP_SPACE_CHECK:-}" != 1 ]; then
     free=$(df -Pk "$GBOS_OUT" | awk 'NR==2 {print $4}')
@@ -231,7 +245,7 @@ fi
 avail=$(awk '/^MemAvailable:/ {print $2}' /proc/meminfo)
 [ "${GBOS_SKIP_SELFTEST:-}" = 1 ] || [ "$avail" -ge $((9 * 1024 * 1024)) ] || echo "warning: under 9 GB of free memory; the QEMU self-test gives the guest 8 GB"
 if [ "$PATCH_IFMA" = true ]; then
-    APEX_KEY_INFO=$(python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import ifma; ifma.ensure_apex_keys()' "$HERE/lib")
+    APEX_KEY_INFO=$(python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import ifma; ifma.ensure_apex_keys_for_startup()' "$HERE/lib")
     printf '%s\n' "$APEX_KEY_INFO"
     printf '%s\n' "$APEX_KEY_INFO" > "$GBOS_OUT/build-info.txt"
 fi

@@ -1,0 +1,1031 @@
+{
+  "schema": 1,
+  "policy": "force_scalar_adler_only_preserve_crc_gate",
+  "input_build": "lapis CL3B.260622.271.R1 / Googlebook image v030build7",
+  "scope": "Adler subpaths only; other VNNI routes remain unmodified and unproven",
+  "targets": [
+    {
+      "id": 1,
+      "name": "id-001",
+      "path": "initrd-all/first_stage_ramdisk/system/bin/linker64",
+      "size": 2542872,
+      "sha256": "3631a5c65adecb306579974a74ea27cdfabf28ee264676136139f7b15922e3ea",
+      "patched_sha256": "81b4908874996328d867c4ea590bc2be2982a6538b8c58e924a50321d56fb7da",
+      "detector_va": 1944688,
+      "detector_offset": 1944688,
+      "detector_size": 50,
+      "context_hex": "b8010000004887f30fa24887f389c825000200008905ced70200c1ea1a89c8c1e81421d0d1e921c183e101890dbbd70200c3cccccccccccccccccccccccccccc",
+      "patch_va": 1944703,
+      "patch_offset": 1944703,
+      "original_hex": "2500020000",
+      "replacement_hex": "2500000000",
+      "wrapper_va": 1956752,
+      "wrapper_offset": 1956752,
+      "wrapper_context_hex": "554889e553504889d04885f6741e4883f8407218833dada8020000740f4889c2e8bb04000089c3e9a604000089fbc1eb100fb7cf4883f80175470fb606488d14014881faf1ff0000488d84010f00ffff480f42c24801c34889d948c1e11048ba00000f00ffffffff4801ca4881fbf1ff0000480f42d14809c24889d3e9510400004885f674554883f81073754885c00f843b0300004889c24883e2070f84bf02000031ff6666662e0f1f840000000000440fb6043e4c01c14801cb48ffc74839",
+      "gate_va": 2131032,
+      "crc_gate_va": 2131036,
+      "vnni_va": 1958523,
+      "vnni_offset": 1958523,
+      "vnni_hex": "c4e23152f2",
+      "layout": "classic",
+      "elf_loads": [
+        [
+          0,
+          0,
+          414064,
+          414064,
+          4
+        ],
+        [
+          425984,
+          425984,
+          1553712,
+          1553712,
+          5
+        ],
+        [
+          1982464,
+          1982464,
+          38736,
+          40960,
+          6
+        ],
+        [
+          2031616,
+          2031616,
+          9776,
+          99808,
+          6
+        ]
+      ],
+      "call_va": 1956784,
+      "call_offset": 1956784,
+      "call_context_hex": "e8bb040000",
+      "helper_va": 1958000,
+      "helper_offset": 1958000,
+      "helper_context_hex": "89f8440fb7c0c1e81089d183e11f4883fa200f83e30000004589c24885c90f84b803000083f9100f82930000000fb6164101d24401d00fb656014401d201d00f",
+      "gate_check_va": 1956772,
+      "gate_check_offset": 1956772,
+      "gate_check_context_hex": "833dada8020000740f4889c2e8",
+      "source_aliases": [
+        "initramfs/first_stage_ramdisk/system/bin/linker64"
+      ],
+      "input_classification": "initramfs ELF"
+    },
+    {
+      "id": 2,
+      "name": "id-002",
+      "path": "initrd-all/first_stage_ramdisk/system/lib64/libz.so",
+      "size": 134464,
+      "sha256": "b94c1f08820baf8672b97662ff578fd73af34c7585d9c2b24d65285dd173bd1b",
+      "patched_sha256": "effa6896a877e497ccddd4361cd4ba18cb1cfd20ba52c0dc5b0089917694aa12",
+      "detector_va": 71232,
+      "detector_offset": 71232,
+      "detector_size": 50,
+      "context_hex": "b8010000004887f30fa24887f389c825000200008905a6e90000c1ea1a89c8c1e81421d0d1e921c183e101890d93e90000c3cccccccccccccccccccccccccccc",
+      "patch_va": 71247,
+      "patch_offset": 71247,
+      "original_hex": "2500020000",
+      "replacement_hex": "2500000000",
+      "wrapper_va": 42784,
+      "wrapper_offset": 42784,
+      "wrapper_context_hex": "554889e54885f6740a4883fa400f839b00000089f8c1e8100fb7cf4883fa010f84df0100004885f60f84960000004883fa100f83ab0000004885d274340fb63e4989c84901f84c01c00fb64e014c01c14801c84883fa027418bf02000000440fb6043e4c01c14801c848ffc74839fa75ed488db10f00ffff4881f9f1ff0000480f42f148b9cdc52f0de1000f004889c2c4e2f3f6c929cad1ea01cac1ea0f69caf1ff000029c8c1e0104809f05dc3833d2b580100000f8458ffffffe8e0670000",
+      "gate_va": 131072,
+      "crc_gate_va": 131076,
+      "vnni_va": 69735,
+      "vnni_offset": 69735,
+      "vnni_hex": "c4c23152f3",
+      "layout": "libz",
+      "elf_loads": [
+        [
+          0,
+          0,
+          30336,
+          30336,
+          4
+        ],
+        [
+          32768,
+          32768,
+          71584,
+          71584,
+          5
+        ],
+        [
+          114688,
+          114688,
+          1208,
+          4096,
+          6
+        ],
+        [
+          131072,
+          131072,
+          0,
+          12,
+          6
+        ]
+      ],
+      "call_va": 42971,
+      "call_offset": 42971,
+      "call_context_hex": "e8e0670000",
+      "helper_va": 69568,
+      "helper_offset": 69568,
+      "helper_context_hex": "89f8440fb7c0c1e81089d183e11f4883fa200f824502000048c1ea05bf71800780c5f9efc0c5f96f0da30cffffc4e2795815be0cffffc5f96f1da20cffffc5f9",
+      "gate_check_va": 42958,
+      "gate_check_offset": 42958,
+      "gate_check_context_hex": "833d2b580100000f8458ffffff",
+      "source_aliases": [
+        "initramfs/first_stage_ramdisk/system/lib64/libz.so"
+      ],
+      "input_classification": "initramfs ELF"
+    },
+    {
+      "id": 3,
+      "name": "id-003",
+      "path": "initrd-all/init",
+      "size": 3137864,
+      "sha256": "02c8c532e922d215e0516ac967bd719072b24861ee3de7a9d81bc1934b00037f",
+      "patched_sha256": "71797a5cd035b22933a5a62402c8725518481d3d330547d9816be04fae0f7c55",
+      "detector_va": 3544144,
+      "detector_offset": 1446992,
+      "detector_size": 50,
+      "context_hex": "b8010000004887f30fa24887f389c825000200008905ae961a00c1ea1a89c8c1e81421d0d1e921c183e101890d9b961a00c3cccccccccccccccccccccccccccc",
+      "patch_va": 3544159,
+      "patch_offset": 1447007,
+      "original_hex": "2500020000",
+      "replacement_hex": "2500000000",
+      "wrapper_va": 3546832,
+      "wrapper_offset": 1449680,
+      "wrapper_context_hex": "554889e553504889d04885f6741e4883f8407218833d2d8c1a0000740f4889c2e8bb04000089c3e9a604000089fbc1eb100fb7cf4883f80175470fb606488d14014881faf1ff0000488d84010f00ffff480f42c24801c34889d948c1e11048ba00000f00ffffffff4801ca4881fbf1ff0000480f42d14809c24889d3e9510400004885f674554883f81073714885c00f843b0300004889c24883e2070f84bf02000031ff6666662e0f1f840000000000440fb6043e4c01c14801cb48ffc74839",
+      "gate_va": 5286680,
+      "crc_gate_va": 5286684,
+      "vnni_va": 3548603,
+      "vnni_offset": 1451451,
+      "vnni_hex": "c4e23152f2",
+      "layout": "classic",
+      "elf_loads": [
+        [
+          0,
+          2097152,
+          564272,
+          564272,
+          4
+        ],
+        [
+          573440,
+          2670592,
+          2464130,
+          2464130,
+          5
+        ],
+        [
+          3047424,
+          5144576,
+          12856,
+          16384,
+          6
+        ],
+        [
+          3063808,
+          5160960,
+          7656,
+          130344,
+          6
+        ]
+      ],
+      "call_va": 3546864,
+      "call_offset": 1449712,
+      "call_context_hex": "e8bb040000",
+      "helper_va": 3548080,
+      "helper_offset": 1450928,
+      "helper_context_hex": "89f8440fb7c0c1e81089d183e11f4883fa200f83e30000004589c24885c90f84b803000083f9100f82930000000fb6164101d24401d00fb656014401d201d00f",
+      "gate_check_va": 3546852,
+      "gate_check_offset": 1449700,
+      "gate_check_context_hex": "833d2d8c1a0000740f4889c2e8",
+      "source_aliases": [
+        "initramfs/init"
+      ],
+      "input_classification": "initramfs ELF"
+    },
+    {
+      "id": 4,
+      "name": "id-004",
+      "path": "initrd-all/system/bin/snapuserd_ramdisk",
+      "size": 1387328,
+      "sha256": "a36f32f0f4030d233c70c1f0f64c26d4c9a331f8983420659f38b9d428ee91f4",
+      "patched_sha256": "000157a67dfb7bb4e2ba76325330d9ef71fc701fb98901e7f4c996a8cb4c34f6",
+      "detector_va": 3267472,
+      "detector_offset": 1170320,
+      "detector_size": 50,
+      "context_hex": "b8010000004887f30fa24887f389c8250002000089052a930400c1ea1a89c8c1e81421d0d1e921c183e101890d17930400c3cccccccccccccccccccccccccccc",
+      "patch_va": 3267487,
+      "patch_offset": 1170335,
+      "original_hex": "2500020000",
+      "replacement_hex": "2500000000",
+      "wrapper_va": 3267536,
+      "wrapper_offset": 1170384,
+      "wrapper_context_hex": "554889e553504889d04885f6741e4883f8407218833de992040000740f4889c2e8bb04000089c3e9a604000089fbc1eb100fb7cf4883f80175470fb606488d14014881faf1ff0000488d84010f00ffff480f42c24801c34889d948c1e11048ba00000f00ffffffff4801ca4881fbf1ff0000480f42d14809c24889d3e9510400004885f674554883f81073714885c00f843b0300004889c24883e2070f84bf02000031ff6666662e0f1f840000000000440fb6043e4c01c14801cb48ffc74839",
+      "gate_va": 3567316,
+      "crc_gate_va": 3567320,
+      "vnni_va": 3269307,
+      "vnni_offset": 1172155,
+      "vnni_hex": "c4e23152f2",
+      "layout": "classic",
+      "elf_loads": [
+        [
+          0,
+          2097152,
+          235624,
+          235624,
+          4
+        ],
+        [
+          245760,
+          2342912,
+          1074565,
+          1074565,
+          5
+        ],
+        [
+          1327104,
+          3424256,
+          15016,
+          16384,
+          6
+        ],
+        [
+          1343488,
+          3440640,
+          3596,
+          127096,
+          6
+        ]
+      ],
+      "call_va": 3267568,
+      "call_offset": 1170416,
+      "call_context_hex": "e8bb040000",
+      "helper_va": 3268784,
+      "helper_offset": 1171632,
+      "helper_context_hex": "89f8440fb7c0c1e81089d183e11f4883fa200f83e30000004589c24885c90f84b803000083f9100f82930000000fb6164101d24401d00fb656014401d201d00f",
+      "gate_check_va": 3267556,
+      "gate_check_offset": 1170404,
+      "gate_check_context_hex": "833de992040000740f4889c2e8",
+      "source_aliases": [
+        "initramfs/system/bin/snapuserd_ramdisk"
+      ],
+      "input_classification": "initramfs ELF"
+    },
+    {
+      "id": 27,
+      "name": "id-027",
+      "path": "nested/system_a-0d419b8f909cb3f46484/bin/linker64",
+      "size": 2542320,
+      "sha256": "72a818e0c73483b9b6946348d689a5009f8a1fc9067f533f75a4083cc6161856",
+      "patched_sha256": "51c924ff7b6cc99a3b329eea55542a48bb66c2428df383c46d6c5c35f95cab74",
+      "detector_va": 1942896,
+      "detector_offset": 1942896,
+      "detector_size": 50,
+      "context_hex": "b8010000004887f30fa24887f389c825000200008905cede0200c1ea1a89c8c1e81421d0d1e921c183e101890dbbde0200c3cccccccccccccccccccccccccccc",
+      "patch_va": 1942911,
+      "patch_offset": 1942911,
+      "original_hex": "2500020000",
+      "replacement_hex": "2500000000",
+      "wrapper_va": 1954960,
+      "wrapper_offset": 1954960,
+      "wrapper_context_hex": "554889e553504889d04885f6741e4883f8407218833dadaf020000740f4889c2e8bb04000089c3e9a604000089fbc1eb100fb7cf4883f80175470fb606488d14014881faf1ff0000488d84010f00ffff480f42c24801c34889d948c1e11048ba00000f00ffffffff4801ca4881fbf1ff0000480f42d14809c24889d3e9510400004885f674554883f81073754885c00f843b0300004889c24883e2070f84bf02000031ff6666662e0f1f840000000000440fb6043e4c01c14801cb48ffc74839",
+      "gate_va": 2131032,
+      "crc_gate_va": 2131036,
+      "vnni_va": 1956731,
+      "vnni_offset": 1956731,
+      "vnni_hex": "c4e23152f2",
+      "layout": "classic",
+      "elf_loads": [
+        [
+          0,
+          0,
+          413888,
+          413888,
+          4
+        ],
+        [
+          425984,
+          425984,
+          1551920,
+          1551920,
+          5
+        ],
+        [
+          1982464,
+          1982464,
+          38736,
+          40960,
+          6
+        ],
+        [
+          2031616,
+          2031616,
+          9776,
+          99808,
+          6
+        ]
+      ],
+      "call_va": 1954992,
+      "call_offset": 1954992,
+      "call_context_hex": "e8bb040000",
+      "helper_va": 1956208,
+      "helper_offset": 1956208,
+      "helper_context_hex": "89f8440fb7c0c1e81089d183e11f4883fa200f83e30000004589c24885c90f84b803000083f9100f82930000000fb6164101d24401d00fb656014401d201d00f",
+      "gate_check_va": 1954980,
+      "gate_check_offset": 1954980,
+      "gate_check_context_hex": "833dadaf020000740f4889c2e8",
+      "source_aliases": [
+        "system_a/system/apex/com.android.runtime.apex!/apex_payload.img!/erofs/bin/linker64",
+        "system_a/system/apex/com.google.android.virt.apex!/apex_payload.img!/erofs/etc/fs/microdroid.img!/erofs/system/apex/com.android.runtime.apex!/apex_payload.img!/erofs/bin/linker64"
+      ],
+      "input_classification": "extracted nested payload ELF"
+    },
+    {
+      "id": 33,
+      "name": "id-033",
+      "path": "nested/system_a-56ba0c17de5aee355ee0/lib64/libicing_anywhere.so",
+      "size": 3001128,
+      "sha256": "7daac53fd83f048f3f6edee4c6abb5277875bf5ed4494565550c31c3052692e8",
+      "patched_sha256": "13a4f128aca8f01aa683c6f6bdc43e41059c423dd5b756465392c5f1d2003beb",
+      "detector_va": 2773328,
+      "detector_offset": 2773328,
+      "detector_size": 50,
+      "context_hex": "b8010000004887f30fa24887f389c82500020000890506540200c1ea1a89c8c1e81421d0d1e921c183e101890df3530200c3cccccccccccccccccccccccccccc",
+      "patch_va": 2773343,
+      "patch_offset": 2773343,
+      "original_hex": "2500020000",
+      "replacement_hex": "2500000000",
+      "wrapper_va": 2771072,
+      "wrapper_offset": 2771072,
+      "wrapper_context_hex": "554889e553504889d04885f6741e4883f8407218833dd55c020000740f4889c2e8bb04000089c3e9a604000089fbc1eb100fb7cf4883f80175470fb606488d14014881faf1ff0000488d84010f00ffff480f42c24801c34889d948c1e11048ba00000f00ffffffff4801ca4881fbf1ff0000480f42d14809c24889d3e9510400004885f674554883f81073754885c00f843b0300004889c24883e2070f84bf02000031ff6666662e0f1f840000000000440fb6043e4c01c14801cb48ffc74839",
+      "gate_va": 2925936,
+      "crc_gate_va": 2925940,
+      "vnni_va": 2772843,
+      "vnni_offset": 2772843,
+      "vnni_hex": "c4e23152f2",
+      "layout": "classic",
+      "elf_loads": [
+        [
+          0,
+          0,
+          342520,
+          342520,
+          4
+        ],
+        [
+          344064,
+          344064,
+          2489808,
+          2489808,
+          5
+        ],
+        [
+          2834432,
+          2834432,
+          46392,
+          49152,
+          6
+        ],
+        [
+          2883584,
+          2883584,
+          35368,
+          42400,
+          6
+        ]
+      ],
+      "call_va": 2771104,
+      "call_offset": 2771104,
+      "call_context_hex": "e8bb040000",
+      "helper_va": 2772320,
+      "helper_offset": 2772320,
+      "helper_context_hex": "89f8440fb7c0c1e81089d183e11f4883fa200f83e30000004589c24885c90f84b803000083f9100f82930000000fb6164101d24401d00fb656014401d201d00f",
+      "gate_check_va": 2771092,
+      "gate_check_offset": 2771092,
+      "gate_check_context_hex": "833dd55c020000740f4889c2e8",
+      "source_aliases": [
+        "system_a/system/apex/com.google.android.appsearch.apex!/apex_payload.img!/erofs/lib64/libicing_anywhere.so"
+      ],
+      "input_classification": "extracted nested payload ELF"
+    },
+    {
+      "id": 67,
+      "name": "id-067",
+      "path": "nested/system_a-df0733894a15bc0cb604/system/bin/bootstrap/linker64",
+      "size": 2542920,
+      "sha256": "8d0ef11d34fbfbb101dd5557eb1817f97805809874bd7b3b7d68ab9b681fd9db",
+      "patched_sha256": "4af08303221817616f3d9d99c1c04707d39faa1493e5ad26f0e150d9dcb6287e",
+      "detector_va": 1944688,
+      "detector_offset": 1944688,
+      "detector_size": 50,
+      "context_hex": "b8010000004887f30fa24887f389c825000200008905ced70200c1ea1a89c8c1e81421d0d1e921c183e101890dbbd70200c3cccccccccccccccccccccccccccc",
+      "patch_va": 1944703,
+      "patch_offset": 1944703,
+      "original_hex": "2500020000",
+      "replacement_hex": "2500000000",
+      "wrapper_va": 1956752,
+      "wrapper_offset": 1956752,
+      "wrapper_context_hex": "554889e553504889d04885f6741e4883f8407218833dada8020000740f4889c2e8bb04000089c3e9a604000089fbc1eb100fb7cf4883f80175470fb606488d14014881faf1ff0000488d84010f00ffff480f42c24801c34889d948c1e11048ba00000f00ffffffff4801ca4881fbf1ff0000480f42d14809c24889d3e9510400004885f674554883f81073754885c00f843b0300004889c24883e2070f84bf02000031ff6666662e0f1f840000000000440fb6043e4c01c14801cb48ffc74839",
+      "gate_va": 2131032,
+      "crc_gate_va": 2131036,
+      "vnni_va": 1958523,
+      "vnni_offset": 1958523,
+      "vnni_hex": "c4e23152f2",
+      "layout": "classic",
+      "elf_loads": [
+        [
+          0,
+          0,
+          414064,
+          414064,
+          4
+        ],
+        [
+          425984,
+          425984,
+          1553712,
+          1553712,
+          5
+        ],
+        [
+          1982464,
+          1982464,
+          38736,
+          40960,
+          6
+        ],
+        [
+          2031616,
+          2031616,
+          9776,
+          99808,
+          6
+        ]
+      ],
+      "call_va": 1956784,
+      "call_offset": 1956784,
+      "call_context_hex": "e8bb040000",
+      "helper_va": 1958000,
+      "helper_offset": 1958000,
+      "helper_context_hex": "89f8440fb7c0c1e81089d183e11f4883fa200f83e30000004589c24885c90f84b803000083f9100f82930000000fb6164101d24401d00fb656014401d201d00f",
+      "gate_check_va": 1956772,
+      "gate_check_offset": 1956772,
+      "gate_check_context_hex": "833dada8020000740f4889c2e8",
+      "source_aliases": [
+        "system_a/system/apex/com.google.android.virt.apex!/apex_payload.img!/erofs/etc/fs/microdroid.img!/erofs/system/bin/bootstrap/linker64",
+        "system_a/system/bin/bootstrap/linker64"
+      ],
+      "input_classification": "extracted nested payload ELF"
+    },
+    {
+      "id": 68,
+      "name": "id-068",
+      "path": "nested/system_a-df0733894a15bc0cb604/system/bin/init",
+      "size": 1646048,
+      "sha256": "48848fafab958f66de2deb21feffefc7980b4e839860f900e6031cbc763e4b57",
+      "patched_sha256": "3b143d1738069e5cac7bbf54aa53b0bae3c79f264a301d3648431f69e7ba38f0",
+      "detector_va": 1187104,
+      "detector_offset": 1187104,
+      "detector_size": 50,
+      "context_hex": "b8010000004887f30fa24887f389c8250002000089058e6c0600c1ea1a89c8c1e81421d0d1e921c183e101890d7b6c0600c3cccccccccccccccccccccccccccc",
+      "patch_va": 1187119,
+      "patch_offset": 1187119,
+      "original_hex": "2500020000",
+      "replacement_hex": "2500000000",
+      "wrapper_va": 1187200,
+      "wrapper_offset": 1187200,
+      "wrapper_context_hex": "554889e553504889d04885f6741e4883f8407218833d2d6c060000740f4889c2e8bb04000089c3e9a604000089fbc1eb100fb7cf4883f80175470fb606488d14014881faf1ff0000488d84010f00ffff480f42c24801c34889d948c1e11048ba00000f00ffffffff4801ca4881fbf1ff0000480f42d14809c24889d3e9510400004885f674554883f81073754885c00f843b0300004889c24883e2070f84bf02000031ff6666662e0f1f840000000000440fb6043e4c01c14801cb48ffc74839",
+      "gate_va": 1608136,
+      "crc_gate_va": 1608140,
+      "vnni_va": 1188971,
+      "vnni_offset": 1188971,
+      "vnni_hex": "c4e23152f2",
+      "layout": "classic",
+      "elf_loads": [
+        [
+          0,
+          0,
+          230512,
+          230512,
+          4
+        ],
+        [
+          245760,
+          245760,
+          1335776,
+          1335776,
+          5
+        ],
+        [
+          1589248,
+          1589248,
+          11664,
+          12288,
+          6
+        ],
+        [
+          1605632,
+          1605632,
+          624,
+          4376,
+          6
+        ]
+      ],
+      "call_va": 1187232,
+      "call_offset": 1187232,
+      "call_context_hex": "e8bb040000",
+      "helper_va": 1188448,
+      "helper_offset": 1188448,
+      "helper_context_hex": "89f8440fb7c0c1e81089d183e11f4883fa200f83e30000004589c24885c90f84b803000083f9100f82930000000fb6164101d24401d00fb656014401d201d00f",
+      "gate_check_va": 1187220,
+      "gate_check_offset": 1187220,
+      "gate_check_context_hex": "833d2d6c060000740f4889c2e8",
+      "source_aliases": [
+        "system_a/system/apex/com.google.android.virt.apex!/apex_payload.img!/erofs/etc/fs/microdroid.img!/erofs/system/bin/init"
+      ],
+      "input_classification": "extracted nested payload ELF"
+    },
+    {
+      "id": 73,
+      "name": "id-073",
+      "path": "nested/system_a-df0733894a15bc0cb604/system/lib64/libz.so",
+      "size": 134464,
+      "sha256": "371f70d6a9392327cb36838d0cbc7af7388d1689c25d91cd343af8e58433683b",
+      "patched_sha256": "975575526e8fb574a1aefeb1980d4f8789e73915c7dde7e3a950e5b7dd192973",
+      "detector_va": 71232,
+      "detector_offset": 71232,
+      "detector_size": 50,
+      "context_hex": "b8010000004887f30fa24887f389c825000200008905a6e90000c1ea1a89c8c1e81421d0d1e921c183e101890d93e90000c3cccccccccccccccccccccccccccc",
+      "patch_va": 71247,
+      "patch_offset": 71247,
+      "original_hex": "2500020000",
+      "replacement_hex": "2500000000",
+      "wrapper_va": 42784,
+      "wrapper_offset": 42784,
+      "wrapper_context_hex": "554889e54885f6740a4883fa400f839b00000089f8c1e8100fb7cf4883fa010f84df0100004885f60f84960000004883fa100f83ab0000004885d274340fb63e4989c84901f84c01c00fb64e014c01c14801c84883fa027418bf02000000440fb6043e4c01c14801c848ffc74839fa75ed488db10f00ffff4881f9f1ff0000480f42f148b9cdc52f0de1000f004889c2c4e2f3f6c929cad1ea01cac1ea0f69caf1ff000029c8c1e0104809f05dc3833d2b580100000f8458ffffffe8e0670000",
+      "gate_va": 131072,
+      "crc_gate_va": 131076,
+      "vnni_va": 69735,
+      "vnni_offset": 69735,
+      "vnni_hex": "c4c23152f3",
+      "layout": "libz",
+      "elf_loads": [
+        [
+          0,
+          0,
+          30336,
+          30336,
+          4
+        ],
+        [
+          32768,
+          32768,
+          71584,
+          71584,
+          5
+        ],
+        [
+          114688,
+          114688,
+          1208,
+          4096,
+          6
+        ],
+        [
+          131072,
+          131072,
+          0,
+          12,
+          6
+        ]
+      ],
+      "call_va": 42971,
+      "call_offset": 42971,
+      "call_context_hex": "e8e0670000",
+      "helper_va": 69568,
+      "helper_offset": 69568,
+      "helper_context_hex": "89f8440fb7c0c1e81089d183e11f4883fa200f824502000048c1ea05bf71800780c5f9efc0c5f96f0da30cffffc4e2795815be0cffffc5f96f1da20cffffc5f9",
+      "gate_check_va": 42958,
+      "gate_check_offset": 42958,
+      "gate_check_context_hex": "833d2b580100000f8458ffffff",
+      "source_aliases": [
+        "system_a/system/apex/com.google.android.virt.apex!/apex_payload.img!/erofs/etc/fs/microdroid.img!/erofs/system/lib64/libz.so",
+        "system_a/system/lib64/libz.so"
+      ],
+      "input_classification": "extracted nested payload ELF"
+    },
+    {
+      "id": 77,
+      "name": "id-077",
+      "path": "trees/system_a/system/bin/bpftool",
+      "size": 847328,
+      "sha256": "0ce148b1dc0e1c5d94c3d9b7d6e6cba36157abfdd30efeef6c9d1405fac2f002",
+      "patched_sha256": "70517db190eac1d1f01389a981c9842991f9c9f762f2c055bf8b3e0f28a06b39",
+      "detector_va": 745488,
+      "detector_offset": 745488,
+      "detector_size": 50,
+      "context_hex": "b8010000004887f30fa24887f389c825000200008905de620100c1ea1a89c8c1e81421d0d1e921c183e101890dcb620100c3cccccccccccccccccccccccccccc",
+      "patch_va": 745503,
+      "patch_offset": 745503,
+      "original_hex": "2500020000",
+      "replacement_hex": "2500000000",
+      "wrapper_va": 745552,
+      "wrapper_offset": 745552,
+      "wrapper_context_hex": "554889e553504889d04885f6741e4883f8407218833d9d62010000740f4889c2e88b06000089c3e9a604000089fbc1eb100fb7cf4883f80175470fb606488d14014881faf1ff0000488d84010f00ffff480f42c24801c34889d948c1e11048ba00000f00ffffffff4801ca4881fbf1ff0000480f42d14809c24889d3e9510400004885f674554883f81073754885c00f843b0300004889c24883e2070f84bf02000031ff6666662e0f1f840000000000440fb6043e4c01c14801cb48ffc74839",
+      "gate_va": 836360,
+      "crc_gate_va": 836364,
+      "vnni_va": 747787,
+      "vnni_offset": 747787,
+      "vnni_hex": "c4e23152f2",
+      "layout": "classic",
+      "elf_loads": [
+        [
+          0,
+          0,
+          185092,
+          185092,
+          4
+        ],
+        [
+          196608,
+          196608,
+          600832,
+          600832,
+          5
+        ],
+        [
+          802816,
+          802816,
+          16744,
+          20480,
+          6
+        ],
+        [
+          835584,
+          835584,
+          48,
+          788,
+          6
+        ]
+      ],
+      "call_va": 745584,
+      "call_offset": 745584,
+      "call_context_hex": "e88b060000",
+      "helper_va": 747264,
+      "helper_offset": 747264,
+      "helper_context_hex": "89f8440fb7c0c1e81089d183e11f4883fa200f83e30000004589c24885c90f84b803000083f9100f82930000000fb6164101d24401d00fb656014401d201d00f",
+      "gate_check_va": 745572,
+      "gate_check_offset": 745572,
+      "gate_check_context_hex": "833d9d62010000740f4889c2e8",
+      "source_aliases": [
+        "system_a/system/bin/bpftool"
+      ],
+      "input_classification": "extracted partition ELF"
+    },
+    {
+      "id": 79,
+      "name": "id-079",
+      "path": "trees/system_a/system/bin/init",
+      "size": 2983272,
+      "sha256": "9c6d33419ac64c7938c117fc84f99ddd9bd03fcd16438d6e1085fbf7a529326a",
+      "patched_sha256": "8d3a711f63140295f3d0eced9cccee462ab7eb2782516e43c497f148471306f3",
+      "detector_va": 2180880,
+      "detector_offset": 2180880,
+      "detector_size": 50,
+      "context_hex": "b8010000004887f30fa24887f389c825000200008905165a0b00c1ea1a89c8c1e81421d0d1e921c183e101890d035a0b00c3cccccccccccccccccccccccccccc",
+      "patch_va": 2180895,
+      "patch_offset": 2180895,
+      "original_hex": "2500020000",
+      "replacement_hex": "2500000000",
+      "wrapper_va": 2180976,
+      "wrapper_offset": 2180976,
+      "wrapper_context_hex": "554889e553504889d04885f6741e4883f8407218833db5590b0000740f4889c2e8bb04000089c3e9a604000089fbc1eb100fb7cf4883f80175470fb606488d14014881faf1ff0000488d84010f00ffff480f42c24801c34889d948c1e11048ba00000f00ffffffff4801ca4881fbf1ff0000480f42d14809c24889d3e9510400004885f674554883f81073754885c00f843b0300004889c24883e2070f84bf02000031ff6666662e0f1f840000000000440fb6043e4c01c14801cb48ffc74839",
+      "gate_va": 2924864,
+      "crc_gate_va": 2924868,
+      "vnni_va": 2182747,
+      "vnni_offset": 2182747,
+      "vnni_hex": "c4e23152f2",
+      "layout": "classic",
+      "elf_loads": [
+        [
+          0,
+          0,
+          406996,
+          406996,
+          4
+        ],
+        [
+          409600,
+          409600,
+          2471808,
+          2471808,
+          5
+        ],
+        [
+          2883584,
+          2883584,
+          30768,
+          32768,
+          6
+        ],
+        [
+          2916352,
+          2916352,
+          6392,
+          11048,
+          6
+        ]
+      ],
+      "call_va": 2181008,
+      "call_offset": 2181008,
+      "call_context_hex": "e8bb040000",
+      "helper_va": 2182224,
+      "helper_offset": 2182224,
+      "helper_context_hex": "89f8440fb7c0c1e81089d183e11f4883fa200f83e30000004589c24885c90f84b803000083f9100f82930000000fb6164101d24401d00fb656014401d201d00f",
+      "gate_check_va": 2180996,
+      "gate_check_offset": 2180996,
+      "gate_check_context_hex": "833db5590b0000740f4889c2e8",
+      "source_aliases": [
+        "system_a/system/bin/init"
+      ],
+      "input_classification": "extracted partition ELF"
+    },
+    {
+      "id": 82,
+      "name": "id-082",
+      "path": "trees/system_a/system/bin/snapuserd",
+      "size": 1387312,
+      "sha256": "2f9621c0a8f409d1eb8aaaae6192feff1a5aab9321be274f38227ec28a8be54d",
+      "patched_sha256": "92f2648d2c46a8c3ad0c809250bb4b8ecccaa7c335188dadc2090a2e3c65d27c",
+      "detector_va": 3236304,
+      "detector_offset": 1139152,
+      "detector_size": 50,
+      "context_hex": "b8010000004887f30fa24887f389c825000200008905a60c0500c1ea1a89c8c1e81421d0d1e921c183e101890d930c0500c3cccccccccccccccccccccccccccc",
+      "patch_va": 3236319,
+      "patch_offset": 1139167,
+      "original_hex": "2500020000",
+      "replacement_hex": "2500000000",
+      "wrapper_va": 3236368,
+      "wrapper_offset": 1139216,
+      "wrapper_context_hex": "554889e553504889d04885f6741e4883f8407218833d650c050000740f4889c2e8bb04000089c3e9a604000089fbc1eb100fb7cf4883f80175470fb606488d14014881faf1ff0000488d84010f00ffff480f42c24801c34889d948c1e11048ba00000f00ffffffff4801ca4881fbf1ff0000480f42d14809c24889d3e9510400004885f674554883f81073714885c00f843b0300004889c24883e2070f84bf02000031ff6666662e0f1f840000000000440fb6043e4c01c14801cb48ffc74839",
+      "gate_va": 3567248,
+      "crc_gate_va": 3567252,
+      "vnni_va": 3238139,
+      "vnni_offset": 1140987,
+      "vnni_hex": "c4e23152f2",
+      "layout": "classic",
+      "elf_loads": [
+        [
+          0,
+          2097152,
+          235616,
+          235616,
+          4
+        ],
+        [
+          245760,
+          2342912,
+          1074581,
+          1074581,
+          5
+        ],
+        [
+          1327104,
+          3424256,
+          15016,
+          16384,
+          6
+        ],
+        [
+          1343488,
+          3440640,
+          3596,
+          127112,
+          6
+        ]
+      ],
+      "call_va": 3236400,
+      "call_offset": 1139248,
+      "call_context_hex": "e8bb040000",
+      "helper_va": 3237616,
+      "helper_offset": 1140464,
+      "helper_context_hex": "89f8440fb7c0c1e81089d183e11f4883fa200f83e30000004589c24885c90f84b803000083f9100f82930000000fb6164101d24401d00fb656014401d201d00f",
+      "gate_check_va": 3236388,
+      "gate_check_offset": 1139236,
+      "gate_check_context_hex": "833d650c050000740f4889c2e8",
+      "source_aliases": [
+        "system_a/system/bin/snapuserd"
+      ],
+      "input_classification": "extracted partition ELF"
+    },
+    {
+      "id": 84,
+      "name": "id-084",
+      "path": "trees/system_a/system/bin/update_engine",
+      "size": 2921728,
+      "sha256": "cc9962207240038b877d71d9fed4653ad640f74a3c560e8a9ff036ed9ce235e5",
+      "patched_sha256": "085cf45a2ada9123d26eca228d41f70e26671cd862cb5f08ec1db611e0780974",
+      "detector_va": 1726240,
+      "detector_offset": 1726240,
+      "detector_size": 50,
+      "context_hex": "b8010000004887f30fa24887f389c82500020000890516561100c1ea1a89c8c1e81421d0d1e921c183e101890d03561100c3cccccccccccccccccccccccccccc",
+      "patch_va": 1726255,
+      "patch_offset": 1726255,
+      "original_hex": "2500020000",
+      "replacement_hex": "2500000000",
+      "wrapper_va": 1728928,
+      "wrapper_offset": 1728928,
+      "wrapper_context_hex": "554889e553504889d04885f6741e4883f8407218833d954b110000740f4889c2e8bb04000089c3e9a604000089fbc1eb100fb7cf4883f80175470fb606488d14014881faf1ff0000488d84010f00ffff480f42c24801c34889d948c1e11048ba00000f00ffffffff4801ca4881fbf1ff0000480f42d14809c24889d3e9510400004885f674554883f81073754885c00f843b0300004889c24883e2070f84bf02000031ff6666662e0f1f840000000000440fb6043e4c01c14801cb48ffc74839",
+      "gate_va": 2862416,
+      "crc_gate_va": 2862420,
+      "vnni_va": 1730699,
+      "vnni_offset": 1730699,
+      "vnni_hex": "c4e23152f2",
+      "layout": "classic",
+      "elf_loads": [
+        [
+          0,
+          0,
+          583712,
+          583712,
+          4
+        ],
+        [
+          589824,
+          589824,
+          2199536,
+          2199536,
+          5
+        ],
+        [
+          2801664,
+          2801664,
+          44536,
+          45056,
+          6
+        ],
+        [
+          2850816,
+          2850816,
+          9093,
+          16209,
+          6
+        ]
+      ],
+      "call_va": 1728960,
+      "call_offset": 1728960,
+      "call_context_hex": "e8bb040000",
+      "helper_va": 1730176,
+      "helper_offset": 1730176,
+      "helper_context_hex": "89f8440fb7c0c1e81089d183e11f4883fa200f83e30000004589c24885c90f84b803000083f9100f82930000000fb6164101d24401d00fb656014401d201d00f",
+      "gate_check_va": 1728948,
+      "gate_check_offset": 1728948,
+      "gate_check_context_hex": "833d954b110000740f4889c2e8",
+      "source_aliases": [
+        "system_a/system/bin/update_engine"
+      ],
+      "input_classification": "extracted partition ELF"
+    },
+    {
+      "id": 88,
+      "name": "id-088",
+      "path": "trees/system_a/system/lib64/libfdtrack.so",
+      "size": 812640,
+      "sha256": "85c152dabedbb093ba762c1da9e16535a86be9241f62f8bc9c2d43e041411c1c",
+      "patched_sha256": "d7b2515b814f9b21c730519c714b6b12bec670c477f2571db66d33a94c921ae4",
+      "detector_va": 725872,
+      "detector_offset": 725872,
+      "detector_size": 50,
+      "context_hex": "b8010000004887f30fa24887f389c825000200008905be140600c1ea1a89c8c1e81421d0d1e921c183e101890dab140600c3cccccccccccccccccccccccccccc",
+      "patch_va": 725887,
+      "patch_offset": 725887,
+      "original_hex": "2500020000",
+      "replacement_hex": "2500000000",
+      "wrapper_va": 726848,
+      "wrapper_offset": 726848,
+      "wrapper_context_hex": "554889e553504889d04885f6741e4883f8407218833ded10060000740f4889c2e8bb04000089c3e9a604000089fbc1eb100fb7cf4883f80175470fb606488d14014881faf1ff0000488d84010f00ffff480f42c24801c34889d948c1e11048ba00000f00ffffffff4801ca4881fbf1ff0000480f42d14809c24889d3e9510400004885f674554883f81073754885c00f843b0300004889c24883e2070f84bf02000031ff6666662e0f1f840000000000440fb6043e4c01c14801cb48ffc74839",
+      "gate_va": 1124424,
+      "crc_gate_va": 1124428,
+      "vnni_va": 728619,
+      "vnni_offset": 728619,
+      "vnni_hex": "c4e23152f2",
+      "layout": "classic",
+      "elf_loads": [
+        [
+          0,
+          0,
+          135064,
+          135064,
+          4
+        ],
+        [
+          147456,
+          147456,
+          590224,
+          590224,
+          5
+        ],
+        [
+          753664,
+          753664,
+          28520,
+          28672,
+          6
+        ],
+        [
+          786432,
+          786432,
+          112,
+          338004,
+          6
+        ]
+      ],
+      "call_va": 726880,
+      "call_offset": 726880,
+      "call_context_hex": "e8bb040000",
+      "helper_va": 728096,
+      "helper_offset": 728096,
+      "helper_context_hex": "89f8440fb7c0c1e81089d183e11f4883fa200f83e30000004589c24885c90f84b803000083f9100f82930000000fb6164101d24401d00fb656014401d201d00f",
+      "gate_check_va": 726868,
+      "gate_check_offset": 726868,
+      "gate_check_context_hex": "833ded10060000740f4889c2e8",
+      "source_aliases": [
+        "system_a/system/lib64/libfdtrack.so"
+      ],
+      "input_classification": "extracted partition ELF"
+    },
+    {
+      "id": 122,
+      "name": "id-122",
+      "path": "trees/vendor_a/lib64/libz.so",
+      "size": 134464,
+      "sha256": "e45aecb65cbb40f0c3070b05aa9d974076d401ed6f2aff3081af26a14e812590",
+      "patched_sha256": "4fb7d55a477409c7da708b5e1866aa54d4513960ae2331c765038bd1b5971de9",
+      "detector_va": 71232,
+      "detector_offset": 71232,
+      "detector_size": 50,
+      "context_hex": "b8010000004887f30fa24887f389c825000200008905a6e90000c1ea1a89c8c1e81421d0d1e921c183e101890d93e90000c3cccccccccccccccccccccccccccc",
+      "patch_va": 71247,
+      "patch_offset": 71247,
+      "original_hex": "2500020000",
+      "replacement_hex": "2500000000",
+      "wrapper_va": 42784,
+      "wrapper_offset": 42784,
+      "wrapper_context_hex": "554889e54885f6740a4883fa400f839b00000089f8c1e8100fb7cf4883fa010f84df0100004885f60f84960000004883fa100f83ab0000004885d274340fb63e4989c84901f84c01c00fb64e014c01c14801c84883fa027418bf02000000440fb6043e4c01c14801c848ffc74839fa75ed488db10f00ffff4881f9f1ff0000480f42f148b9cdc52f0de1000f004889c2c4e2f3f6c929cad1ea01cac1ea0f69caf1ff000029c8c1e0104809f05dc3833d2b580100000f8458ffffffe8e0670000",
+      "gate_va": 131072,
+      "crc_gate_va": 131076,
+      "vnni_va": 69735,
+      "vnni_offset": 69735,
+      "vnni_hex": "c4c23152f3",
+      "layout": "libz",
+      "elf_loads": [
+        [
+          0,
+          0,
+          30336,
+          30336,
+          4
+        ],
+        [
+          32768,
+          32768,
+          71584,
+          71584,
+          5
+        ],
+        [
+          114688,
+          114688,
+          1208,
+          4096,
+          6
+        ],
+        [
+          131072,
+          131072,
+          0,
+          12,
+          6
+        ]
+      ],
+      "call_va": 42971,
+      "call_offset": 42971,
+      "call_context_hex": "e8e0670000",
+      "helper_va": 69568,
+      "helper_offset": 69568,
+      "helper_context_hex": "89f8440fb7c0c1e81089d183e11f4883fa200f824502000048c1ea05bf71800780c5f9efc0c5f96f0da30cffffc4e2795815be0cffffc5f96f1da20cffffc5f9",
+      "gate_check_va": 42958,
+      "gate_check_offset": 42958,
+      "gate_check_context_hex": "833d2b580100000f8458ffffff",
+      "source_aliases": [
+        "vendor_a/lib64/libz.so"
+      ],
+      "input_classification": "extracted partition ELF"
+    }
+  ]
+}

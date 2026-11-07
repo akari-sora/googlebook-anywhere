@@ -118,6 +118,42 @@ def sha256(path):
     with open(path, "rb") as f:
         for b in iter(lambda: f.read(16 << 20), b""): h.update(b)
     return h.hexdigest()
+
+def ally_bootstrap_initrd(prof, data, *, verify=False):
+    """Explicit Ally-only repair, preserving the ESP's complete bootconfig footer."""
+    if not prof.get("cpu_compat", {}).get("patch_ally_bootstrap", False):
+        return data, None
+    import ally_bootstrap
+    if not ally_bootstrap.enabled(prof):
+        raise ValueError("Ally bootstrap opt-in not enabled")
+    if len(data) < 20 or not data.endswith(b"#BOOTCONFIG\n"):
+        raise ValueError("Ally initrd bootconfig footer missing")
+    size, checksum = struct.unpack("<II", data[-20:-12])
+    if not 0 < size <= len(data) - 20:
+        raise ValueError("Ally initrd bootconfig size invalid")
+    start = len(data) - 20 - size
+    config = data[start:-20]
+    if sum(config) & 0xFFFFFFFF != checksum:
+        raise ValueError("Ally initrd bootconfig checksum mismatch")
+    body = data[:start]
+    if verify:
+        receipt = ally_bootstrap.verify_archive(body)
+        updated = data
+    else:
+        body, receipt = ally_bootstrap.patch_archive(body)
+        updated = body + data[start:]
+    receipt = dict(receipt, source_identity=ally_bootstrap.source_identity(),
+                   bootconfig_sha256=hashlib.sha256(data[start:]).hexdigest(),
+                   input_initrd_sha256=hashlib.sha256(data).hexdigest(),
+                   output_initrd_sha256=hashlib.sha256(updated).hexdigest())
+    return updated, receipt
+
+def check_ally_bootstrap_continuity(preparation, readback):
+    """Module-list edits may move offsets, never target metadata or bootconfig."""
+    for field in ("members", "bootconfig_sha256", "source_identity"):
+        if preparation[field] != readback[field]:
+            raise ValueError("Ally bootstrap final ESP continuity mismatch: " + field)
+
 def gpt(path):
     with open(path, "rb") as f:
         f.seek(512); h = f.read(92)
@@ -154,6 +190,7 @@ run("mcopy", "-o", "-i", f"{IMG}{ESP}", "::/initrd.img", OUT / "src-initrd.img")
 src = (OUT / "src-initrd.img").read_bytes()
 if USB_SMOKE:
     src = usb_smoke.rebind_bootconfig(src, old_parts["boot_a"]["guid"], PARTS["boot_a"]["guid"])
+src, ally_bootstrap_preparation = ally_bootstrap_initrd(PROF, src)
 assert src.endswith(b"#BOOTCONFIG\n")
 size, _ = struct.unpack("<II", src[-20:-12]); bc = src[-20 - size:]; body = src[:-20 - size]
 digest = (GBOS_OUT / "vendor/logs/vbmeta.digest.txt").read_text().split()[0]
@@ -349,6 +386,14 @@ assert present == sorted(ENTRIES), f"ESP loader/entries holds {present}, expecte
 assert mtype(IMG, "::/loader/loader.conf") == (OUT / "loader.conf").read_text()
 run("mcopy", "-o", "-i", f"{IMG}{ESP}", "::/initrd.img", OUT / "readback-initrd.img")
 assert (OUT / "readback-initrd.img").read_bytes() == (OUT / "initrd.img").read_bytes()
+_, ally_bootstrap_readback = ally_bootstrap_initrd(PROF, (OUT / "readback-initrd.img").read_bytes(), verify=True)
+if ally_bootstrap_readback is not None:
+    check_ally_bootstrap_continuity(ally_bootstrap_preparation, ally_bootstrap_readback)
+    proof = {"preparation": ally_bootstrap_preparation, "esp_readback": ally_bootstrap_readback,
+             "scope": "four bootstrap members only; not whole-image CPU or hardware acceptance"}
+    (OUT / "ally-bootstrap.json").write_text(json.dumps(proof, sort_keys=True, indent=2) + "\n")
+    with (GBOS_OUT / "build-info.txt").open("a") as stream:
+        stream.write("ally-bootstrap " + json.dumps(proof, sort_keys=True) + "\n")
 def install_checked_kernel(prof, kernel_dir, debug_opts, quiet_opts, read_bzimage, copy_kernel, read_shipped):
     """GBOS_DEV_KERNEL_DIR checks in this file, then the ESP copy of kernel.efi.
 
@@ -855,6 +900,12 @@ if DEV_KERNEL_DIR:
         checks["dev-kernel: gbos_efifb live in /proc/modules on safe entry"] = has(r"gbos-dev-modules: .*\bgbos_efifb\b")
         checks["dev-kernel: simpledrm not modprobed or live in /proc/modules on amd-hx370"] = (
             not has(r"modprobe [^\n]*\bsimpledrm\b") and not has(r"gbos-dev-modules: [^\n]*\bsimpledrm\b")
+        )
+    elif PROF["model"]["id"] == "rog-ally":
+        checks["dev-kernel: Ally safe entry: gbos_efifb live"] = has(r"gbos-dev-modules: .*\bgbos_efifb\b")
+        checks["dev-kernel: Ally safe entry: no native graphics or ACP70 load"] = (
+            not has(r"modprobe [^\n]*\b(?:amdgpu|simpledrm|snd[-_]sof[-_]amd[-_]acp70)\b")
+            and not has(r"gbos-dev-modules: [^\n]*\b(?:amdgpu|simpledrm|snd[-_]sof[-_]amd[-_]acp70)\b")
         )
     elif (Path(DEV_KERNEL_DIR) / "modules/amdgpu.ko").is_file():
         checks["dev-kernel: amdgpu.ko modprobe ran"] = has(r"Service 'exec \d+ \(/vendor/bin/modprobe --dirname=/vendor/lib/dev-modules amdgpu\)' \(pid \d+\) exited with status 0")

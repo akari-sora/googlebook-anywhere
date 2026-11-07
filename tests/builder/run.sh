@@ -19,12 +19,12 @@ expect() {  # expect <name> <exit code> <output regex> -- command...
     fi
 }
 
-for f in "$ROOT"/builder/*.sh "$ROOT"/builder/kmod/*.sh "$ROOT"/builder/camera/*.sh "$ROOT"/base/*.sh "$ROOT"/install/*.sh "$ROOT"/install/stick/*.sh "$ROOT"/tests/*/*.sh "$ROOT"/tools/release/*.sh "$ROOT"/tools/mesa/*.sh "$ROOT"/tools/minigbm/*.sh; do
-    [ -e "$f" ] || continue   # an unmatched glob (the release archive has no tools/release/*.sh)
+for f in "$ROOT"/builder/*.sh "$ROOT"/builder/kmod/*.sh "$ROOT"/builder/camera/*.sh "$ROOT"/base/*.sh "$ROOT"/install/*.sh "$ROOT"/install/stick/*.sh "$ROOT"/tests/*/*.sh "$ROOT"/tools/release/*.sh "$ROOT"/tools/mesa/*.sh "$ROOT"/tools/minigbm/*.sh "$ROOT"/devices/rog-ally/*/*.sh; do
+    [ -e "$f" ] || continue   # an unmatched glob (the release archive has no tools/release/*.sh or devices/rog-ally)
     bash -n "$f" && ok "bash -n ${f#$ROOT/}" || bad "bash -n ${f#$ROOT/}"
 done
 for f in "$ROOT"/builder/*.py "$ROOT"/builder/lib/*.py "$ROOT"/builder/ifma/*.py "$ROOT"/builder/kmod/*.py "$ROOT"/base/*.py "$ROOT"/install/stick/*.py "$ROOT"/install/probe/*.py \
-         "$ROOT"/profiles/*/*.py "$ROOT"/tests/*/*.py "$ROOT"/tools/mesa/*.py; do
+         "$ROOT"/profiles/*/*.py "$ROOT"/tests/*/*.py "$ROOT"/tools/mesa/*.py "$ROOT"/devices/rog-ally/*/*.py "$ROOT"/devices/rog-ally/profile-draft/*/*.py; do
     [ -e "$f" ] || continue
     python3 -m py_compile "$f" && ok "py_compile ${f#$ROOT/}" || bad "py_compile ${f#$ROOT/}"
 done
@@ -64,7 +64,18 @@ expect "maintenance host chroot resolution" 0 "^OK$" -- python3 "$ROOT/tests/sti
 expect "read-only shared source preview" 0 "^OK$" -- python3 "$ROOT/tests/stick/shared-source-test.py"
 expect "shared QEMU controller contracts" 0 "^OK$" -- python3 "$ROOT/tests/stick/shared-qemu-controller-pure-test.py"
 expect "shared operation confirmation controller" 0 "^OK$" -- python3 "$ROOT/tests/stick/universal-controller-test.py"
-expect "shared controller regular-image integration" 0 "^OK$" -- python3 "$ROOT/tests/stick/universal-controller-integration.py"
+# Report a fully skipped integration suite as SKIP, not a hardware or fixture pass.
+out=$(python3 "$ROOT/tests/stick/universal-controller-integration.py" 2>&1); rc=$?
+ran=$(printf '%s\n' "$out" | sed -nE 's/^Ran ([0-9]+) tests? in .*/\1/p')
+skipped=$(printf '%s\n' "$out" | sed -nE 's/^OK \(skipped=([0-9]+)\)$/\1/p')
+if [ "$rc" = 0 ] && [ -n "$ran" ] && [ "$ran" = "$skipped" ]; then
+    echo "SKIP shared controller regular-image integration (all $ran tests skipped)"
+elif [ "$rc" = 0 ] && printf '%s\n' "$out" | grep -Eq '^OK$'; then
+    ok "shared controller regular-image integration"
+else
+    bad "shared controller regular-image integration (rc=$rc)"
+    printf '%s\n' "$out" | tail -n 80
+fi
 expect "shared source Linux fixture integration" 0 "^OK" -- python3 "$ROOT/tests/stick/shared-source-integration.py"
 expect "display.density option (tests/builder/density-test.py)" 0 "density tests: [0-9]+ passed, 0 failed" -- python3 "$ROOT/tests/builder/density-test.py"
 expect "shipped module firmware (tests/builder/firmware-test.py)" 0 "firmware tests: [0-9]+ passed, 0 failed, 0 skipped" -- python3 "$ROOT/tests/builder/firmware-test.py"
@@ -76,6 +87,23 @@ expect "QEMU framework acceptance" 0 "^OK$" -- python3 -B "$ROOT/tests/builder/q
 expect "QEMU chain userdata write trace" 0 "^OK$" -- python3 -B "$ROOT/tests/builder/qemu-write-trace-test.py"
 expect "lapis base build pins and final hash guard" 0 "lapis base pins tests: [0-9]+ passed, 0 failed" -- python3 "$ROOT/tests/builder/lapis-base-pins-test.py"
 expect "lapis IFMA build selection and identity guards" 0 "lapis IFMA pins: [0-9]+ passed, 0 failed" -- python3 "$ROOT/tests/builder/lapis-ifma-pins-test.py"
+expect "IFMA PE/COFF scanner coverage (tests/builder/ifma-pe-tests.py)" 0 "^OK$" -- python3 -B "$ROOT/tests/builder/ifma-pe-tests.py"
+expect "APEX keyset startup policy (tests/builder/apex-startup-policy-tests.py)" 0 "^OK$" -- python3 -B "$ROOT/tests/builder/apex-startup-policy-tests.py"
+expect "devprofile decoder lifecycle (tests/builder/devprofile-decoder-lifecycle-tests.py)" 0 "^OK$" -- python3 -B "$ROOT/tests/builder/devprofile-decoder-lifecycle-tests.py"
+expect "Ally Adler APEX integration (tests/builder/ally-apex-integration-tests.py)" 0 "^OK$" -- python3 -B "$ROOT/tests/builder/ally-apex-integration-tests.py"
+expect "Ally Microdroid integration (tests/builder/ally-microdroid-integration-tests.py)" 0 "^OK( \\(skipped=[0-9]+\\))?$" -- python3 -B "$ROOT/tests/builder/ally-microdroid-integration-tests.py"
+expect "Ally Microdroid unit tests (tests/builder/ally-microdroid-tests.py)" 0 "^OK$" -- python3 -B "$ROOT/tests/builder/ally-microdroid-tests.py"
+expect "Ally module routing (tests/builder/ally-module-routing-tests.py)" 0 "^OK$" -- python3 -B "$ROOT/tests/builder/ally-module-routing-tests.py"
+expect "Ally vendor additions policy (tests/builder/ally-vendor-additions-policy-tests.py)" 0 "^OK$" -- python3 -B "$ROOT/tests/builder/ally-vendor-additions-policy-tests.py"
+if [ -f "$ROOT/devices/rog-ally/profile-draft/rog-ally/profile.toml" ] && [ -f "$ROOT/devices/rog-ally/step3/test-init-scalar.py" ] && [ -f "$ROOT/devices/rog-ally/step4/test-linker-scalar.py" ]; then
+    expect "Ally Adler32 VEX patcher (tests/builder/ally-adler-tests.py)" 0 "^OK( \\(skipped=[0-9]+\\))?$" -- python3 -B "$ROOT/tests/builder/ally-adler-tests.py"
+    expect "Ally initrd bootstrap patcher (tests/builder/ally-bootstrap-tests.py)" 0 "^OK$" -- python3 -B "$ROOT/tests/builder/ally-bootstrap-tests.py"
+    expect "Ally image integration and profile draft (tests/builder/ally-image-integration-tests.py)" 0 "^OK$" -- python3 -B "$ROOT/tests/builder/ally-image-integration-tests.py"
+    expect "Ally step3 init scalar patcher (devices/rog-ally/step3/test-init-scalar.py)" 0 "^OK$" -- python3 -B "$ROOT/devices/rog-ally/step3/test-init-scalar.py"
+    expect "Ally step4 linker64 scalar patcher (devices/rog-ally/step4/test-linker-scalar.py)" 0 "^OK$" -- python3 -B "$ROOT/devices/rog-ally/step4/test-linker-scalar.py"
+else
+    echo "SKIP Ally device-tree fixture tests (release omits profile draft and development tests)"
+fi
 # tools/release/png-ok.py: the only binary files the public export and the release archive accept (docs/images/*.png)
 expect "png-ok accepts the screenshots and refuses hidden payloads (tests/builder/png-ok-test.py)" 0 "png-ok tests: [0-9]+ passed, 0 failed" -- python3 "$ROOT/tests/builder/png-ok-test.py"
 # the release archive builds from this checkout (git only: the release archive itself has no .git)
@@ -113,6 +141,8 @@ if [ -f "$ROOT/tools/release/make-release.sh" ] && [ "$(git -C "$ROOT" rev-parse
     fi
     expect "an installer from the extracted release archive can import ifma (manifest present)" 0 "^ifma import ok$" -- \
         env PYTHONDONTWRITEBYTECODE=1 python3 -I -c 'import sys; sys.path.insert(0, sys.argv[1]); import ifma; assert ifma.MANIFEST_PATH.is_file(), ifma.MANIFEST_PATH; print("ifma import ok")' "$rel_root/builder/lib"
+    expect "extracted release archive verifies pinned Ally bootstrap helpers" 0 "^Ally helper pins ok$" -- \
+        env PYTHONDONTWRITEBYTECODE=1 python3 -I -c 'import sys; sys.path.insert(0, sys.argv[1]); import ally_bootstrap; assert len(ally_bootstrap.source_identity()["sources"]) == 4; print("Ally helper pins ok")' "$rel_root/builder/lib"
     expect "extracted release archive passes tests/builder/profile-test.py" 0 "profile tests: [0-9]+ passed, 0 failed" -- python3 "$rel_root/tests/builder/profile-test.py"
     expect "extracted release archive passes tests/builder/run.sh" 0 "builder tests: [0-9]+ passed, 0 failed" -- bash "$rel_root/tests/builder/run.sh"
 else

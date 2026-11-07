@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Scan extracted image trees for VEX-encoded vpmadd52luq/vpmadd52huq.
 
-Every raw VEX3 candidate in file-backed x86 ELF executable regions is retained.
+Every raw VEX3 candidate in x86 ELF or AMD64 PE executable regions is retained.
 Disassembly and GNU-hash validation are annotations, never permission to drop a
 candidate. Only exact manifest identities can accept residuals/non-instructions.
 Unsupported, unopenable, or too-deep nested images fail closed unless their exact
@@ -494,15 +494,110 @@ def _elf_segments(stream, size, source, allow_truncated=False):
     }
 
 
-def _scan_stream(stream, size, source, allow_truncated=False):
+def _pe_segments(stream, size, source, *, effective_suffix=None):
+    """Bounded EFI PE32+ AMD64 mappings, not a firmware-loader validator.
+
+    Linux EFI stubs legitimately use zero ImageBase, short optional headers,
+    32-byte alignment and virtual slack. Do not impose Windows-only alignment
+    or section-name heuristics. The complete raw executable span is scanned;
+    max(raw size, VirtualSize) describes its conservative loaded extent.
+    """
+    suffix = Path(source).suffix.lower() if effective_suffix is None else effective_suffix
+    prefix = _read_exact(stream, 0, min(size, 2), source)
+    if prefix != b"MZ":
+        if suffix == ".efi":
+            raise ScanError(f"{source}: EFI executable is missing its MZ header")
+        return None
+    if size < 64:
+        raise ScanError(f"{source}: truncated PE DOS header")
+    pe_offset = struct.unpack("<I", _read_exact(stream, 0x3c, 4, source))[0]
+    # Existing non-EFI HdrS bzImages may carry MZ without a PE header. Their
+    # declared payload still goes through the existing strict decoder. They
+    # acquire no PE executable-coverage claim, and .efi never takes this path.
+    if pe_offset == 0 and suffix != ".efi" and size >= 0x206:
+        if _read_exact(stream, 0x202, 4, source) == b"HdrS":
+            return None
+    if pe_offset < 64 or pe_offset > size - 24:
+        raise ScanError(f"{source}: invalid PE header offset")
+    header = _read_exact(stream, pe_offset, 24, source)
+    if header[:4] != b"PE\0\0":
+        raise ScanError(f"{source}: invalid PE signature")
+    machine, count, _, _, _, optional_size, characteristics = struct.unpack_from(
+        "<HHIIIHH", header, 4,
+    )
+    if machine != 0x8664 or not characteristics & 0x0002:
+        raise ScanError(f"{source}: unsupported PE machine or non-executable image")
+    optional_offset = pe_offset + 24
+    if not 0 < count <= 4096 or optional_size < 112 or optional_size > size - optional_offset:
+        raise ScanError(f"{source}: invalid PE optional header or section count")
+    optional = _read_exact(stream, optional_offset, optional_size, source)
+    magic = struct.unpack_from("<H", optional)[0]
+    subsystem = struct.unpack_from("<H", optional, 68)[0]
+    if magic != 0x20b or subsystem not in (10, 11, 12):
+        raise ScanError(f"{source}: unsupported PE optional magic or subsystem")
+    directories = struct.unpack_from("<I", optional, 108)[0]
+    entry = struct.unpack_from("<I", optional, 16)[0]
+    image_base = struct.unpack_from("<Q", optional, 24)[0]
+    image_size, headers_size = struct.unpack_from("<II", optional, 56)
+    table = optional_offset + optional_size
+    if (
+        112 + directories * 8 > optional_size
+        or count > (size - table) // 40
+        or not table + count * 40 <= headers_size <= size
+        or not headers_size <= image_size
+        or image_base + image_size > 2**64
+    ):
+        raise ScanError(f"{source}: invalid PE table or image bounds")
+    raw_spans, virtual_spans, segments, mappings = [], [], [], []
+    for index in range(count):
+        section = _read_exact(stream, table + index * 40, 40, source)
+        virtual_size, rva, raw_size, raw_offset = struct.unpack_from("<IIII", section, 8)
+        flags = struct.unpack_from("<I", section, 36)[0]
+        mapped_size = max(virtual_size, raw_size)
+        if raw_size:
+            if raw_offset < headers_size or raw_offset > size or raw_size > size - raw_offset:
+                raise ScanError(f"{source}: PE section {index} raw range is outside the file or headers")
+            raw_spans.append((raw_offset, raw_offset + raw_size))
+        if mapped_size:
+            if rva < headers_size or rva > image_size or mapped_size > image_size - rva:
+                raise ScanError(f"{source}: PE section {index} virtual range is outside the image or headers")
+            virtual_spans.append((rva, rva + mapped_size))
+        if flags & 0x20000000 and mapped_size:
+            region = ("pe-section", index, raw_offset, image_base + rva, raw_size)
+            mappings.append((region, mapped_size))
+            if raw_size:
+                segments.append(region)
+    for spans in (raw_spans, virtual_spans):
+        previous_end = -1
+        for start, end in sorted(spans):
+            if start < previous_end:
+                raise ScanError(f"{source}: overlapping PE section ranges")
+            previous_end = end
+    if not entry or sum(
+        region[3] <= image_base + entry < region[3] + region[4]
+        for region in segments
+    ) != 1:
+        raise ScanError(f"{source}: PE entry point is not uniquely file-backed executable data")
+    return {"format": "pe", "x86": True, "segments": segments,
+            "executable_mappings": mappings}
+
+
+def _scan_stream(stream, size, source, allow_truncated=False, *, effective_suffix=None):
     layout = _elf_segments(stream, size, source, allow_truncated=allow_truncated)
     if layout is None:
-        return {"elf": False, "x86": False, "segments": 0, "bytes": 0, "hits": []}
-    if not layout["x86"]:
+        layout = _pe_segments(stream, size, source, effective_suffix=effective_suffix)
+        if layout is None:
+            return {"elf": False, "x86": False, "segments": 0, "bytes": 0, "hits": []}
+    elif not layout["x86"]:
         return {"elf": True, "x86": False, "segments": 0, "bytes": 0, "hits": []}
+    return _scan_mapped_stream(stream, size, source, layout)
+
+
+def _scan_mapped_stream(stream, size, source, layout):
+    """Shared raw-candidate engine; only ELF PT_LOAD regions expand to pages."""
 
     found = {}
-    def record_hit(file_offset, virtual_address, mnemonic, encoding, region):
+    def record_hit(file_offset, virtual_address, mnemonic, encoding, region, zero_fill=False):
         region_kind, segment_index, offset, vaddr, filesz = region
         found[(file_offset, virtual_address, encoding)] = {
             "source": source,
@@ -516,6 +611,8 @@ def _scan_stream(stream, size, source, allow_truncated=False):
             "_region_virtual_address": vaddr,
             "_region_size": filesz,
         }
+        if zero_fill and layout.get("format") == "pe":
+            found[(file_offset, virtual_address, encoding)]["crosses_zero_fill"] = True
 
     mappings = sorted(
         layout.get("executable_mappings", ()),
@@ -617,7 +714,9 @@ def _scan_stream(stream, size, source, allow_truncated=False):
                         file_offset, virtual_address, hit_region = boundary_mappings[edge_offset]
                         if file_offset is not None:
                             record_hit(file_offset, virtual_address, mnemonic,
-                                       boundary[edge_offset:edge_offset + VEX_INSN_LENGTH], hit_region)
+                                       boundary[edge_offset:edge_offset + VEX_INSN_LENGTH], hit_region,
+                                       any(item[0] is None for item in boundary_mappings[
+                                           edge_offset:edge_offset + VEX_INSN_LENGTH]))
 
                 if head_size:
                     scan_edge(head, head_mappings)
@@ -654,16 +753,19 @@ def _scan_stream(stream, size, source, allow_truncated=False):
             region = (*first[:4], length)
             page_mappings.append((region, mapped_length))
     scan_virtual_edges(page_mappings)
-    return {
-        "elf": True,
+    result = {
+        "elf": layout.get("format") != "pe",
         "x86": True,
         "segments": len(layout["segments"]),
         "bytes": bytes_scanned,
         "hits": [found[key] for key in sorted(found)],
-        "_elf_type": layout["elf_type"],
+        "_elf_type": layout.get("elf_type"),
         "_regions": layout["segments"],
         "_gnu_hash_ranges": layout.get("gnu_hash_ranges", []),
     }
+    if layout.get("format") == "pe":
+        result["pe"] = True
+    return result
 
 
 def _find_disassembler():
@@ -821,7 +923,7 @@ def scan_elf_bytes(data, source="<bytes>"):
     return _public_scan_result(_scan_stream(io.BytesIO(data), len(data), source))
 
 
-def scan_file(path, source=None, *, allow_truncated=False):
+def scan_file(path, source=None, *, allow_truncated=False, effective_suffix=None):
     """Scan one filesystem file without loading its executable segments whole."""
     path = Path(path)
     before = path.lstat()
@@ -830,7 +932,7 @@ def scan_file(path, source=None, *, allow_truncated=False):
     with path.open("rb") as stream:
         result = _scan_stream(
             stream, before.st_size, source or str(path),
-            allow_truncated=allow_truncated,
+            allow_truncated=allow_truncated, effective_suffix=effective_suffix,
         )
         after = os.fstat(stream.fileno())
     identity_before = (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns)
@@ -846,6 +948,8 @@ def _new_report(label):
         "regular_files": 0,
         "elf_files": 0,
         "x86_elf_files": 0,
+        "pe_files": 0,
+        "x86_pe_files": 0,
         "executable_segments": 0,
         "executable_bytes": 0,
         "raw_candidates": 0,
@@ -862,7 +966,9 @@ def _new_report(label):
 
 def _merge_scan(report, result):
     report["elf_files"] += int(result["elf"])
-    report["x86_elf_files"] += int(result["x86"])
+    report["x86_elf_files"] += int(result["elf"] and result["x86"])
+    report["pe_files"] += int(result.get("pe", False))
+    report["x86_pe_files"] += int(result.get("pe", False) and result["x86"])
     report["executable_segments"] += result["segments"]
     report["executable_bytes"] += result["bytes"]
     report["raw_candidates"] += result["raw_candidates"]
@@ -1021,17 +1127,21 @@ def _observe_object(path, provenance, state):
     return digest
 
 
-def _merge_file_scan(path, source, provenance, state, *, allow_truncated_elf=False):
+def _merge_file_scan(
+    path, source, provenance, state, *, allow_truncated_elf=False, effective_suffix=None,
+):
     digest = _observe_object(path, provenance, state)
     try:
-        result = scan_file(path, source)
+        result = scan_file(path, source, effective_suffix=effective_suffix)
     except ScanError:
         if not allow_truncated_elf:
             raise
-        result = scan_file(path, source, allow_truncated=True)
+        result = scan_file(path, source, allow_truncated=True, effective_suffix=effective_suffix)
     if result["elf"]:
         _coverage_object(path, source, provenance, state,
                          "x86_elf" if result["x86"] else "non_x86_elf")
+    elif result.get("pe"):
+        _coverage_object(path, source, provenance, state, "x86_pe")
     if result["hits"]:
         digest = digest or _sha256_file(path)
         for hit in result["hits"]:
@@ -2615,7 +2725,7 @@ def _scan_cpio(path, display, provenance, state, depth):
             if stat.S_ISREG(mode):
                 source = f"{display}!/{name}"
                 member_provenance = provenance + ({"kind": "cpio_member", "path": name},)
-                if payload[:4] == b"\x7fELF":
+                if payload[:4] == b"\x7fELF" or payload[:2] == b"MZ" or Path(name).suffix.lower() == ".efi":
                     destination = _temporary_path(state, "ifma-cpio-")
                     try:
                         destination.write_bytes(payload)
@@ -2722,7 +2832,8 @@ def _partial_member_scan(destination, scan):
 def _scan_zip_member(archive, info, source, member_provenance, state, depth):
     with archive.open(info, "r") as member:
         prefix = member.read(1082)
-        if prefix[:4] == b"\x7fELF":
+        suffix = Path(info.filename).suffix.lower()
+        if prefix[:4] == b"\x7fELF" or prefix[:2] == b"MZ" or suffix == ".efi":
             destination = _temporary_path(state, "ifma-zip-")
             try:
                 with _partial_member_scan(destination, lambda: _merge_file_scan(
@@ -2732,10 +2843,16 @@ def _scan_zip_member(archive, info, source, member_provenance, state, depth):
                         out.write(prefix)
                         shutil.copyfileobj(member, out, 1024 * 1024)
                 _merge_file_scan(destination, source, member_provenance, state)
+                if prefix[:2] == b"MZ":
+                    # PE outer mappings and an HdrS payload are independent
+                    # executable surfaces. A hybrid must follow both routes.
+                    _scan_nested_path(
+                        destination, source, member_provenance, state,
+                        depth + 1, suffix=suffix,
+                    )
             finally:
                 destination.unlink(missing_ok=True)
             return
-        suffix = Path(info.filename).suffix.lower()
         is_nested = (suffix in IMAGE_SUFFIXES
                      or _image_kind_from_prefix(prefix) is not None
                      or prefix.startswith(b"\0"))
@@ -2779,8 +2896,14 @@ def _scan_nested_path(path, display, provenance, state, depth, suffix=None):
             magic_offset, kind = padded
     suffix = suffix if suffix is not None else path.suffix.lower()
     with path.open("rb") as stream:
-        if stream.read(4) == b"\x7fELF":
+        prefix = stream.read(4)
+        if prefix == b"\x7fELF":
             return
+    pe_hybrid = prefix[:2] == b"MZ" and kind == "bzimage"
+    if prefix[:2] == b"MZ" and kind is None:
+        # Already scanned by _merge_file_scan / scan_elf_bytes; do not falsely
+        # reclassify PE executables as ordinary data or count them twice.
+        return
     if kind is None and suffix not in IMAGE_SUFFIXES:
         _coverage_object(path, display, provenance, state, "data")
         return
@@ -2797,8 +2920,12 @@ def _scan_nested_path(path, display, provenance, state, depth, suffix=None):
         )
     except ImageOpenError as exc:
         # The only pinnable exit (see the ImageOpenError allowlist).
+        if pe_hybrid:
+            _raise_if_forbidden_hits(state)
         _unsupported(path, display, provenance, state, str(exc))
     except ScanError:
+        if pe_hybrid:
+            _raise_if_forbidden_hits(state)
         raise
     except Exception as exc:
         # Catch-all: an unexpected library/parser exception is refused,
@@ -2992,9 +3119,11 @@ def _scan_decoded_payload_body(
     member = "vmlinux" if kind == "bzimage" else f"<{kind}>"
     child = provenance + ({"kind": kind + "_payload", "path": member},)
     source = f"{display}!/{member}"
+    # Diagnostic provenance markers are not a filename; retain the decoded leaf hint.
+    effective_suffix = _decoded_inner_suffix(source)
     _merge_file_scan(
         path, source, child, state,
-        allow_truncated_elf=allow_truncated_elf,
+        allow_truncated_elf=allow_truncated_elf, effective_suffix=effective_suffix,
     )
     in_initramfs = (
         _in_initramfs_context(provenance, display, state)
@@ -3035,7 +3164,7 @@ def _scan_decoded_payload_body(
         return
     _scan_nested_path(
         path, source, child, state, depth + 1,
-        suffix=_decoded_inner_suffix(source),
+        suffix=effective_suffix,
     )
 
 
@@ -3519,6 +3648,7 @@ def main(argv=None):
         Path(args.report).write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     print(
         f"ifma-scan: clean: {report['x86_elf_files']} x86 ELFs, "
+        f"{report['x86_pe_files']} AMD64 PEs, "
         f"{report['executable_segments']} executable segments, "
         f"{report['executable_bytes']} executable bytes; "
         f"raw_candidates={report['raw_candidates']}, "

@@ -97,7 +97,7 @@ result = subprocess.run([sys.executable, "-I", "-B", "-c", code, str(ROOT / "bui
                         env=env, capture_output=True, text=True)
 check(result.returncode == 0, "selected AVB identity accepts exact source and rejects wrong base")
 
-pastel_code = """import sys;sys.path.insert(0,sys.argv[1]);import devprofile,ifma
+pastel_code = """import os,sys;sys.path.insert(0,sys.argv[1]);import devprofile,ifma
 _,non_default,_=ifma._manifest_scan_policy(ifma.MANIFEST_PATH)
 _,non_pastel,_=ifma._manifest_scan_policy(ifma.MANIFEST_PATH,include_pastel=True)
 assert not any(ifma._is_pastel_vendor_pin(r) for r in non_default)
@@ -106,7 +106,10 @@ assert len(pastel_pins)==1 and pastel_pins[0]["file_offset"]=="0x17a50ef" and pa
 assert not ifma._vendor_has_pastel(devprofile.load(sys.argv[2]))
 assert ifma._vendor_has_pastel(devprofile.load(sys.argv[3]))
 assert ifma._vendor_has_pastel(devprofile.load(sys.argv[4]))
-assert not ifma._vendor_has_pastel({"display": None, "model": None})
+if os.path.isdir(sys.argv[5]):
+    assert not ifma._vendor_has_pastel(devprofile.load(sys.argv[5]))
+assert not ifma._vendor_has_pastel({"cpu_compat": {"patch_ally_bootstrap": True}, "display": {"stack": "gop-swiftshader"}})
+assert not ifma._vendor_has_pastel({"cpu_compat": None, "display": None, "model": None})
 """
 result = subprocess.run(
     [
@@ -115,6 +118,7 @@ result = subprocess.run(
         str(ROOT / "profiles/kano"),
         str(ROOT / "profiles/amd-hx370"),
         str(ROOT / "profiles/generic-x86"),
+        str(ROOT / "devices/rog-ally/profile-draft/rog-ally"),
     ],
     env=env, capture_output=True, text=True,
 )

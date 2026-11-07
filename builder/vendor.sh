@@ -583,12 +583,15 @@ if missing_ko:
 hw_head = devprofile.append_module_boot(hw_head, prof)
 dev_kmod_boot = ""
 dev_wifi_hook = ""
-if os.environ.get("GBOS_DEV_KERNEL_DIR") and (Path(os.environ["GBOS_DEV_KERNEL_DIR"]) / "modules/amdgpu.ko").is_file():
+if os.environ.get("GBOS_DEV_KERNEL_DIR") and (prof["model"]["id"] == "rog-ally" or
+        (Path(os.environ["GBOS_DEV_KERNEL_DIR"]) / "modules/amdgpu.ko").is_file()):
     # amd-hx370 handles graphics in /vendor/etc/amd-hx370-graphics.sh on early-boot (safe entry: gbos_efifb +
     # pastel with amdgpu blacklisted; experimental native entry: modprobe amdgpu once, never gbos_efifb).
+    # Ally's current safe profile uses gbos_efifb + SwiftShader, not native amdgpu/simpledrm.
+    # Its HDA/CS35L41 audio bring-up is also separate from this legacy ACP70 fallback.
     # Other profiles keep the boot_completed load of amdgpu + snd-sof-amd-acp70 + simpledrm.
     # KANO's no-GPU QEMU self-test cannot exercise that trigger.
-    if prof["model"]["id"] != "amd-hx370":
+    if prof["model"]["id"] not in ("amd-hx370", "rog-ally"):
         dev_kmod_boot = (
             "    exec_background u:r:vendor_modprobe:s0 -- /vendor/bin/modprobe --dirname=/vendor/lib/dev-modules amdgpu\n"
             "    exec_background u:r:vendor_modprobe:s0 -- /vendor/bin/modprobe --dirname=/vendor/lib/dev-modules snd-sof-amd-acp70\n"
@@ -1795,6 +1798,7 @@ def range_sha256(path, offset, size):
 
 if patch_ifma == "true":
     for label, offset, size, expected in (
+        ("vendor", vendor_off, vendor_size, tmp / "vendor.img"),
         ("system", system_off, system_size, sys_img),
         ("system_ext", system_ext_off, system_ext_size, system_ext_img),
     ):

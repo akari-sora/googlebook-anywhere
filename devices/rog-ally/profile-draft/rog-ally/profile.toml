@@ -1,0 +1,255 @@
+# Build-acceptance draft only; no Ally boot or image validation.
+# SDHCI, UCSI and PMF dependencies are built but safety-blocked.
+# WMI/Armoury and downstream Ally HID are blocked pending runtime/source safety remediation.
+# modules.load/unblock remain empty: the immutable safety allowlist has no rog-ally rows.
+# AVX-VNNI remediation is separate; patch_ifma alone does not make Zen 4 bootable.
+# Round 2: Phoenix SMU 13.0.4 has no init_microcode callback; no separate smu_*.bin pin applies.
+# Signed regulatory.db and regulatory.db.p7s pins live in wireless-regdb.toml beside this file.
+# The current builder accepts only linux-firmware/sof-bin sources; stage the signed pair with
+# work/round2/stage-regdb.py before final image firmware closure. Image packing is not verified.
+schema = 1
+kmods = ["gbos_efifb"]
+
+[model]
+id = "rog-ally"
+name = "ASUS ROG Ally RC71L (kernel acceptance draft)"
+status = "probe-only"              # verified | experimental | probe-only
+image_name = "googlebook-rog-ally.img"
+dmi = {}
+
+[entries]                            # systemd-boot menu titles
+quiet = "Googlebook ROG Ally safe"
+debug = "Googlebook ROG Ally debug (no hardware validation)"
+
+[cmdline]
+stock_drop = ["snd_intel_sdw_acpi.sdw_link_mask=0x5", "xe.enable_psr=1", "snd_sof_pci.ipc_type=1"]
+add = ["loglevel=8", "ignore_loglevel"]
+tail = ["erst_disable"]
+debug_drop = []
+pci_stub_ids = []
+first_stage_drop = []
+
+[blacklist]
+# the same EC/TPM/SPI/firmware-path list as the KANO profile: blacklisting a module a machine does not have costs nothing
+modules = ["cros_ec_debugfs", "tpm_tis_i2c_cr50", "cros_ec_lpcs", "cros_ec_usb", "spi_intel_pci", "spi_intel", "i2c_dev",
+           "thunderbolt", "tpm", "tpm_tis", "tpm_tis_core", "tpm_tis_spi", "cros_ec", "cros_ec_dev", "cros_ec_chardev",
+           "gsmi", "chromeos_acpi", "nvram", "mtd", "spi_nor", "spidev", "intel_quicki2c", "intel_quickspi",
+           "at24", "cros_hps_i2c", "i2c_cros_ec_tunnel", "cros_peripheral_charger",
+           "cros_ec_spi", "cros_ec_i2c", "cros_ec_ishtp", "cros_ec_sysfs", "cros_ec_vbc", "cros_ec_typec", "cros_typec_switch",
+           "cros_usbpd_notify", "cros_usbpd_charger", "cros_usbpd_logger", "cros_charge_control", "cros_ec_ucsi", "cros_ec_keyb",
+           "cros_ec_sensorhub", "cros_ec_sensors_core", "cros_ec_sensors", "cros_ec_accel_legacy", "cros_ec_baro",
+           "cros_ec_lid_angle", "cros_ec_light_prox", "cros_ec_lightbar", "cros_ec_pwrmon", "cros_ec_cec", "leds_cros_ec",
+           "hid_google_hammer", "wilco_ec", "wilco_charger", "wilco_ec_debugfs", "wilco_ec_telem", "rtc_wilco_ec",
+           "cros_ec_proto", "cros_kbd_led_backlight",
+           "tpm_crb", "ccp", "ccp_crypto", "tee", "amdtee", "spi_amd", "spi_amd_pci", "spi_intel_platform", "intel_thc", "ee1004", "amd_sfh", "sp5100_tco", "sdhci_pci", "sdhci_acpi", "ucsi_acpi", "amd_pmf", "hid_asus_ally", "asus_armoury", "asus_wmi", "asus_nb_wmi", "amdgpu", "i2c_designware_platform"]
+debug_add = []
+quiet_add = []
+allow = []
+
+[firmware_sources]
+linux_firmware_tag = "20260810"
+sof_bin_url = ""
+sof_bin_sha256 = ""
+
+[audio]
+card = ""
+config_dir = ""
+sources = ""
+
+[wifi]
+modprobe = []
+
+[modules]
+unblock = []
+load = []
+
+[display]
+stack = "gop-swiftshader"
+# the GOP framebuffer device has one plane and no colour pipeline: SurfaceFlinger composes everything (client), and the
+# drm_hwcomposer colour pipeline, HDR and log gamma LUT are off (the settings the QEMU proof ran with)
+hwc_backend = "client"
+build_prop_set = [["vendor.hwc.drm.enable_color_pipeline", "true", "false"],
+                  ["vendor.hwc.drm.force_color_mode", "13", "0"],
+                  ["vendor.hwc.drm.persistent_hdr", "true", "false"],
+                  ["vendor.hwc.use_log_gamma_lut", "true", "false"],
+                  ["ro.surface_flinger.has_wide_color_display", "true", "false"],
+                  ["ro.surface_flinger.has_HDR_display", "true", "false"]]
+
+[input]
+kbd_backlight_leds = ""
+power_button = "stock"
+
+[cpu_compat]
+patch_ifma = true
+patch_ally_bootstrap = true            # two exact initrd members only, not whole-image ISA acceptance
+
+[hooks]
+vendor = "vendor.py"                  # display() only
+
+[[firmware]]
+path = "mediatek/WIFI_MT7922_patch_mcu_1_1_hdr.bin"
+from = "linux-firmware"
+src = "mediatek/WIFI_MT7922_patch_mcu_1_1_hdr.bin"
+sha256 = "7fc9075d6d54b31e0539734614ca971fa52caf41b642a3000c8a4501591a4d98"
+loaded_by = "vendor:lib/dev-modules/mt7921e.ko"
+
+[[firmware]]
+path = "mediatek/WIFI_RAM_CODE_MT7922_1.bin"
+from = "linux-firmware"
+src = "mediatek/WIFI_RAM_CODE_MT7922_1.bin"
+sha256 = "d100e5e04c324fc8da6302112d1e0b4fac952286447d2419eabcd8fb0a1f5b93"
+loaded_by = "vendor:lib/dev-modules/mt7921e.ko"
+
+[[firmware]]
+path = "mediatek/BT_RAM_CODE_MT7922_1_1_hdr.bin"
+from = "linux-firmware"
+src = "mediatek/BT_RAM_CODE_MT7922_1_1_hdr.bin"
+sha256 = "299942dbec7d34af030670ea59f9f7b4fd5c64e738b9e0157d76f4dd3beb190f"
+loaded_by = "vendor:lib/dev-modules/btmtk.ko"
+
+[[firmware]]
+path = "amdgpu/gc_11_0_1_pfp.bin"
+from = "linux-firmware"
+src = "amdgpu/gc_11_0_1_pfp.bin"
+sha256 = "fb1ee527c05c55679c80a8bcf60fbb533724891baeb0eabc2917fc44e63a45dc"
+loaded_by = "vendor:lib/dev-modules/amdgpu.ko"
+
+[[firmware]]
+path = "amdgpu/gc_11_0_1_me.bin"
+from = "linux-firmware"
+src = "amdgpu/gc_11_0_1_me.bin"
+sha256 = "476db2ec7e33d1e126b1736649208443e3ccc68aa60e4978574cdbced2b26543"
+loaded_by = "vendor:lib/dev-modules/amdgpu.ko"
+
+[[firmware]]
+path = "amdgpu/gc_11_0_1_mec.bin"
+from = "linux-firmware"
+src = "amdgpu/gc_11_0_1_mec.bin"
+sha256 = "505ae64eccb2e4b4751fe18ec1b584e1f6b4c81d0f5ec089afbcf378cad59711"
+loaded_by = "vendor:lib/dev-modules/amdgpu.ko"
+
+[[firmware]]
+path = "amdgpu/gc_11_0_1_rlc.bin"
+from = "linux-firmware"
+src = "amdgpu/gc_11_0_1_rlc.bin"
+sha256 = "5f07dc1f0a75ecd9cb56d805ea869184a50ed9e43d811ebf833b8906534650ef"
+loaded_by = "vendor:lib/dev-modules/amdgpu.ko"
+
+[[firmware]]
+path = "amdgpu/gc_11_0_1_imu.bin"
+from = "linux-firmware"
+src = "amdgpu/gc_11_0_1_imu.bin"
+sha256 = "ac71f4eec713fc35b4a1fe27531e3eb04edd81eeac2cef64df01ac50d8510805"
+loaded_by = "vendor:lib/dev-modules/amdgpu.ko"
+
+[[firmware]]
+path = "amdgpu/gc_11_0_1_mes.bin"
+from = "linux-firmware"
+src = "amdgpu/gc_11_0_1_mes.bin"
+sha256 = "4844bb3873ba1c141aa4f1374ab7ceca0c832f769e58efae82e25380bebfd5b9"
+loaded_by = "vendor:lib/dev-modules/amdgpu.ko"
+
+[[firmware]]
+path = "amdgpu/gc_11_0_1_mes1.bin"
+from = "linux-firmware"
+src = "amdgpu/gc_11_0_1_mes1.bin"
+sha256 = "3a8b60ea88b7adbbc71da0ddee0370d5d65c1d66186fd4f4ba9d16a854b24db8"
+loaded_by = "vendor:lib/dev-modules/amdgpu.ko"
+
+[[firmware]]
+path = "amdgpu/gc_11_0_1_mes_2.bin"
+from = "linux-firmware"
+src = "amdgpu/gc_11_0_1_mes_2.bin"
+sha256 = "162cea50c37bf097df52088c65d2f31b429a272ca3761f3069be426b31407418"
+loaded_by = "vendor:lib/dev-modules/amdgpu.ko"
+
+[[firmware]]
+path = "amdgpu/psp_13_0_4_toc.bin"
+from = "linux-firmware"
+src = "amdgpu/psp_13_0_4_toc.bin"
+sha256 = "11e3529d748e2b6b204681183360a6ead80665b8deda996dfcf35973f789fc3d"
+loaded_by = "vendor:lib/dev-modules/amdgpu.ko"
+
+[[firmware]]
+path = "amdgpu/psp_13_0_4_ta.bin"
+from = "linux-firmware"
+src = "amdgpu/psp_13_0_4_ta.bin"
+sha256 = "9ad18a7848681a6cf85d1d60011afeff828c531ca83379c9eaf8d557d358f618"
+loaded_by = "vendor:lib/dev-modules/amdgpu.ko"
+
+[[firmware]]
+path = "amdgpu/dcn_3_1_4_dmcub.bin"
+from = "linux-firmware"
+src = "amdgpu/dcn_3_1_4_dmcub.bin"
+sha256 = "6d49c139d977ec5136e9a8fc5e47150cebcf29bfa7ed4f586bdc3614fdf14a81"
+loaded_by = "vendor:lib/dev-modules/amdgpu.ko"
+
+[[firmware]]
+path = "amdgpu/sdma_6_0_1.bin"
+from = "linux-firmware"
+src = "amdgpu/sdma_6_0_1.bin"
+sha256 = "708c2c2c45262c98ebe8e34e32c3f1ce8eb5b007bab560c9ea9b576a8e4d6768"
+loaded_by = "vendor:lib/dev-modules/amdgpu.ko"
+
+[[firmware]]
+path = "amdgpu/vcn_4_0_2.bin"
+from = "linux-firmware"
+src = "amdgpu/vcn_4_0_2.bin"
+sha256 = "2684b9bfe11671ccd7b0b32a2239c5f428a4ebcfae81ce5466ba9b8a32bdcfc7"
+loaded_by = "vendor:lib/dev-modules/amdgpu.ko"
+
+[[firmware]]
+path = "amdgpu/vpe_6_1_0.bin"
+from = "linux-firmware"
+src = "amdgpu/vpe_6_1_0.bin"
+sha256 = "10a900e43e8633bc1ebe03d2d88f9b3e2f96a43c1961b190023fa1d26423a41a"
+loaded_by = "vendor:lib/dev-modules/amdgpu.ko"
+
+[[firmware]]
+path = "cirrus/cs35l41-dsp1-spk-prot-104317f3.wmfw"
+from = "linux-firmware"
+src = "cirrus/cs35l41/v6.61.1/halo_cspl_RAM_revB2_29.63.1.wmfw"
+sha256 = "c11cb3e25825c673a955a3519370ad77fbcd8bcf68808e8e34140a70caefcec4"
+requested_by = "runtime: CS35L41 HDA dynamic SSID 104317f3 and speaker-ID filename; hardware request unverified"
+
+[[firmware]]
+path = "cirrus/cs35l41-dsp1-spk-prot-104317f3-spkid0-l0.bin"
+from = "linux-firmware"
+src = "cirrus/cs35l41-dsp1-spk-prot-104317f3-spkid0-l0.bin"
+sha256 = "5bedcce69f0b42cdd7db3cfd0d5621c894715363edcc0f126aee80159fb2c2fc"
+requested_by = "runtime: CS35L41 HDA dynamic SSID 104317f3 and speaker-ID filename; hardware request unverified"
+
+[[firmware]]
+path = "cirrus/cs35l41-dsp1-spk-prot-104317f3-spkid0-r0.bin"
+from = "linux-firmware"
+src = "cirrus/cs35l41-dsp1-spk-prot-104317f3-spkid0-r0.bin"
+sha256 = "7b139fda7a3345b78b31b854b1fcd72cb84335c2d9e1a362b38291d1a6ea3e24"
+requested_by = "runtime: CS35L41 HDA dynamic SSID 104317f3 and speaker-ID filename; hardware request unverified"
+
+[[firmware]]
+path = "cirrus/cs35l41-dsp1-spk-prot-104317f3-spkid1-l0.bin"
+from = "linux-firmware"
+src = "cirrus/cs35l41-dsp1-spk-prot-104317f3-spkid1-l0.bin"
+sha256 = "bb6fc201ef48022e9b9cc543efc4f6f45372a6560c28efb1085bfb9779d0c4de"
+requested_by = "runtime: CS35L41 HDA dynamic SSID 104317f3 and speaker-ID filename; hardware request unverified"
+
+[[firmware]]
+path = "cirrus/cs35l41-dsp1-spk-prot-104317f3-spkid1-r0.bin"
+from = "linux-firmware"
+src = "cirrus/cs35l41-dsp1-spk-prot-104317f3-spkid1-r0.bin"
+sha256 = "3569ab90799cd1e27b9e76618db0f6c607e19d835b244e430dc57638d306e7cc"
+requested_by = "runtime: CS35L41 HDA dynamic SSID 104317f3 and speaker-ID filename; hardware request unverified"
+
+[[firmware]]
+path = "cirrus/cs35l41-dsp1-spk-prot-104317f3-spkid0-l0.bincfg"
+from = "linux-firmware"
+src = "cirrus/cs35l41/bincfgs/cs35l41-dsp1-16_5dB.bincfg"
+sha256 = "941c3a89105db3b36b0d4020924dcb44d618389c7781d8780734f63f40d5cae2"
+requested_by = "runtime: CS35L41 HDA dynamic SSID 104317f3 and speaker-ID filename; hardware request unverified"
+
+[[firmware]]
+path = "cirrus/cs35l41-dsp1-spk-prot-104317f3-spkid0-r0.bincfg"
+from = "linux-firmware"
+src = "cirrus/cs35l41/bincfgs/cs35l41-dsp1-16_5dB.bincfg"
+sha256 = "941c3a89105db3b36b0d4020924dcb44d618389c7781d8780734f63f40d5cae2"
+requested_by = "runtime: CS35L41 HDA dynamic SSID 104317f3 and speaker-ID filename; hardware request unverified"

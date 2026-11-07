@@ -15,22 +15,25 @@ to the unpatched builder path.
 """
 
 import base64
+from contextlib import ExitStack, contextmanager
+from dataclasses import dataclass
 import hashlib
 import importlib.util
 import json
 import os
 import shutil
+import stat
 import struct
 import subprocess
 import sys
 import tempfile
-import uuid
 import zipfile
+import weakref
 from pathlib import Path
 
 sys.dont_write_bytecode = True
-import rebuild
-from container_alignment import check_zip_layout
+import rebuild  # noqa: E402 - suppress bytecode before loading local helpers.
+from container_alignment import check_zip_layout  # noqa: E402
 
 HERE = Path(__file__).resolve().parent
 IFMA_DIR = HERE.parent / "ifma"
@@ -98,6 +101,37 @@ APEX_SPECS = {
         "salt": "296b8e1881f1668f6fda928a06ade40a30516d3ac848dedf42ccbe5a60f0b3e7",
         "allow_caps": False,
     },
+}
+
+# Separate from the legacy IFMA APEX catalog: these top-level payloads have
+# Adler-only targets and a stock empty hashtree partition name.
+ALLY_ADLER_APEX_SPECS = {
+    "system/apex/com.android.runtime.apex": {
+        "partition": "system_a",
+        "apex_key": "com.android.runtime",
+        "salt": "de3e3fbdc709c48105215c7eab4606070ec11445364693c477f5f92fed3ae84b",
+        "allow_caps": False,
+        "partition_name": "",
+        "adler_scope": "runtime",
+    },
+    "system/apex/com.google.android.appsearch.apex": {
+        "partition": "system_a",
+        "apex_key": "com.android.appsearch",
+        "salt": "9ec54af85657c40c3e59a3e631cf017b0f7a65e987f229d1f2b1e0577326da33",
+        "allow_caps": False,
+        "partition_name": "",
+        "adler_scope": "appsearch",
+    },
+}
+
+# This alias is never an outer system path. Keep it out of the top-level
+# catalog above, whose keys determine the system partition change set.
+MICRODROID_RUNTIME_REL = "microdroid/system/apex/com.android.runtime.apex"
+MICRODROID_RUNTIME_SPEC = {
+    **ALLY_ADLER_APEX_SPECS["system/apex/com.android.runtime.apex"],
+    "adler_scope": "microdroid_runtime",
+    "stock_sha256": "917a98300b0ccecdb05e5a413ea650d1a4c061c4bcb02fdcf8efa68ce10fb2b0",
+    "stock_payload_sha256": "5ebccf5d395e5be85159d52eb46a5d5c2229ee4ef155f1252afcdf6e698b5962",
 }
 
 # Build selection happens before default manifest arguments are bound below.
@@ -171,12 +205,98 @@ APEX_REQUIRED_SIGNING_BLOCK_IDS = frozenset((
 ))
 APEX_ALLOWED_SIGNING_BLOCK_IDS = APEX_REQUIRED_SIGNING_BLOCK_IDS
 
+VIRT_APEX_REL = "system/apex/com.google.android.virt.apex"
+_GUEST_SCAN_BINDINGS = {}
+
+
+def _guest_module(prof):
+    # Disabled/KANO paths must not import or inspect external guest tools.
+    if prof.get("cpu_compat", {}).get("patch_ally_bootstrap", False) is False:
+        return None
+    ally_adler_apex_specs(prof)  # Validate explicit model, boolean and dependency.
+    import ally_microdroid
+    if not ally_microdroid.enabled(prof):
+        raise SystemExit("Microdroid chain requires explicit rog-ally opt-in")
+    return ally_microdroid
+
+
+def microdroid_preflight(prof, otatools):
+    module = _guest_module(prof)
+    return module.preflight(otatools) if module is not None else None
+
+
+@dataclass(frozen=True)
+class _GuestScanBinding:
+    guest: object
+    apex_sha256: str | None
+
+    def assert_bound(self, tree, *, system):
+        entry = _GUEST_SCAN_BINDINGS.get(id(self))
+        if entry is None or entry() is not self:
+            raise SystemExit("unverified Microdroid scan binding")
+        self.guest.assert_bound(self.guest.payload_root if system else tree)
+        if system:
+            apex = Path(tree) / VIRT_APEX_REL
+            if (self.apex_sha256 is None or apex.is_symlink() or not apex.is_file()
+                    or hashlib.sha256(apex.read_bytes()).hexdigest() != self.apex_sha256):
+                raise SystemExit("Microdroid signed APEX scan binding changed")
+
+
+def _guest_scan_binding(guest, apex=None):
+    guest.assert_bound(guest.payload_root)
+    binding = _GuestScanBinding(
+        guest, hashlib.sha256(Path(apex).read_bytes()).hexdigest() if apex is not None else None,
+    )
+    key = id(binding)
+    _GUEST_SCAN_BINDINGS[key] = weakref.ref(binding, lambda _: _GUEST_SCAN_BINDINGS.pop(key, None))
+    return binding
+
+
+class _GuestChain:
+    """Private transaction state; never serialized or accepted as a receipt."""
+
+    def __init__(self, prof, keys):
+        self.module = _guest_module(prof)
+        if self.module is None:
+            raise SystemExit("disabled Microdroid transaction")
+        self.prof, self.keys = prof, keys
+        self.stock_tree = None
+        self.binding = None
+
+    def rebuild(self, tree, work, otatools):
+        guest = self.module.rebuild_chain(self.prof, tree, work, otatools, self.keys)
+        self.stock_tree = guest.stock_payload_root
+        self.binding = _guest_scan_binding(guest)
+        return self.binding
+
+    def verify(self, tree, work, otatools, *, apex=None):
+        if self.stock_tree is None:
+            raise SystemExit("Microdroid stock verification tree missing")
+        before = hashlib.sha256(Path(apex).read_bytes()).hexdigest() if apex is not None else None
+        guest = self.module.verify_chain(
+            self.prof, self.stock_tree, tree, work, otatools, self.keys,
+        )
+        self.binding = _guest_scan_binding(guest, apex)
+        if self.binding.apex_sha256 != before:
+            self.binding = None
+            raise SystemExit("Microdroid APEX changed during chain verification")
+        return self.binding
+
+
+def _guest_apex_scope(microdroid, apex_rel, adler_scope):
+    if microdroid is not None and (
+            type(microdroid) is not _GuestChain or apex_rel != VIRT_APEX_REL or adler_scope is not None):
+        raise SystemExit("Microdroid context belongs only to the virt APEX")
+
 
 PASTEL_VENDOR_CHAIN = [{"kind": "tree_file", "path": "lib64/hw/vulkan.pastel.so"}]
 
 
 def _vendor_has_pastel(prof):
     if not isinstance(prof, dict):
+        return False
+    compat = prof.get("cpu_compat")
+    if isinstance(compat, dict) and compat.get("patch_ally_bootstrap", False) is not False:
         return False
     display = prof.get("display")
     model = prof.get("model")
@@ -216,7 +336,135 @@ def _partition_provenance(partition, chain=()):
     return {"partition": partition, "container_chain": [dict(node) for node in chain]}
 
 
+# Actual entry-anchored GNU/LLVM instruction-context evidence is pinned below.
+# These are source-owned identities, never rows loaded from a build receipt.
+_ALLY_VENDOR_ADDITIONS_EVIDENCE_CONFIRMED = True
+_ALLY_VENDOR_ADDITIONS = (
+    {"path": "lib/dev-modules/uas.ko", "size": 70192,
+     "sha256": "baa8753eb65207405eeb1e5596192f9462dd6c9a52b72bfb8b81bf4ab96f0ac7",
+     "file_offset": 8168, "instruction": "vpmadd52luq",
+     "reason": "R6 GNU/LLVM add/addq VA4902..4906: raw hit interior; candidate/instruction relocation overlap absent"},
+    {"path": "lib64/hw/vulkan.pastel.so", "size": 29264784,
+     "sha256": "5232e4829d8e6bba2d81cc0ff64d227504601090d2ac7b9fa105536e38c680a3",
+     "file_offset": 24793327, "instruction": "vpmadd52huq",
+     "reason": "R6 GNU/LLVM add/addl VA24793325..24793329 from FDE956920: raw hit interior; candidate/instruction relocation overlap absent"},
+)
+
+
+def _vendor_addition_identity(info):
+    # Ordinary scanner reads may update atime; all content/binding fields remain.
+    return (info.st_dev, info.st_ino, info.st_mode, info.st_uid, info.st_gid,
+            info.st_nlink, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+
+
+def _vendor_addition_hash(fd, size):
+    digest = hashlib.sha256()
+    offset = 0
+    while offset < size:
+        data = os.pread(fd, min(1024 * 1024, size - offset), offset)
+        if not data:
+            raise SystemExit("Ally vendor addition changed: short read")
+        digest.update(data)
+        offset += len(data)
+    if os.pread(fd, 1, size):
+        raise SystemExit("Ally vendor addition changed: grew during read")
+    return digest.hexdigest()
+
+
+@contextmanager
+def _ally_vendor_additions(tree, prof, *, provenance, root_kind):
+    """Hold exact additions across the final vendor scan, never the stock scan."""
+    if prof is None:
+        yield []
+        return
+    compat = prof.get("cpu_compat", {})
+    flag = compat.get("patch_ally_bootstrap", False)
+    if type(flag) is not bool:
+        raise SystemExit("Ally vendor additions require a boolean bootstrap opt-in")
+    if not flag:
+        yield []
+        return
+    if compat.get("patch_ifma") is not True or prof.get("model", {}).get("id") != "rog-ally":
+        raise SystemExit("Ally vendor additions require explicit IFMA and rog-ally")
+    if root_kind != "tree_file" or provenance != _partition_provenance("vendor_a"):
+        raise SystemExit("Ally vendor additions have wrong rebuilt-vendor scope")
+    if _ALLY_VENDOR_ADDITIONS_EVIDENCE_CONFIRMED is not True:
+        raise SystemExit("Ally vendor addition instruction-context evidence is pending")
+    specs = _ALLY_VENDOR_ADDITIONS
+    if any(row["reason"] == "PENDING_ACTUAL_ANNOTATION" for row in specs):
+        raise SystemExit("Ally vendor addition instruction-context evidence is pending")
+    if len({row["path"] for row in specs}) != len(specs):
+        raise SystemExit("Ally vendor addition duplicate source pin")
+    if len(specs) != 2:
+        raise SystemExit("Ally vendor addition exact source pin set changed")
+    root = Path(tree).absolute()
+    if ".." in root.parts:
+        raise SystemExit("Ally vendor addition parent traversal refused")
+    directories, targets, rows = [], [], []
+    with ExitStack() as stack:
+        def directory(parent, name):
+            fd = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
+            stack.callback(os.close, fd)
+            directories.append((parent, name, fd, os.fstat(fd)))
+            return fd
+
+        root_fd = directory(None, root.anchor)
+        for name in root.parts[1:]:
+            root_fd = directory(root_fd, name)
+        for spec in specs:
+            parts = Path(spec["path"]).parts
+            if not parts or Path(spec["path"]).is_absolute() or ".." in parts:
+                raise SystemExit("Ally vendor addition target path refused")
+            parent = root_fd
+            for name in parts[:-1]:
+                parent = directory(parent, name)
+            fd = os.open(parts[-1], os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW |
+                         getattr(os, "O_NOATIME", 0), dir_fd=parent)
+            stack.callback(os.close, fd)
+            info = os.fstat(fd)
+            if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_size != spec["size"]:
+                raise SystemExit("Ally vendor addition target identity mismatch")
+            if _vendor_addition_hash(fd, spec["size"]) != spec["sha256"]:
+                raise SystemExit("Ally vendor addition SHA256 mismatch")
+            offset = spec["file_offset"]
+            if type(offset) is not int or not 0 <= offset <= spec["size"] - 5:
+                raise SystemExit("Ally vendor addition candidate offset refused")
+            encoding = os.pread(fd, 5, offset)
+            if SCAN_IFMA._vex_hits(encoding) != [(0, spec["instruction"])]:
+                raise SystemExit("Ally vendor addition candidate encoding mismatch")
+            targets.append((parent, parts[-1], fd, info, spec))
+            rows.append({"partition": "vendor_a", "container_chain": [
+                {"kind": "tree_file", "path": spec["path"]}],
+                "sha256": spec["sha256"], "file_offset": hex(offset),
+                "encoding_hex": encoding.hex(), "reason": spec["reason"]})
+        try:
+            yield rows
+        finally:
+            for parent, name, fd, before, spec in targets:
+                if (_vendor_addition_hash(fd, spec["size"]) != spec["sha256"]
+                        or _vendor_addition_identity(before) != _vendor_addition_identity(os.fstat(fd))
+                        or _vendor_addition_identity(before) != _vendor_addition_identity(
+                            os.stat(name, dir_fd=parent, follow_symlinks=False))):
+                    raise SystemExit("Ally vendor addition changed during scan")
+            for parent, name, fd, before in directories:
+                def binding(info):
+                    return (info.st_dev, info.st_ino, info.st_mode, info.st_uid, info.st_gid)
+                if binding(before) != binding(os.fstat(fd)) or binding(before) != binding(
+                        os.stat(name, dir_fd=parent, follow_symlinks=False)):
+                    raise SystemExit("Ally vendor addition parent changed during scan")
+
+
 def _apex_payload_provenance(apex_rel, partition):
+    if apex_rel == MICRODROID_RUNTIME_REL:
+        if partition != "system_a":
+            raise SystemExit("guest runtime must belong to system_a")
+        return _partition_provenance(partition, (
+            {"kind": "tree_file", "path": "system/apex/com.google.android.virt.apex"},
+            {"kind": "zip_member", "path": "apex_payload.img"},
+            {"kind": "erofs_file", "path": "etc/fs/microdroid.img"},
+            {"kind": "erofs_file", "path": "system/apex/com.android.runtime.apex"},
+            {"kind": "zip_member", "path": "apex_payload.img"},
+        ))
     return _partition_provenance(partition, (
         {"kind": "tree_file", "path": apex_rel},
         {"kind": "zip_member", "path": "apex_payload.img"},
@@ -226,23 +474,57 @@ def _apex_payload_provenance(apex_rel, partition):
 def scan_rebuilt_tree(
     tree, label, otatools=None, scratch_dir=None, *, manifest_path=MANIFEST_PATH,
     provenance=None, root_kind="tree_file", include_pastel=False,
+    microdroid=None, rebuilt_vendor_profile=None,
 ):
     """Run the mandatory residual-IFMA scanner and print its coverage report."""
     try:
         residuals, known_non_instructions, unsupported_allowlist = _manifest_scan_policy(
             manifest_path, include_pastel=include_pastel,
         )
-        report = SCAN_IFMA.scan_tree(
-            tree,
-            label=label,
-            otatools=otatools,
-            scratch_dir=scratch_dir,
-            residuals=residuals,
-            known_non_instructions=known_non_instructions,
-            unsupported_allowlist=unsupported_allowlist,
-            provenance=provenance,
-            root_kind=root_kind,
-        )
+        coverage = {}
+        if microdroid is not None:
+            if type(microdroid) is not _GuestScanBinding:
+                raise SystemExit("invalid Microdroid scan binding")
+            system = root_kind == "tree_file" and provenance == _partition_provenance("system_a")
+            payload = root_kind == "erofs_file" and provenance == _apex_payload_provenance(VIRT_APEX_REL, "system_a")
+            if not (system or payload):
+                raise SystemExit("Microdroid scan binding has wrong provenance")
+            microdroid.assert_bound(tree, system=system)
+            import ally_microdroid
+            policy = ally_microdroid.policy_overlay(
+                microdroid.guest, microdroid.guest.payload_root,
+                {"residuals": residuals, "known_non_instructions": known_non_instructions,
+                 "unsupported_allowlist": unsupported_allowlist},
+            )
+            residuals, unsupported_allowlist = policy["residuals"], policy["unsupported_allowlist"]
+            seen = []
+            if system:
+                def observe(row):
+                    if row["container_chain"] == [{"kind": "tree_file", "path": VIRT_APEX_REL}]:
+                        if (row["partition"] != "system_a" or row["kind"] != "zip"
+                                or row["classification"] != "container"
+                                or row["sha256"] != microdroid.apex_sha256):
+                            raise SystemExit("recursive scanner observed a different virt APEX")
+                        seen.append(row["sha256"])
+                coverage["coverage_callback"] = observe
+        with _ally_vendor_additions(tree, rebuilt_vendor_profile,
+                                    provenance=provenance, root_kind=root_kind) as additions:
+            report = SCAN_IFMA.scan_tree(
+                tree,
+                label=label,
+                otatools=otatools,
+                scratch_dir=scratch_dir,
+                residuals=residuals,
+                known_non_instructions=known_non_instructions + additions,
+                unsupported_allowlist=unsupported_allowlist,
+                provenance=provenance,
+                root_kind=root_kind,
+                **coverage,
+            )
+        if microdroid is not None:
+            microdroid.assert_bound(tree, system=system)
+            if system and len(seen) != 1:
+                raise SystemExit("recursive scanner did not observe exactly one verified virt APEX")
     except (OSError, SCAN_IFMA.ScanError) as exc:
         raise SystemExit(f"{label}: residual IFMA scan failed: {exc}") from exc
     print("ifma residual scan: " + json.dumps(report, sort_keys=True, separators=(",", ":")))
@@ -256,24 +538,66 @@ def enabled(prof):
     return bool(prof.get("cpu_compat", {}).get("patch_ifma", False))
 
 
+def ally_adler_tree(prof, scope, tree, *, verify=False):
+    """Keep Ally-only Adler changes in this stock partition transaction."""
+    if not prof.get("cpu_compat", {}).get("patch_ally_bootstrap", False):
+        return None
+    if not enabled(prof):
+        raise SystemExit("Ally Adler partition integration requires patch_ifma")
+    import ally_adler
+    operation = ally_adler.verify_tree if verify else ally_adler.patch_tree
+    return operation(scope, tree)
+
+
+def ally_adler_changed_paths(prof, scope):
+    if not prof.get("cpu_compat", {}).get("patch_ally_bootstrap", False):
+        return ()
+    if not enabled(prof):
+        raise SystemExit("Ally Adler partition integration requires patch_ifma")
+    import ally_adler
+    return ally_adler.expected_changed_paths(scope)
+
+
+def ally_adler_apex_specs(prof):
+    """Only the explicitly enabled Ally transaction may add these APEXes."""
+    flag = prof.get("cpu_compat", {}).get("patch_ally_bootstrap", False)
+    if flag is False:
+        return {}
+    if flag is not True:
+        raise SystemExit("patch_ally_bootstrap must be a boolean")
+    if not enabled(prof):
+        raise SystemExit("Ally Adler APEX integration requires patch_ifma")
+    if prof.get("model", {}).get("id") != "rog-ally":
+        raise SystemExit("Ally Adler APEX integration requires rog-ally")
+    return ALLY_ADLER_APEX_SPECS
+
+
 def changed_vendor_paths(prof, expect_changed):
-    """Return expect_changed with the 4 surviving vendor IFMA paths when patch_ifma is enabled."""
+    """Include exact surviving IFMA and opted-in Ally Adler paths."""
     if not enabled(prof):
         return expect_changed
-    return sorted(set(list(expect_changed) + list(VENDOR_SURVIVING_CHANGED)))
+    return sorted(set(list(expect_changed) + list(VENDOR_SURVIVING_CHANGED)
+                      + list(ally_adler_changed_paths(prof, "vendor"))))
 
 
 def _ot_env(otatools):
     env = os.environ.copy()
-    lib64 = str(Path(otatools) / "lib64")
-    env["LD_LIBRARY_PATH"] = lib64 + (":" + env["LD_LIBRARY_PATH"] if env.get("LD_LIBRARY_PATH") else "")
-    env["PATH"] = str(Path(otatools) / "bin") + ":" + env.get("PATH", "")
+    for name in list(env):
+        if name.startswith(("LD_", "DYLD_")) or name in (
+                "PYTHONPATH", "PYTHONHOME", "PYTHONUSERBASE", "PYTHONOPTIMIZE"):
+            env.pop(name)
+    tools = Path(otatools).resolve()
+    env["LD_LIBRARY_PATH"] = str(tools / "lib64")
+    env["PATH"] = str(tools / "bin") + ":/usr/bin:/bin"
+    env["LC_ALL"] = "C"
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
     return env
 
 
 def _run_ot(otatools, tool, *args):
     cmd = [str(Path(otatools) / "bin" / tool), *[str(a) for a in args]]
-    res = subprocess.run(cmd, env=_ot_env(otatools), capture_output=True, text=True)
+    res = subprocess.run(cmd, env=_ot_env(otatools), capture_output=True, text=True,
+                         stdin=subprocess.DEVNULL, timeout=600)
     if res.returncode != 0:
         raise SystemExit(f"{tool} failed ({res.returncode}):\n{res.stdout}\n{res.stderr}")
     return res.stdout
@@ -433,6 +757,14 @@ def ensure_apex_keys(keys_dir=None, *, create=True):
     print(f"APEX payload public key sha256: {fingerprints['payload_public_sha256']}")
     print(f"APEX container certificate sha256: {fingerprints['container_cert_sha256']}")
     return keys
+
+
+def ensure_apex_keys_for_startup():
+    """Apply the explicit startup-only policy without changing transaction defaults."""
+    policy = os.environ.get("GBOS_APEX_KEYS_EXISTING_ONLY", "0")
+    if policy not in ("0", "1"):
+        raise SystemExit("GBOS_APEX_KEYS_EXISTING_ONLY must be 0 or 1")
+    return ensure_apex_keys(create=policy == "0")
 
 
 def ensure_apex_keys_and_fingerprints(keys_dir=None, *, create=True):
@@ -1207,7 +1539,7 @@ def verify_apex_container(apex_path, expected_cert_der=None, stock_apex_path=Non
     }
 
 
-def _parse_apex_avb_info(info_out, apex_rel):
+def _parse_apex_avb_info(info_out, apex_rel, *, partition_name=None):
     salts = [line.split(":", 1)[1].strip().lower() for line in info_out.splitlines() if line.strip().startswith("Salt:")]
     key_prefix = "Prop: apex.key -> '"
     apex_keys = [
@@ -1223,6 +1555,11 @@ def _parse_apex_avb_info(info_out, apex_rel):
         bytes.fromhex(salts[0])
     except ValueError as exc:
         raise SystemExit(f"{apex_rel}: stock payload has invalid AVB salt {salts[0]!r}") from exc
+    if partition_name is not None:
+        names = [line.strip().split(":", 1)[1].strip() for line in info_out.splitlines()
+                 if line.strip().startswith("Partition Name:")]
+        if names != [partition_name]:
+            raise SystemExit(f"{apex_rel}: expected exactly one AVB partition name {partition_name!r}")
     return {"salt": salts[0], "apex_key": apex_keys[0]}
 
 
@@ -1230,6 +1567,7 @@ def _stock_apex_avb_identity(otatools, payload_img, spec, apex_rel):
     identity = _parse_apex_avb_info(
         _run_ot(otatools, "avbtool", "info_image", "--image", payload_img),
         apex_rel,
+        partition_name=spec.get("partition_name"),
     )
     expected = {
         "salt": str(spec["salt"]).lower(),
@@ -1242,10 +1580,10 @@ def _stock_apex_avb_identity(otatools, payload_img, spec, apex_rel):
     return identity
 
 
-def _apex_hashtree_args(partition_size, key, salt, apex_key):
+def _apex_hashtree_args(partition_size, key, salt, apex_key, *, partition_name="apex_payload"):
     """Arguments shared by APEX footer sizing and the real footer operation."""
     return (
-        "--partition_name", "apex_payload",
+        "--partition_name", partition_name,
         "--partition_size", str(partition_size),
         "--key", str(key),
         "--algorithm", "SHA256_RSA4096",
@@ -1255,39 +1593,67 @@ def _apex_hashtree_args(partition_size, key, salt, apex_key):
     )
 
 
-def _apex_max_image_size(otatools, partition_size, key, salt, apex_key):
+def _apex_max_image_size(otatools, partition_size, key, salt, apex_key, *, partition_name="apex_payload"):
     return int(
         _run_ot(
             otatools,
             "avbtool",
             "add_hashtree_footer",
-            *_apex_hashtree_args(partition_size, key, salt, apex_key),
+            *_apex_hashtree_args(partition_size, key, salt, apex_key, partition_name=partition_name),
             "--calc_max_image_size",
         ).strip()
     )
 
 
-def _add_apex_hashtree_footer(otatools, image, partition_size, key, salt, apex_key):
+def _add_apex_hashtree_footer(otatools, image, partition_size, key, salt, apex_key, *, partition_name="apex_payload"):
     return _run_ot(
         otatools,
         "avbtool",
         "add_hashtree_footer",
         "--image", image,
-        *_apex_hashtree_args(partition_size, key, salt, apex_key),
+        *_apex_hashtree_args(partition_size, key, salt, apex_key, partition_name=partition_name),
     )
 
 
-def _apex_partition_size(otatools, original_size, erofs_size, key, salt, apex_key):
+def _apex_partition_size(otatools, original_size, erofs_size, key, salt, apex_key, *, partition_name="apex_payload"):
     """Keep the stock payload size when possible, otherwise grow until AVB metadata fits."""
     part_size = original_size
     max_args = (key, salt, apex_key)
-    if erofs_size > _apex_max_image_size(otatools, part_size, *max_args):
+    if erofs_size > _apex_max_image_size(otatools, part_size, *max_args, partition_name=partition_name):
         part_size = (
             (max(part_size, erofs_size + erofs_size // 64 + 65536) + 4095) // 4096
         ) * 4096
-        while erofs_size > _apex_max_image_size(otatools, part_size, *max_args):
+        while erofs_size > _apex_max_image_size(otatools, part_size, *max_args, partition_name=partition_name):
             part_size += 65536
     return part_size
+
+
+def _apex_repair_spec(apex_rel, spec, scope, adler_scope):
+    """An Adler selector cannot bypass the legacy IFMA manifest scope."""
+    if adler_scope is not None:
+        approved = (MICRODROID_RUNTIME_SPEC if apex_rel == MICRODROID_RUNTIME_REL
+                    else ALLY_ADLER_APEX_SPECS.get(apex_rel))
+        if (approved is None or adler_scope != approved["adler_scope"] or
+                scope is not None or (spec is not None and spec != approved)):
+            raise SystemExit(f"{apex_rel}: unapproved Adler APEX scope/spec")
+        return dict(approved), None
+    if apex_rel in ALLY_ADLER_APEX_SPECS or apex_rel == MICRODROID_RUNTIME_REL:
+        raise SystemExit(f"{apex_rel}: explicit Adler APEX scope required")
+    return dict(APEX_SPECS[apex_rel] if spec is None else spec), ("apex", apex_rel) if scope is None else scope
+
+
+def _adler_apex_report(adler_scope, tree, *, verify=False):
+    import ally_adler
+    operation = ally_adler.verify_tree if verify else ally_adler.patch_tree
+    try:
+        receipt = operation(adler_scope, tree)
+    except (OSError, ally_adler.Refused) as exc:
+        raise SystemExit(f"{adler_scope}: Adler APEX repair refused: {exc}") from exc
+    return {"schema": 1, "adler_scope": adler_scope, "ally_adler": receipt,
+            "targets": [{"rel_path": target["path"],
+                         "before": "patched" if verify else "original", "after": "patched",
+                         "source_sha256": target["source_sha256"], "sha256": target["sha256"]}
+                        for target in receipt["targets"]]}
 
 
 def patch_apex_file(
@@ -1300,16 +1666,24 @@ def patch_apex_file(
     manifest_path=MANIFEST_PATH,
     spec=None,
     scope=None,
+    adler_scope=None,
+    microdroid=None,
 ):
     """Unpack one APEX, patch its payload ELFs, rebuild/sign apex_payload.img, update apex_pubkey, and sign container."""
+    spec, scope = _apex_repair_spec(apex_rel, spec, scope, adler_scope)
+    _guest_apex_scope(microdroid, apex_rel, adler_scope)
     apex_file = Path(apex_file)
+    if adler_scope == "microdroid_runtime":
+        if hashlib.sha256(apex_file.read_bytes()).hexdigest() != spec["stock_sha256"]:
+            raise SystemExit("guest runtime stock container SHA256 mismatch")
+        with zipfile.ZipFile(apex_file, "r") as zf:
+            if hashlib.sha256(zf.read("apex_payload.img")).hexdigest() != spec["stock_payload_sha256"]:
+                raise SystemExit("guest runtime stock payload SHA256 mismatch")
     work_dir = Path(work_dir)
     if work_dir.exists():
         shutil.rmtree(work_dir)
     work_dir.mkdir(parents=True)
 
-    spec = dict(APEX_SPECS[apex_rel] if spec is None else spec)
-    scope = ("apex", apex_rel) if scope is None else scope
 
     try:
         stock_container = verify_apex_container(apex_file, allow_stock_source_stamp=True)
@@ -1344,10 +1718,15 @@ def patch_apex_file(
 
     old_index = _index_tree(payload_tree)
     report_path = work_dir / "patch-report.json"
-    try:
-        report = PATCH_IFMA.run(payload_tree, manifest_path, report_path, True, scope=scope)
-    except (OSError, PATCH_IFMA.PatchError) as exc:
-        raise SystemExit(f"IFMA patch refused on {apex_rel}: {exc}") from exc
+    if adler_scope is not None:
+        report = _adler_apex_report(adler_scope, payload_tree)
+        report_path.write_text(json.dumps(report, indent=2) + "\n")
+    else:
+        try:
+            report = PATCH_IFMA.run(payload_tree, manifest_path, report_path, True, scope=scope)
+        except (OSError, PATCH_IFMA.PatchError) as exc:
+            raise SystemExit(f"IFMA patch refused on {apex_rel}: {exc}") from exc
+    guest_binding = microdroid.rebuild(payload_tree, work_dir / "microdroid", otatools) if microdroid is not None else None
     scan_rebuilt_tree(
         payload_tree,
         f"{apex_rel}:patched-payload",
@@ -1356,6 +1735,7 @@ def patch_apex_file(
         manifest_path=manifest_path,
         provenance=_apex_payload_provenance(apex_rel, spec["partition"]),
         root_kind="erofs_file",
+        microdroid=guest_binding,
     )
 
     fc_file = work_dir / "payload_file_contexts"
@@ -1407,10 +1787,18 @@ def patch_apex_file(
     new_index = _index_tree(check_tree)
     if set(old_index) != set(new_index):
         raise SystemExit(f"{apex_rel}: payload file list changed")
-    expected_rel = {t["rel_path"] for t in report["targets"]}
+    expected_rel = {t["rel_path"] for t in report["targets"]
+                    if t["before"] == "original" and t["after"] == "patched"}
+    if guest_binding is not None:
+        expected_rel.update(dict(guest_binding.guest.artifacts))
     actual_changed = {k for k in old_index if old_index[k] != new_index[k]}
     if actual_changed != expected_rel:
         raise SystemExit(f"{apex_rel}: unexpected payload file changes: {sorted(actual_changed)} vs {sorted(expected_rel)}")
+    if adler_scope is not None:
+        readback = _adler_apex_report(adler_scope, check_tree, verify=True)
+        if readback["ally_adler"] != report["ally_adler"]:
+            raise SystemExit(f"{apex_rel}: rebuilt Adler APEX receipt changed")
+    rebuilt_guest = microdroid.verify(check_tree, work_dir / "microdroid-erofs-verify", otatools) if microdroid is not None else None
     scan_rebuilt_tree(
         check_tree,
         f"{apex_rel}:rebuilt-payload",
@@ -1419,6 +1807,7 @@ def patch_apex_file(
         manifest_path=manifest_path,
         provenance=_apex_payload_provenance(apex_rel, spec["partition"]),
         root_kind="erofs_file",
+        microdroid=rebuilt_guest,
     )
 
     new_payload = work_dir / "apex_payload.img"
@@ -1434,6 +1823,7 @@ def patch_apex_file(
 
     # Keep the stock partition size if sufficient; size it using the exact real-footer arguments.
     erofs_sz = new_erofs.stat().st_size
+    footer_options = {"partition_name": spec["partition_name"]} if "partition_name" in spec else {}
     part_size = _apex_partition_size(
         otatools,
         orig_payload_size,
@@ -1441,6 +1831,7 @@ def patch_apex_file(
         keys["payload_key"],
         stock_identity["salt"],
         stock_identity["apex_key"],
+        **footer_options,
     )
 
     _add_apex_hashtree_footer(
@@ -1450,6 +1841,7 @@ def patch_apex_file(
         keys["payload_key"],
         stock_identity["salt"],
         stock_identity["apex_key"],
+        **footer_options,
     )
     _run_ot(
         otatools,
@@ -1470,7 +1862,7 @@ def patch_apex_file(
         min_sdk=stock_container["v3_min_sdk"],
         max_sdk=stock_container["v3_max_sdk"],
     )
-    verify_apex_file(
+    signed_verification = verify_apex_file(
         signed_apex,
         apex_rel,
         work_dir / "verify",
@@ -1480,10 +1872,15 @@ def patch_apex_file(
         manifest_path=manifest_path,
         spec=spec,
         scope=scope,
+        adler_scope=adler_scope,
+        microdroid=microdroid,
     )
+    if adler_scope is not None and signed_verification["ally_adler"] != report["ally_adler"]:
+        raise SystemExit(f"{apex_rel}: signed Adler APEX receipt changed")
     os.replace(signed_apex, apex_file)
     shutil.rmtree(payload_tree, ignore_errors=True)
-    shutil.rmtree(check_tree, ignore_errors=True)
+    if microdroid is None:
+        shutil.rmtree(check_tree, ignore_errors=True)
     return report
 
 
@@ -1513,15 +1910,19 @@ def verify_apex_file(
     manifest_path=MANIFEST_PATH,
     spec=None,
     scope=None,
+    adler_scope=None,
+    microdroid=None,
 ):
     """Verify an APEX's outer APK v2/v3 signature, inner payload AVB signature against embedded apex_pubkey, and patched ELFs."""
+    spec, scope = _apex_repair_spec(apex_rel, spec, scope, adler_scope)
+    _guest_apex_scope(microdroid, apex_rel, adler_scope)
     apex_file = Path(apex_file)
+    # Pin before container signature/payload reads, not after guest verification.
+    guest_apex_sha = hashlib.sha256(apex_file.read_bytes()).hexdigest() if microdroid is not None else None
     work_dir = Path(work_dir)
     if work_dir.exists():
         shutil.rmtree(work_dir)
     work_dir.mkdir(parents=True)
-    spec = dict(APEX_SPECS[apex_rel] if spec is None else spec)
-    scope = ("apex", apex_rel) if scope is None else scope
 
     try:
         container_info = verify_apex_container(
@@ -1560,7 +1961,7 @@ def verify_apex_file(
         "--key", pubkey_path,
     )
     info_out = _run_ot(otatools, "avbtool", "info_image", "--image", payload_img)
-    identity = _parse_apex_avb_info(info_out, apex_rel)
+    identity = _parse_apex_avb_info(info_out, apex_rel, partition_name=spec.get("partition_name"))
     expected_identity = {
         "salt": str(spec["salt"]).lower(),
         "apex_key": str(spec["apex_key"]),
@@ -1575,15 +1976,23 @@ def verify_apex_file(
     erofs_path.write_bytes(erofs_bytes)
     extract_dir = work_dir / "tree"
     extract_dir.mkdir()
-    _run_ot(otatools, "fsck.erofs", f"--extract={extract_dir}", "--overwrite", erofs_path)
+    preserve_args = ("--preserve-perms",) if adler_scope is not None or microdroid is not None else ()
+    _run_ot(otatools, "fsck.erofs", f"--extract={extract_dir}", "--overwrite", *preserve_args, erofs_path)
 
     report_path = work_dir / "verify-report.json"
-    try:
-        report = PATCH_IFMA.run(extract_dir, manifest_path, report_path, False, scope=scope)
-    except (OSError, PATCH_IFMA.PatchError) as exc:
-        raise SystemExit(f"{apex_rel}: post-sign IFMA verification failed: {exc}") from exc
+    if adler_scope is not None:
+        report = _adler_apex_report(adler_scope, extract_dir, verify=True)
+        report_path.write_text(json.dumps(report, indent=2) + "\n")
+    else:
+        try:
+            report = PATCH_IFMA.run(extract_dir, manifest_path, report_path, False, scope=scope)
+        except (OSError, PATCH_IFMA.PatchError) as exc:
+            raise SystemExit(f"{apex_rel}: post-sign IFMA verification failed: {exc}") from exc
     if not all(t["before"] == "patched" and t["after"] == "patched" for t in report["targets"]):
         raise SystemExit(f"{apex_rel}: payload target not in patched state")
+    guest_binding = microdroid.verify(extract_dir, work_dir / "microdroid-verify", otatools, apex=apex_file) if microdroid is not None else None
+    if guest_binding is not None and guest_binding.apex_sha256 != guest_apex_sha:
+        raise SystemExit("Microdroid APEX changed during container verification")
     scan_rebuilt_tree(
         extract_dir,
         f"{apex_rel}:verified-payload",
@@ -1592,13 +2001,16 @@ def verify_apex_file(
         manifest_path=manifest_path,
         provenance=_apex_payload_provenance(apex_rel, spec["partition"]),
         root_kind="erofs_file",
+        microdroid=guest_binding,
     )
-    shutil.rmtree(extract_dir, ignore_errors=True)
-    return {
-        "apex": apex_rel,
-        "container": container_info,
-        "targets": report["targets"],
-    }
+    if guest_binding is not None and hashlib.sha256(apex_file.read_bytes()).hexdigest() != guest_apex_sha:
+        raise SystemExit("Microdroid APEX changed during payload scan")
+    if microdroid is None:
+        shutil.rmtree(extract_dir, ignore_errors=True)
+    result = {"apex": apex_rel, "container": container_info, "targets": report["targets"]}
+    if adler_scope is not None:
+        result["ally_adler"] = report["ally_adler"]
+    return result
 
 
 def patch_vendor_tree(prof, tree, tmp, otatools=None, keys_dir=None, *, manifest_path=MANIFEST_PATH):
@@ -1610,6 +2022,9 @@ def patch_vendor_tree(prof, tree, tmp, otatools=None, keys_dir=None, *, manifest
     otatools = Path(otatools or os.environ["GBOS_OTATOOLS"])
     keys = ensure_apex_keys(keys_dir or _default_keys_dir(tmp), create=False)
 
+    adler_report = ally_adler_tree(prof, "vendor", tree)
+    if adler_report is not None:
+        (tmp / "ally-adler-vendor.json").write_text(json.dumps(adler_report, indent=2) + "\n")
     plain_report_path = tmp / "ifma-vendor-plain.json"
     try:
         plain_report = PATCH_IFMA.run(
@@ -1652,6 +2067,11 @@ def verify_rebuilt_vendor_tree(prof, rebuilt_tree, tmp, otatools=None, keys_dir=
     otatools = Path(otatools or os.environ["GBOS_OTATOOLS"])
     keys = ensure_apex_keys(keys_dir or _default_keys_dir(tmp), create=False)
     cert_der = Path(keys["container_cert_der"]).read_bytes()
+    adler_readback = ally_adler_tree(prof, "vendor", rebuilt_tree, verify=True)
+    if adler_readback is not None:
+        adler_preparation = json.loads((tmp / "ally-adler-vendor.json").read_text())
+        if adler_readback != adler_preparation:
+            raise SystemExit("Ally Adler vendor readback receipt changed")
 
     plain_report_path = tmp / "ifma-vendor-plain.json"
     if not plain_report_path.is_file():
@@ -1697,6 +2117,7 @@ def verify_rebuilt_vendor_tree(prof, rebuilt_tree, tmp, otatools=None, keys_dir=
         manifest_path=manifest_path,
         provenance=_partition_provenance("vendor_a"),
         include_pastel=_vendor_has_pastel(prof),
+        rebuilt_vendor_profile=prof,
     )
     print("ifma vendor readback ok")
     return True
@@ -1743,13 +2164,18 @@ def _copy_partition_extent(img_path, offset, size, destination, *, partition_nam
 
 
 def rebuild_system_partition(prof, img_path, tmp, otatools=None, keys_dir=None, *, manifest_path=MANIFEST_PATH):
-    """Extract system_a from super, patch 6 plain ELFs + virt.apex (5 ELFs), rebuild EROFS, add AVB footer, and return extent."""
+    """Rebuild the exact system CPU patch set, including explicitly opted-in Ally APEXes."""
+    adler_apex_specs = ally_adler_apex_specs(prof)
     if not enabled(prof):
         return None
     img_path = Path(img_path)
     tmp = Path(tmp)
     otatools = Path(otatools or os.environ["GBOS_OTATOOLS"])
+    guest_enabled = _guest_module(prof) is not None
+    if guest_enabled:
+        microdroid_preflight(prof, otatools)
     keys = ensure_apex_keys(keys_dir or _default_keys_dir(tmp), create=False)
+    guest_chain = _GuestChain(prof, keys) if guest_enabled else None
     cert_der = Path(keys["container_cert_der"]).read_bytes()
 
     parts = _gpt_partitions(img_path)
@@ -1783,6 +2209,7 @@ def rebuild_system_partition(prof, img_path, tmp, otatools=None, keys_dir=None, 
     )
     old_index = _index_tree(sys_tree)
 
+    adler_report = ally_adler_tree(prof, "system", sys_tree)
     plain_report_path = tmp / "ifma-system-plain.json"
     try:
         plain_report = PATCH_IFMA.run(
@@ -1803,11 +2230,19 @@ def rebuild_system_partition(prof, img_path, tmp, otatools=None, keys_dir=None, 
         otatools,
         keys,
         manifest_path=manifest_path,
+        microdroid=guest_chain,
     )
+    adler_apex_reports = {}
+    for apex_rel, spec in adler_apex_specs.items():
+        adler_apex_reports[apex_rel] = patch_apex_file(
+            sys_tree / apex_rel, apex_rel, tmp / ("ally-adler-apex-" + spec["adler_scope"]),
+            otatools, keys, manifest_path=manifest_path, spec=spec, adler_scope=spec["adler_scope"],
+        )
     scan_rebuilt_tree(
         sys_tree, "system_a patched", otatools, tmp / "ifma-scan-system",
         manifest_path=manifest_path,
         provenance=_partition_provenance("system_a"),
+        microdroid=guest_chain.binding if guest_chain is not None else None,
     )
 
     fc_file = tmp / "system_file_contexts"
@@ -1858,10 +2293,15 @@ def rebuild_system_partition(prof, img_path, tmp, otatools=None, keys_dir=None, 
     only_old = sorted(set(old_index) - set(new_index))
     only_new = sorted(set(new_index) - set(old_index))
     changed = sorted(k for k in set(old_index) & set(new_index) if old_index[k] != new_index[k])
-    if only_old or only_new or changed != list(SYSTEM_EXPECTED_CHANGED):
+    expected_changed = sorted(set(SYSTEM_EXPECTED_CHANGED) | set(ally_adler_changed_paths(prof, "system"))
+                              | set(adler_apex_specs))
+    if only_old or only_new or changed != expected_changed:
         raise SystemExit(
-            f"system tree diff is not the expected 7 IFMA files: only_old={only_old}, only_new={only_new}, changed={changed}"
+            f"system tree diff is not the exact CPU patch set: only_old={only_old}, only_new={only_new}, changed={changed}"
         )
+    adler_readback = ally_adler_tree(prof, "system", new_tree, verify=True)
+    if adler_readback != adler_report:
+        raise SystemExit("Ally Adler system readback receipt changed")
 
     # Re-verify the 6 plain system ELFs and com.google.android.virt.apex from the freshly extracted system.erofs.
     verify_plain = PATCH_IFMA.run(
@@ -1880,11 +2320,21 @@ def rebuild_system_partition(prof, img_path, tmp, otatools=None, keys_dir=None, 
         otatools,
         expected_cert_der=cert_der,
         manifest_path=manifest_path,
+        microdroid=guest_chain,
     )
+    for apex_rel, spec in adler_apex_specs.items():
+        readback = verify_apex_file(
+            new_tree / apex_rel, apex_rel, tmp / ("ally-adler-verify-" + spec["adler_scope"]),
+            otatools, expected_cert_der=cert_der, manifest_path=manifest_path,
+            spec=spec, adler_scope=spec["adler_scope"],
+        )
+        if readback["ally_adler"] != adler_apex_reports[apex_rel]["ally_adler"]:
+            raise SystemExit(f"{apex_rel}: final system Adler APEX receipt changed")
     scan_rebuilt_tree(
         new_tree, "system_a rebuilt", otatools, tmp / "ifma-scan-system-readback",
         manifest_path=manifest_path,
         provenance=_partition_provenance("system_a"),
+        microdroid=guest_chain.binding if guest_chain is not None else None,
     )
     shutil.rmtree(new_tree, ignore_errors=True)
     src_erofs.unlink(missing_ok=True)
@@ -1930,6 +2380,10 @@ def rebuild_system_partition(prof, img_path, tmp, otatools=None, keys_dir=None, 
         "system_plain": plain_report["targets"],
         "virt_apex": virt_report["targets"],
     }
+    if adler_report is not None:
+        summary["ally_adler_system"] = adler_report
+        summary["ally_adler_vendor"] = json.loads((tmp / "ally-adler-vendor.json").read_text())
+        summary["ally_adler_apexes"] = adler_apex_reports
     (logs_dir / "ifma-report.json").write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     print(f"system tree ok (offset={system_off}, size={system_size})")
     return {"system_off": system_off, "system_size": system_size, "system_img": system_img}

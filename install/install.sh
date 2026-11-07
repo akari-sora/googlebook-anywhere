@@ -25,6 +25,11 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 die() { echo "install.sh: $*" >&2; exit 2; }
 # This installer cache does not support the isolated USB trial. Use builder/build.sh directly.
 [ -z "${GBOS_USB_SMOKE:-}" ] || die "GBOS_USB_SMOKE is unsupported by install.sh; use builder/build.sh directly"
+# Opt-in owned-key rebuild: reject invalid policy before output or key writes.
+case "${GBOS_APEX_KEYS_EXISTING_ONLY-0}" in
+    0|1) ;;
+    *) die "GBOS_APEX_KEYS_EXISTING_ONLY must be 0 or 1" ;;
+esac
 # Developer-only. A release install never powers itself off; pass this only to builder/build.sh for a TEST image.
 if [ -n "${GBOS_TEST_AUTOOFF:-}" ]; then
     die "GBOS_TEST_AUTOOFF is developer-only (TEST images); install.sh does not accept it"
@@ -349,10 +354,22 @@ fi
 if [ "$(python3 "$ROOT/builder/lib/devprofile.py" get "$PROFILE" cpu_compat.patch_ifma)" = true ]; then
     export GBOS_APEX_KEYS_DIR="${GBOS_APEX_KEYS_DIR:-$KEYS/apex-keys}"
     APEX_KEY_INFO=$(GBOS_AVB_KEY="$AVB_KEY" GBOS_OUT="$WORK/build" python3 -c \
-        'import sys; sys.path.insert(0, sys.argv[1]); import ifma; ifma.ensure_apex_keys()' "$ROOT/builder/lib")
+        'import sys; sys.path.insert(0, sys.argv[1]); import ifma; ifma.ensure_apex_keys_for_startup()' "$ROOT/builder/lib")
     printf '%s\n' "$APEX_KEY_INFO"
     PARAMS="$PARAMS
 $APEX_KEY_INFO"
+fi
+if [ "$(python3 "$ROOT/builder/lib/devprofile.py" get "$PROFILE" cpu_compat.patch_ally_bootstrap)" = true ]; then
+    # These exact reviewed transformers live outside builder/, so SRC_ID alone is insufficient.
+    ALLY_BOOTSTRAP_ID=$(python3 -B "$ROOT/builder/lib/ally_bootstrap.py" identity) || die "Ally bootstrap source identity failed"
+    PARAMS="$PARAMS
+ally-bootstrap $ALLY_BOOTSTRAP_ID"
+    # External official guest signer/initrd utility must be checked even on cache hits.
+    MICRODROID_ID=$(python3 -B -c \
+        'import sys,json; sys.path.insert(0,sys.argv[1]); import devprofile,ifma; print(json.dumps(ifma.microdroid_preflight(devprofile.load(sys.argv[2]),sys.argv[3]),sort_keys=True,separators=(",",":")))' \
+        "$ROOT/builder/lib" "$PROFILE" "$WORK/base/cache/otatools") || die "Ally Microdroid preflight failed"
+    PARAMS="$PARAMS
+ally-microdroid $MICRODROID_ID"
 fi
 IMG="$WORK/build/image/$IMAGE_NAME"
 if [ "$UPDATE" = 1 ] && [ -e "$WORK/build" ] && { [ ! -f "$WORK/build/params" ] || [ "$(cat "$WORK/build/params")" != "$PARAMS" ] \

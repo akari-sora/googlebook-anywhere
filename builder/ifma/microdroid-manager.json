@@ -1,0 +1,21 @@
+{
+  "path": "system/bin/microdroid_manager",
+  "sha256": "32efab45a5653acc33c440fc0761744e70a95caf45b807209764185da747bb15",
+  "patched_sha256": "0e94b4dd4749df84701007c3dff74a90bfa48a9128b007c9c716a5a97a27219c",
+  "size": 2318880,
+  "site_va": "0x17b96d",
+  "file_offset": "0x17b96d",
+  "function_va": "0x17b820",
+  "function_size": 1203,
+  "function_name": "stripped; unique .eh_frame FDE 0x17b820..0x17bcd3; approved zmij formatter pattern",
+  "function_sha256": "8a1084f52d47380d1cff267c7503a11977cfd727d9aa0b54bef989c5247d0422",
+  "patched_function_sha256": "902c8b510be9ee4bbb893780d29afb6bae0fd7593ced190373adf443abf82cea",
+  "table_va": "0x3b000",
+  "table_file_offset": "0x3b000",
+  "table_hex": "bbb88d0600000000bbb88d0600000000f0d8ffff00000000f0d8ffff000000007b1400007b1400007b1400007b1400009a199a199a199a199a199a199a199a199cff00009cff00009cff00009cff0000f600f600f600f600f600f600f600f6000f0e0d0c0b0a0908070605040302010030303030303030303030303030303030",
+  "context_va": "0x17b94c",
+  "context_offset": "0x17b94c",
+  "context_hex": "c5f96ec2c4e1f96ec8c5f16cc0c5f9f40ec5f173d128c5e9efd2c4e369025e1005c4e2f1b4c3c5f9e44e20c5f172d103c4e271404e40c5f9d4c1c5f9e44e30c5f1d54e50c5f9d4c1c4",
+  "patch_offset": "0x17b966",
+  "patch_va": "0x17b966"
+}

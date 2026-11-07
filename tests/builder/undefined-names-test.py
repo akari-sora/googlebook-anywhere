@@ -21,8 +21,14 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent.parent
 GLOBS = ["builder/*.py", "builder/lib/*.py", "builder/kmod/*.py", "builder/ifma/*.py"]
-# path relative to ROOT -> reason. Empty: no builder script uses exec/globals()/star imports today.
+# path relative to ROOT -> reason for skipping the whole file.
 ALLOW: dict[str, str] = {}
+# These calls execute already hash-checked bytes in a separate ModuleType namespace.
+# Match the complete AST and still scan the containing file for undefined names.
+ISOLATED_EXEC = {
+    "builder/lib/ally_adler.py": "exec(compile(sources[PATCHER], module.__file__, 'exec'), module.__dict__)",
+    "builder/lib/ally_bootstrap.py": "exec(compile(data, module.__file__, 'exec'), module.__dict__)",
+}
 # module attributes the interpreter provides to every module
 IMPLICIT = {"__name__", "__file__", "__doc__", "__builtins__", "__spec__", "__loader__",
             "__package__", "__annotations__", "__cached__", "__dict__"}
@@ -50,13 +56,16 @@ def scripts(root):
     return out
 
 
-def dynamic_tricks(tree):
+def dynamic_tricks(tree, rel=""):
     """Constructs that bind globals symtable cannot see."""
     found = []
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom) and any(a.name == "*" for a in node.names):
             found.append(f"line {node.lineno}: from {node.module} import *")
         elif isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in ("exec", "globals"):
+            allowed = ISOLATED_EXEC.get(rel)
+            if node.func.id == "exec" and allowed and ast.dump(node) == ast.dump(ast.parse(allowed, mode="eval").body):
+                continue
             found.append(f"line {node.lineno}: {node.func.id}()")
     return found
 
@@ -114,7 +123,7 @@ def main():
         failed += 1
     for p in files:
         rel = str(p.relative_to(ROOT))
-        tricks = dynamic_tricks(ast.parse(p.read_text(), rel))
+        tricks = dynamic_tricks(ast.parse(p.read_text(), rel), rel)
         if tricks and rel not in ALLOW:
             print(f"FAIL {rel}: binds names dynamically ({'; '.join(tricks)}); list it in ALLOW with a reason")
             failed += 1
@@ -156,6 +165,16 @@ def main():
         print("PASS self-check: implicit dunders (__conditional_annotations__) not flagged, DROP still flagged"); passed += 1
     else:
         print("FAIL self-check dunder: reads", sorted(reads), "flagged", sorted(got)); failed += 1
+    # A matching isolated call is allowed only in its named file; global exec and
+    # modified calls must still be rejected rather than silently skipping scans.
+    rel = "builder/lib/ally_bootstrap.py"
+    safe = ISOLATED_EXEC[rel]
+    if (not dynamic_tricks(ast.parse(safe), rel)
+            and dynamic_tricks(ast.parse(safe), "other.py")
+            and dynamic_tricks(ast.parse("exec(data)"), rel)):
+        print("PASS self-check: only the reviewed isolated exec is allowed"); passed += 1
+    else:
+        print("FAIL self-check: isolated exec exception too broad"); failed += 1
     print(f"undefined-name tests: {passed} passed, {failed} failed")
     return 1 if failed else 0
 

@@ -180,7 +180,7 @@ overlay 裡的自動亮度、power_profile 等設定也會一起消失。
   `LoaderSystemToken`。
 - **韌體設定寫入類驅動（已知限制）**：`CONFIG_HP_BIOSCFG`、`CONFIG_THINK_LMI`、`CONFIG_DELL_WMI_SYSMAN`、`CONFIG_ASUS_WMI` 設成 `=y` 時，閘門目前不拒絕。它們可以經 WMI／SMM 寫 BIOS 設定，和已經拒絕的 `DEVPORT`／`X86_MSR` 是同一類、需要 root 的能力。原廠 lapis 與釘選的 step-1 都不編這些驅動。這四個驅動的 `.ko` 若出現在 `modules/`，basename 不在閘門的對照表裡，同樣不拒絕。這是文件化的限制，不是安全尾已經擋住的項目。
 - **具備 `CAP_SYS_RAWIO` 的特權 root 程序與 x86 I/O port 指令**：原廠 lapis 與 Track 2 自建核心皆關閉 `CONFIG_DEVMEM`、`CONFIG_DEVPORT`、`CONFIG_PROC_KCORE`、`CONFIG_X86_MSR`、`CONFIG_ACPI_CUSTOM_METHOD`，因此 `/dev/mem`、`/dev/port`、`/proc/kcore`、`/dev/cpu/*/msr` 等裝置與 procfs 節點完全不存在；然而 x86_64 PCI／傳統驅動需要 `CONFIG_HAS_IOPORT=y`，且核心維持 `CONFIG_X86_IOPL_IOPERM=y`，因此具備 `CAP_SYS_RAWIO` 的 root 程序理論上仍可呼叫 `ioperm(2)`／`iopl(2)` 直接執行 CPU I/O port 指令。這個安全模型旨在移除了燒錄工具與裝置驅動後防止系統服務誤寫韌體，並非針對已取得 `CAP_SYS_RAWIO` 的惡意 root 程式碼提供核心層隔離。
-- **其他 SD/MMC 主控制器**：`amd-hx370` 等 profile 封鎖 `sdhci_pci` 與 `sdhci_acpi`，且 `check-kconfig` 拒絕這兩個驅動的 built-in 設定；這只涵蓋使用這兩種驅動的控制器，不能涵蓋所有 PCI／ACPI 讀卡機。HX370 的 Realtek RTS525A 使用 `rtsx` 驅動家族，現有 SDHCI 規則不能證明它被遮蔽。已歸檔 HX370 v0.3.0 映像的核心未編入 RTSX PCI 讀卡機驅動；共用維護核心的支援與實機裝置可見性仍待驗證；其他控制器或 `generic-x86` 的內建儲存也可能對 Android 可見。
+- **其他 SD/MMC 主控制器**：`amd-hx370` 等 profile 封鎖 `sdhci_pci` 與 `sdhci_acpi`，且 `check-kconfig` 拒絕這兩個驅動的 built-in 設定；這只涵蓋使用這兩種驅動的控制器，不能涵蓋所有 PCI／ACPI 讀卡機。HX370 的 Realtek RTS525A 使用 `rtsx` 驅動家族，現有 SDHCI 規則不能證明它被遮蔽。已歸檔 HX370 v0.3.0 映像的核心未編入 RTSX PCI 讀卡機驅動；新核心候選已編入並通過靜態檢查，尚未整合映像或實機驗證。該候選可能讓插入的卡對 Android 可見，既有 SDHCI 黑名單不能代替 RTSX 隔離；共用維護核心的支援與實機裝置可見性仍待驗證；其他控制器或 `generic-x86` 的內建儲存也可能對 Android 可見。
 - **i2c-hid 裝置的韌體**：觸控板、觸控螢幕的韌體理論上可以由 root 透過 hidraw 更新。vendor 裡唯一的更新程式（fwupd 與
   Elan 的 cab）已移除，但核心層沒有封鎖 hidraw。
 - **指紋 MCU（FPMCU）的燒錄路徑**：vendor 的 `com.android.hardware.fingerprint.crosfp` APEX 沒有移除（指紋功能要用它），

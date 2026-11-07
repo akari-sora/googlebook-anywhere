@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fail-closed verifier and build-time patcher for the 17 known host IFMA ELFs.
+"""Fail-closed patcher for 17 host IFMA ELFs and one explicit guest scope.
 
 The manifest is trusted review input. The extracted root must be exclusively
 owned by this operation: concurrent writers are outside the safety model.
@@ -30,6 +30,8 @@ except ImportError:  # Support loading this file as a module from tests/tools.
 
 SCHEMA = 1
 TARGET_COUNT = 17
+MANAGER_SCOPE = ("microdroid", "system")
+MANAGER_MANIFEST_SHA256 = "4dc035949d55c4985c9f36c3d90012317261dce01cd07cb2d961434ac310d326"
 ORIGINAL = bytes.fromhex("c4e369025e1005c4e2f1b4c3")
 REPLACEMENT = bytes.fromhex("c5f1f44e10c5f9d4c10f1f00")
 SITE_PREFIX_LENGTH = 7
@@ -277,6 +279,43 @@ def _load_manifest(path):
     return rows
 
 
+def _load_manager_manifest(path):
+    """The separate guest scope cannot expand the reviewed host target set."""
+    try:
+        with path.open("rb") as stream:
+            data = stream.read(8193)
+    except OSError as exc:
+        raise PatchError(f"cannot read manager manifest: {exc}") from exc
+    if len(data) > 8192 or _sha256(data) != MANAGER_MANIFEST_SHA256:
+        raise PatchError("manager manifest does not match the fixed SHA256")
+    try:
+        row = json.loads(data)
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise PatchError(f"cannot decode manager manifest: {exc}") from exc
+    if not isinstance(row, dict) or row.get("path") != "system/bin/microdroid_manager":
+        raise PatchError("manager manifest has an unapproved target path")
+    return row
+
+
+def _validate_manager(data, row):
+    result = validate(data, row)
+    function_hashes = {
+        key: _hex(row.get(key), 32, f"{key} function SHA256").hex()
+        for key in ("function_sha256", "patched_function_sha256")
+    }
+    try:
+        offset = Elf(data).v2o(_integer(row["function_va"], "function_va"),
+                               _integer(row["function_size"], "function_size"), executable=True)
+    except ValueError as exc:
+        raise PatchError(f"manager function mapping refused: {exc}") from exc
+    size = _integer(row["function_size"], "function_size")
+    source_key = "function_sha256" if result["state"] == "original" else "patched_function_sha256"
+    for content, key in ((data, source_key), (result["patched"], "patched_function_sha256")):
+        if _sha256(content[offset:offset + size]) != function_hashes[key]:
+            raise PatchError(f"manager function SHA256 mismatch: {key}")
+    return result
+
+
 def _select_scope(rows, scope):
     if scope is None:
         return [(row["path"], row) for row in rows]
@@ -337,8 +376,14 @@ def run(root, manifest_path, report_path, apply, scope=None):
     if report_path.exists() and not stat.S_ISREG(report_path.lstat().st_mode):
         raise PatchError("existing report path must be a regular file")
 
-    rows = _load_manifest(manifest_path)
-    selected = _select_scope(rows, scope)
+    if scope == MANAGER_SCOPE:
+        row = _load_manager_manifest(manifest_path)
+        selected = [(row["path"], row)]
+        validator = _validate_manager
+    else:
+        rows = _load_manifest(manifest_path)
+        selected = _select_scope(rows, scope)
+        validator = validate
     protected = [manifest_path, Path(__file__).absolute(), Path(__file__).with_name("elfutil.py").absolute()]
     targets = []
     for rel_path, row in selected:
@@ -350,7 +395,7 @@ def run(root, manifest_path, report_path, apply, scope=None):
         if _same_file_or_path(report_path, target):
             raise PatchError("report path aliases a target binary")
         data = target.read_bytes()
-        result = validate(data, row)
+        result = validator(data, row)
         targets.append((target, target.stat().st_mode, result, row, rel_path))
 
     if any(_same_file_or_path(report_path, item) for item in protected):
@@ -386,7 +431,7 @@ def run(root, manifest_path, report_path, apply, scope=None):
         ],
         "changed": changed,
         "limitations": [
-            "The batch is fully preflighted but cannot be crash-atomic across 17 files.",
+            "The batch is fully preflighted but cannot be crash-atomic across multiple files.",
             "Replacement preserves ordinary permission bits, not ownership, SELinux labels, or extended attributes; packaging must restore those attributes.",
             "The manifest is trusted review input and the extracted root must have no concurrent writers during verification or apply.",
         ],
@@ -402,10 +447,10 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", required=True, help="root of the extracted ELF tree")
     parser.add_argument("--report", required=True, help="JSON report output path")
-    parser.add_argument("--manifest", default=str(Path(__file__).with_name("manifest.json")),
-                        help="trusted reviewed manifest (default: manifest.json beside this script)")
+    parser.add_argument("--manifest",
+                        help="trusted reviewed manifest (default: host manifest, or pinned manager manifest for microdroid:system)")
     parser.add_argument("--apply", action="store_true", help="atomically replace each validated original")
-    parser.add_argument("--scope", help="optional scope filter (partition:vendor_a, partition:system_a, partition:system_ext_a, or apex:<apex_path>)")
+    parser.add_argument("--scope", help="optional partition:<name>, apex:<apex_path>, or explicit microdroid:system scope")
     args = parser.parse_args(argv)
     scope = None
     if args.scope:
@@ -413,8 +458,10 @@ def main(argv=None):
             print(f"patch-ifma: refused: invalid --scope {args.scope!r}", file=sys.stderr)
             return 1
         scope = tuple(args.scope.split(":", 1))
+    manifest = args.manifest or str(Path(__file__).with_name(
+        "microdroid-manager.json" if scope == MANAGER_SCOPE else "manifest.json"))
     try:
-        report = run(args.root, args.manifest, args.report, args.apply, scope=scope)
+        report = run(args.root, manifest, args.report, args.apply, scope=scope)
     except (OSError, PatchError) as exc:
         print(f"patch-ifma: refused: {exc}", file=sys.stderr)
         return 1

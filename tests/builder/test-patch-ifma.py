@@ -864,6 +864,7 @@ def run_ifma_checks(check):
         "ifma-key-signing-tests.py",
         "ifma-metadata-tests.py",
         "ifma-path-tests.py",
+        "ifma-microdroid-tests.py",
         "ifma-shell-tests.py",
         "ifma-container-tests.py",
         "ifma-scan-tests.py",
@@ -891,7 +892,8 @@ def run_ifma_checks(check):
         for pid in ("kano", "generic-x86", "amd-hx370"):
             p = devprofile.load(ROOT / "profiles" / pid)
             check(f"profile {pid} enables [cpu_compat] patch_ifma = true",
-                  p["cpu_compat"] == {"patch_ifma": True} and ifma.enabled(p) is True)
+                  p["cpu_compat"] == {"patch_ifma": True, "patch_ally_bootstrap": False}
+                  and ifma.enabled(p) is True)
 
         kano_toml = (ROOT / "profiles/kano/profile.toml").read_text(encoding="utf-8")
         cc_block_re = re.compile(r"(?ms)^\[cpu_compat\]\n.*?(?=^\[hooks\])")
@@ -903,7 +905,8 @@ def run_ifma_checks(check):
         )
         p_def = devprofile.load(no_cc_dir)
         check("profile without [cpu_compat] defaults patch_ifma to false",
-              p_def["cpu_compat"] == {"patch_ifma": False} and ifma.enabled(p_def) is False)
+              p_def["cpu_compat"] == {"patch_ifma": False, "patch_ally_bootstrap": False}
+              and ifma.enabled(p_def) is False)
 
         off_cc_dir = base / "prof-off/kano"
         shutil.copytree(ROOT / "profiles/kano", off_cc_dir)
@@ -913,7 +916,8 @@ def run_ifma_checks(check):
         )
         p_off = devprofile.load(off_cc_dir)
         check("profile with patch_ifma = false loads as False",
-              p_off["cpu_compat"] == {"patch_ifma": False} and ifma.enabled(p_off) is False)
+              p_off["cpu_compat"] == {"patch_ifma": False, "patch_ally_bootstrap": False}
+              and ifma.enabled(p_off) is False)
 
         for label, bad_snip, want_err in (
             ("non-bool string patch_ifma", '[cpu_compat]\npatch_ifma = "yes"\n\n', "cpu_compat.patch_ifma: expected bool"),
@@ -1208,7 +1212,7 @@ def run_ifma_checks(check):
 
         content_drift_err = rebuild_with_mkfs_drift("content")
         check("rebuild_system_partition refuses an eighth changed file after extracting the rebuilt system_a",
-              "system tree diff is not the expected 7 IFMA files" in content_drift_err
+              "system tree diff is not the exact CPU patch set" in content_drift_err
               and "system/etc/untouched.cfg" in content_drift_err)
 
         rebuilt_uuid_drift_err = rebuild_with_mkfs_drift("uuid")

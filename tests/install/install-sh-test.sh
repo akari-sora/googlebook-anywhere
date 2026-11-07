@@ -182,18 +182,18 @@ cp "$ROOT/profiles/amd-hx370/profile.toml" "$ROOT/profiles/amd-hx370/vendor.py" 
 cp "$ROOT/profiles/_safety.toml" "$R/profiles/"
 cp "$ROOT/builder/lib/devprofile.py" "$R/builder/lib/"     # install.sh reads the image name from the profile
 # stand-in for builder/lib/ifma.py: install.sh's IFMA step (cpu_compat.patch_ifma = true) imports it and puts the
-# key-info line ensure_apex_keys() prints into build/params. Each call is logged; GBOS_TEST_IFMA_KEYINFO changes the line.
+# key-info line ensure_apex_keys_for_startup() prints into build/params. Each call is logged; GBOS_TEST_IFMA_KEYINFO changes the line.
 cat > "$R/builder/lib/ifma.py" << 'STUB'
 """stand-in for builder/lib/ifma.py (install-sh-test.sh)"""
 import os
 
-def ensure_apex_keys():
+def ensure_apex_keys_for_startup():
     with open(os.path.join(os.environ["STUB_LOG"], "ifma"), "a") as log:
         log.write(os.environ.get("GBOS_APEX_KEYS_DIR", "") + "\n")
     print(os.environ.get("GBOS_TEST_IFMA_KEYINFO", "apex-keys stand-in-fingerprint-v1"))
 STUB
-if ! python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import ifma; ifma.ensure_apex_keys' "$R/builder/lib" > /dev/null 2>&1; then
-    bad "the fake repo has no importable builder/lib/ifma.py with ensure_apex_keys(): install.sh's IFMA step (patch_ifma = true) would fail every build"
+if ! python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import ifma; ifma.ensure_apex_keys_for_startup' "$R/builder/lib" > /dev/null 2>&1; then
+    bad "the fake repo has no importable builder/lib/ifma.py with ensure_apex_keys_for_startup(): install.sh's IFMA step (patch_ifma = true) would fail every build"
     finish
 fi
 echo "# stand-in for base/gbos_base.py" > "$R/base/gbos_base.py"
@@ -292,7 +292,7 @@ check "GBOS_TEST_AUTOOFF creates nothing" '[ ! -e "$W" ] && [ ! -e "$T/log/build
 iexpect "first run builds base and image" 0 "^done: $W/build/image/googlebook-kano.img" -- --work "$W"
 check "the stubs ran once each" '[ "$(builds)" = 1 ] && [ "$(wc -l < "$T/log/base" | tr -d " ")" = 1 ]'
 ifma_calls() { cat "$T/log/ifma" 2>/dev/null | wc -l | tr -d ' '; }
-check "IFMA (kano: patch_ifma = true): ensure_apex_keys() ran once for the build" '[ "$(ifma_calls)" = 1 ]'
+check "IFMA (kano: patch_ifma = true): ensure_apex_keys_for_startup() ran once for the build" '[ "$(ifma_calls)" = 1 ]'
 check "IFMA: its key-info line is recorded in build/params" 'grep -qx "apex-keys stand-in-fingerprint-v1" "$W/build/params"'
 check "IFMA: the stand-in saw the persistent key dir GBOS_APEX_KEYS_DIR=\$W/keys/apex-keys (never build/keys)" '[ "$(sort -u "$T/log/ifma")" = "$W/keys/apex-keys" ]'
 for l in "^sources [0-9a-f]{64}$" "^adb-key none$" "^default-entry lapis-quiet.conf$" "^loader-editor no$" "^ec-features typec$" "^android-model none$" "^selftest 0$" "^firmware-drift 0$"; do
@@ -469,7 +469,7 @@ sed -i.bak -e 's/^patch_ifma = true$/patch_ifma = false/' -e 's/^id = "kano"$/id
 check "the kano-noifma copy says patch_ifma = false" '[ "$(python3 "$R/builder/lib/devprofile.py" get "$R/profiles/kano-noifma" cpu_compat.patch_ifma)" = false ]'
 i0=$(ifma_calls); export i0   # the eval use on the next check line is invisible to the linter (SC2034), same as k0 below
 iexpect "patch_ifma = false builds" 0 "^done: " GBOS_PROFILE="$R/profiles/kano-noifma" -- --work "$T/work-noifma"
-check "... without calling ensure_apex_keys()" '[ "$(ifma_calls)" = "$i0" ] && [ -f "$T/work-noifma/build/params" ] && ! grep -q "^apex-keys" "$T/work-noifma/build/params"'
+check "... without calling ensure_apex_keys_for_startup()" '[ "$(ifma_calls)" = "$i0" ] && [ -f "$T/work-noifma/build/params" ] && ! grep -q "^apex-keys" "$T/work-noifma/build/params"'
 mkdir -p "$T/noinc/openssl"; touch "$T/noinc/gelf.h" "$T/noinc/openssl/opensslv.h"   # libelf and OpenSSL, no libdw
 k0=$(cat "$T/log/kmod" 2>/dev/null | wc -l | tr -d ' '); export k0
 iexpect "no dwarf.h on the host: refused before the kernel build, with the libdw-dev hint" 2 \

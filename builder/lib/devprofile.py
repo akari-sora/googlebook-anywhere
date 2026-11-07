@@ -9,7 +9,7 @@ usage: devprofile.py check <profile dir>                     validate (exit 0 = 
        devprofile.py firmware <profile dir>                  "<path> <from> <src> <sha256>" per firmware file
        devprofile.py kmods <profile dir>                     the extra kernel modules the profile ships, one per line
        devprofile.py json <profile dir>                      the validated profile as JSON"""
-import bz2, gzip, hashlib, json, lzma, os, re, shutil, signal, struct, subprocess, sys, threading, time, unicodedata, zlib
+import bz2, gzip, hashlib, json, lzma, os, re, shutil, selectors, struct, subprocess, sys, time, unicodedata, zlib
 from pathlib import Path
 
 try:
@@ -47,7 +47,7 @@ SCHEMA = {
     "hooks": {"vendor": str},
     "kmods": LSTR,
     "camera": {"libcamera": bool},
-    "cpu_compat": {"patch_ifma": bool},
+    "cpu_compat": {"patch_ifma": bool, "patch_ally_bootstrap": bool},
 }
 # display.density bounds (dpi): DisplayMetrics.DENSITY_LOW (120) to DENSITY_XXHIGH (480). 0 = unset.
 DENSITY_RANGE = (120, 480)
@@ -147,71 +147,89 @@ def _check_output_cap(out, what: str) -> None:
 
 
 def _run_bounded(args: list, data: bytes) -> subprocess.CompletedProcess:
-    """subprocess.run(args, input=data, capture_output=True) with the scanner's
-    timeout and DECODER_OUTPUT_CAP. Raises DecoderLimitError carrying the
-    output read so far when either bound is hit; stderr is discarded."""
+    """Bound decoder output and elapsed time while retaining any decoded prefix.
+
+    Trusted decoder CLIs inherit the caller's process group. This helper reaps
+    its immediate child; the caller's lifecycle owns any descendants.
+    """
     cap = DECODER_OUTPUT_CAP
     timeout = _decoder_timeout(len(data))
     deadline = time.monotonic() + timeout
+    out = bytearray()
+    poller = None
     proc = subprocess.Popen(
         args, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-        start_new_session=True,
+        bufsize=0,
     )
-    out = bytearray()
-    over = []
-
-    def kill():
+    try:
+        poller = selectors.DefaultSelector()
+        os.set_blocking(proc.stdin.fileno(), False)
+        os.set_blocking(proc.stdout.fileno(), False)
+        poller.register(proc.stdout, selectors.EVENT_READ, "stdout")
+        pending = memoryview(data)
+        offset = 0
+        if pending:
+            poller.register(proc.stdin, selectors.EVENT_WRITE, "stdin")
+        else:
+            proc.stdin.close()
+        while poller.get_map():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise DecoderLimitError(
+                    f"{args[0]}: decoder timed out after {timeout:.0f}s", bytes(out),
+                )
+            for key, _ in poller.select(remaining):
+                if key.data == "stdin":
+                    try:
+                        offset += os.write(key.fd, pending[offset:offset + (1 << 16)])
+                    except (BlockingIOError, InterruptedError):
+                        continue
+                    except BrokenPipeError:
+                        offset = len(pending)
+                    if offset == len(pending):
+                        poller.unregister(proc.stdin)
+                        proc.stdin.close()
+                else:
+                    try:
+                        piece = os.read(key.fd, min(1 << 16, cap - len(out) + 1))
+                    except (BlockingIOError, InterruptedError):
+                        continue
+                    if not piece:
+                        poller.unregister(proc.stdout)
+                        proc.stdout.close()
+                    elif len(out) + len(piece) > cap:
+                        out.extend(piece[:cap - len(out)])
+                        raise DecoderLimitError(
+                            f"{args[0]}: decoded output exceeds {cap} bytes", bytes(out),
+                        )
+                    else:
+                        out.extend(piece)
         try:
-            os.killpg(proc.pid, signal.SIGKILL)
-        except OSError:
-            pass
-
-    def feed():
+            rc = proc.wait(timeout=max(0.0, deadline - time.monotonic()))
+        except subprocess.TimeoutExpired:
+            # A child may close stdout without exiting; it shares the deadline.
+            raise DecoderLimitError(
+                f"{args[0]}: decoder timed out after {timeout:.0f}s", bytes(out),
+            ) from None
+    finally:
         try:
-            proc.stdin.write(data)
-        except OSError:
-            pass
+            try:
+                if proc.poll() is None:
+                    try:
+                        proc.kill()
+                    except ProcessLookupError:
+                        pass
+            finally:
+                proc.wait(timeout=5)
         finally:
             try:
-                proc.stdin.close()
-            except OSError:
-                pass
-
-    def drain():
-        while True:
-            piece = proc.stdout.read(1 << 16)
-            if not piece:
-                return
-            if len(out) + len(piece) > cap:
-                out.extend(piece[:cap - len(out)])
-                over.append(True)
-                kill()
-                return
-            out.extend(piece)
-
-    writer = threading.Thread(target=feed, daemon=True)
-    reader = threading.Thread(target=drain, daemon=True)
-    writer.start()
-    reader.start()
-    reader.join(timeout)
-    timed_out = reader.is_alive()
-    if timed_out:
-        kill()
-        reader.join(5)
-    writer.join(5)
-    try:
-        rc = proc.wait(timeout=max(0.0, deadline - time.monotonic()))
-    except subprocess.TimeoutExpired:
-        # stdout closed but the child keeps running: same deadline.
-        kill()
-        proc.wait(5)
-        timed_out = True
-        rc = None
-    proc.stdout.close()
-    if over:
-        raise DecoderLimitError(f"{args[0]}: decoded output exceeds {cap} bytes", bytes(out))
-    if timed_out:
-        raise DecoderLimitError(f"{args[0]}: decoder timed out after {timeout:.0f}s", bytes(out))
+                if poller is not None:
+                    poller.close()
+            finally:
+                try:
+                    proc.stdin.close()
+                finally:
+                    proc.stdout.close()
     return subprocess.CompletedProcess(args, rc, bytes(out), b"")
 
 
@@ -409,7 +427,10 @@ def load(profile_dir, safety_path=SAFETY):
         p["display"].setdefault("density", 0)   # display.density: 0 = unset, the stock ro.sf.lcd_density stays
     p.setdefault("kmods", [])          # extra kernel modules (KMODS): none unless the profile lists them
     p.setdefault("camera", {"libcamera": False})   # the libcamera camera HAL overlay (hooks.vendor camera()): off
-    p.setdefault("cpu_compat", {"patch_ifma": False})  # build-time 12-byte AVX-IFMA -> AVX2 patch (builder/lib/ifma.py): off unless enabled
+    p.setdefault("cpu_compat", {})
+    if isinstance(p["cpu_compat"], dict):
+        p["cpu_compat"].setdefault("patch_ifma", False)
+        p["cpu_compat"].setdefault("patch_ally_bootstrap", False)
     if "modules" not in p:
         p["modules"] = {"unblock": [], "load": []}
     elif isinstance(p.get("modules"), dict):
@@ -434,6 +455,10 @@ def load(profile_dir, safety_path=SAFETY):
     m = p["model"]
     if m["android_model"] and not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9 ._-]{0,90}", m["android_model"]):
         raise ProfileError("model.android_model must be a printable ASCII model name (at most 91 characters)")
+    if p["cpu_compat"]["patch_ally_bootstrap"] and m["id"] != "rog-ally":
+        raise ProfileError("cpu_compat.patch_ally_bootstrap is restricted to rog-ally")
+    if p["cpu_compat"]["patch_ally_bootstrap"] and not p["cpu_compat"]["patch_ifma"]:
+        raise ProfileError("cpu_compat.patch_ally_bootstrap requires patch_ifma for partition integration")
     if not re.fullmatch(r"[a-z0-9][a-z0-9-]*", m["id"]) or m["id"] != d.resolve().name:
         raise ProfileError(f"model.id {m['id']!r} must be lower-case and equal to the directory name {d.resolve().name!r}")
     if m["status"] not in ("verified", "experimental", "probe-only"):
