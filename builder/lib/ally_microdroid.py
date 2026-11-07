@@ -112,6 +112,16 @@ class VerifiedMicrodroid:
         )
 
 
+def _lz4_path(directory):
+    """Use a pinned private binary when supplied, otherwise the system binary."""
+    private = Path(directory) / "lz4"
+    if os.path.lexists(private):
+        _require(not private.is_symlink() and private.is_file(), "private lz4 is not regular")
+        _require(os.access(private, os.X_OK), "private lz4 is not executable")
+        return private
+    return Path("/usr/bin/lz4")
+
+
 def _tools(tools_dir, otatools):
     _require(
         __debug__ and not sys.flags.optimize and not os.environ.get("PYTHONOPTIMIZE"),
@@ -133,10 +143,10 @@ def _tools(tools_dir, otatools):
     env = ifma._ot_env(otatools)
     for name in ("PYTHONOPTIMIZE", "PYTHONPATH", "PYTHONHOME", "PYTHONUSERBASE"):
         env.pop(name, None)
-    _require(_sha("/usr/bin/lz4") == c["tools"]["lz4"], "Microdroid lz4 pin mismatch")
+    _require(_sha(_lz4_path(d)) == c["tools"]["lz4"], "Microdroid lz4 pin mismatch")
     # The only PATH-resolved child commands in this pinned signer are the
     # initrd utility and lz4. Do not inherit caller PATH or permit shadows.
-    for name in ("lz4", "avbtool", "python", "python3", "openssl"):
+    for name in ("avbtool", "python", "python3", "openssl"):
         _require(
             not os.path.lexists(d / name), "Microdroid tool directory shadows " + name
         )
@@ -744,7 +754,7 @@ def preflight(otatools, *, tools_dir=None):
     directory, env = _tools(tools_dir, otatools)
     identity = source_identity(directory)
     identity["tools"]["avbtool"] = _sha(Path(otatools) / "bin/avbtool")
-    identity["tools"]["lz4"] = _sha("/usr/bin/lz4")
+    identity["tools"]["lz4"] = _sha(_lz4_path(directory))
     identity["avb_version"] = "1.4.0"
     return identity
 

@@ -1,6 +1,6 @@
 # 支援新的機型
 
-目前只有 KANO 完整驗證過。同世代（Intel Alder Lake / Raptor Lake，brya 家族）的其他 Chromebook 大概率能開機；
+目前實機驗證以 KANO 為主，相機與 S0ix 省電等項目仍未完成，最新結果見 [KANO 狀態](STATUS-KANO.md)。同世代（Intel Alder Lake / Raptor Lake，brya 家族）的其他 Chromebook 仍須逐台確認；
 一般 Intel 筆電與 AMD 機器還需要額外的工作（見最後一節）。每個型號都要逐項實機驗證。
 
 ## 前提
@@ -24,6 +24,8 @@ builder 裡和機型有關的值都在機型設定目錄，換 `GBOS_PROFILE`（
 - **實驗 `"Googlebook AMD HX370 native amdgpu (experimental)"`**（`lapis-debug.conf`）：在 `early-boot` 載入一次 `amdgpu`、絕不啟動 `gbos_efifb`，設定 `ro.hardware.vulkan=radeon` 並依 sysfs `/sys/class/drm/card*/device/uevent` 的 `DRIVER=amdgpu` 自動選擇 HWC 的 DRM 裝置。映像依 `[gralloc]` 把 `/vendor/lib64/libminigbm_gralloc.so` 換成 `tools/minigbm` 的建置（`backend_amdgpu`，並保留 `backend_vkms` 給 safe 選項；`GBOS_MINIGBM` 的 SHA-256 必須與設定一致，否則 build 停止）。kano 與 generic-x86 沒有這張表，那顆檔維持原樣。**誠實揭露**：此選項尚未在實機測試。QEMU 沒有 amdgpu，self-test 只開 safe 選項（allocator 走 vkms）。若實機選此項出現黑畫面，請重開機選預設的 `"Googlebook AMD HX370 safe"`。
 
 **Windows / BitLocker 必做前置步驟（進 BIOS 改 Secure Boot 之前）**：在任何裝有 Windows 的 PC 上，進 BIOS 動 Secure Boot 之前，先在管理員 PowerShell 執行 `manage-bde -status` 檢查所有磁碟區；只要有任何磁碟區啟用了 BitLocker，**必須先把每個加密磁碟區的 48 位數 BitLocker 復原金鑰（Recovery Key）備份並存到另一台裝置**（<https://aka.ms/myrecoverykey> 或對 `manage-bde -status` 列出的每個加密磁碟區執行 `manage-bde -protectors -get <磁碟區>`，例如 `C:`、`D:`）。切換 Secure Boot 可能會改變開機量測與 BitLocker 所綁定的 TPM PCR（例如 PCR 7，或依平台設定綁定的 PCR 0、2、4、11），下次開回 Windows 時**可能會要求輸入 48 位數復原金鑰**。`Suspend-BitLocker -MountPoint "C:" -RebootCount 1` 只是備份好復原金鑰之後的選用便利指令（暫停期間會把明文金鑰留在磁碟上，有保護空窗，且重開機次數用完後仍會檢查 TPM PCR；回到 Windows 後請用 `manage-bde -status`／`Resume-BitLocker` 確認保護已恢復），**絕對不能代替備份 48 位數復原金鑰**。
+
+`profiles/rog-ally/` 是 ROG Ally RC71L 的 `probe-only` 設定，採 GOP + SwiftShader，尚未完成實機功能驗收。它啟用 CPU 相容修補及 Microdroid guest 修補鏈；建置前必須設定 `GBOS_MICRODROID_TOOLS_DIR`，目錄包含 `sign_virt_apex.py` 與可執行的 `initrd_bootconfig`，內容須符合 `builder/ifma/microdroid-chain.json` 的工具 SHA。若主機的 `/usr/bin/lz4` 不符合該合約，可在同目錄放入符合既定 SHA 的可執行實體 `lz4` 檔；不可用 symlink，也不需替換主機的系統工具。缺少工具或 SHA 不符會停止建置。工具檢查通過不代表映像或實機驗收通過。
 
 | 檔案 | 內容 |
 |---|---|

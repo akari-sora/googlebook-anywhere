@@ -69,6 +69,43 @@ class MicrodroidTests(unittest.TestCase):
         with self.assertRaises(m.Refused):
             m.source_identity(self.root)
 
+    def test_lz4_tool_selection_and_refusal(self):
+        import hashlib
+        import ifma
+        otatools = self.root / "ota"
+        (otatools / "bin").mkdir(parents=True)
+        (otatools / "bin/avbtool").write_bytes(b"avb")
+        approved = b"approved-lz4"
+        pin = hashlib.sha256(approved).hexdigest()
+        contract = {"tools": {"avbtool": m._sha(otatools / "bin/avbtool"), "lz4": pin}}
+        real_sha = m._sha
+        def digest(path):
+            return pin if Path(path) == Path("/usr/bin/lz4") else real_sha(path)
+        with patch.object(m, "_contract", return_value=contract), \
+             patch.object(m, "source_identity"), \
+             patch.object(m, "_sha", side_effect=digest), \
+             patch.object(ifma, "_ot_env", return_value={}), \
+             patch.object(ifma, "_run_ot", return_value="avbtool 1.4.0"):
+            self.assertEqual(m._lz4_path(self.root), Path("/usr/bin/lz4"))
+            directory, env = m._tools(self.root, otatools)
+            self.assertEqual(env["PATH"], str(directory) + ":/usr/bin:/bin")
+            private = self.root / "lz4"
+            private.write_bytes(approved)
+            private.chmod(0o755)
+            self.assertEqual(m._lz4_path(self.root), private)
+            self.assertEqual(m._tools(self.root, otatools)[1]["PATH"].split(":")[0], str(self.root.resolve()))
+            private.write_bytes(b"wrong")
+            with self.assertRaisesRegex(m.Refused, "lz4 pin mismatch"):
+                m._tools(self.root, otatools)
+            private.unlink()
+            private.symlink_to(otatools / "bin/avbtool")
+            with self.assertRaisesRegex(m.Refused, "private lz4 is not regular"):
+                m._tools(self.root, otatools)
+            private.unlink()
+            (self.root / "python3").write_text("shadow")
+            with self.assertRaisesRegex(m.Refused, "shadows python3"):
+                m._tools(self.root, otatools)
+
     def test_good_bootconfig(self):
         m._bootconfig(self.bc, self.new, self.digest, 2432)
 
