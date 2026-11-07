@@ -1,0 +1,31 @@
+--- a/src/android/camera_capabilities.cpp
++++ b/src/android/camera_capabilities.cpp
+@@ -659,8 +659,10 @@
+ 			int ret = camera_->configure(cameraConfig.get());
+ 			if (ret) {
+ 				LOG(HAL, Error) << "Camera init stage=configure-stream ret=" << ret
+-						<< " format=" << cfg.pixelFormat
+-						<< " size=" << cfg.size;
++						<< " config=" << cfg
++						<< " stride=" << cfg.stride
++						<< " frame-size=" << cfg.frameSize
++						<< " buffers=" << cfg.bufferCount;
+ 				return ret;
+ 			}
+ 
+--- a/src/libcamera/software_isp/debayer_cpu.cpp
++++ b/src/libcamera/software_isp/debayer_cpu.cpp
+@@ -685,8 +685,12 @@
+ 	vScratch_.reset();
+ #if HAVE_SOFTISP_LIBYUV
+ 	const bool isNv12 = outputCfg.pixelFormat == formats::NV12;
+-	if (isNv12 && outputCfg.colorSpace != ColorSpace::Sycc)
++	if (isNv12 && outputCfg.colorSpace != ColorSpace::Sycc) {
++		LOG(Debayer, Error) << "NV12 color space actual="
++				    << ColorSpace::toString(outputCfg.colorSpace)
++				    << " required=" << ColorSpace::Sycc.toString();
+ 		return -EINVAL;
++	}
+ #else
+ 	const bool isNv12 = false;
+ #endif

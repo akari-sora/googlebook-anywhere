@@ -49,7 +49,7 @@ class DetectorTests(unittest.TestCase):
                 identity = dict(hx, **{field: "Other"})
                 self.check_result(self.rules, identity, "unknown")
         self.check_result(self.rules, {"cpu_name": "AMD Ryzen AI 9 HX 370"}, "incomplete",
-                          potential=("amd-hx370", "kano"))
+                          potential=("amd-hx370", "kano", "rog-ally"))
         self.check_result(self.rules, {"sys_vendor": "Synthetic HX", "product_name": "Synthetic"}, "unknown")
 
     def test_optional_ally_rule_matches_and_remains_fail_closed(self):

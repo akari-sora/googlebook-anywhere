@@ -883,22 +883,29 @@ restorecon /data/misc/adb/adb_keys
 : > "$D/adb-settings.txt" || exit 1
 # cmd passes stdio over Binder; keep all three descriptors as pipes.
 for k in development_settings_enabled adb_enabled; do
-  output=$(set -o pipefail || exit 1; printf '' | timeout 20 /system/bin/cmd settings put global "$k" 1 2>&1 | cat)
-  rc=$?
-  [ -z "$output" ] || printf '%s\\n' "$output" >> "$D/adb-settings.txt" || exit 1
-  printf '%s put rc=%s\\n' "$k" "$rc" >> "$D/adb-settings.txt" || exit 1
-  [ "$rc" -eq 0 ] || exit "$rc"
-  value=$(set -o pipefail || exit 1; printf '' | timeout 20 /system/bin/cmd settings get global "$k" 2>&1 | cat)
-  rc=$?
-  if [ "$rc" -ne 0 ] && [ -n "$value" ]; then
-    printf '%s\\n' "$value" >> "$D/adb-settings.txt" || exit 1
-  fi
-  printf '%s get rc=%s\\n' "$k" "$rc" >> "$D/adb-settings.txt" || exit 1
-  [ "$rc" -eq 0 ] || exit "$rc"
-  if [ "$value" != 1 ]; then
-    printf '%s readback mismatch rc=1\\n' "$k" >> "$D/adb-settings.txt"
-    exit 1
-  fi
+  for operation in put get; do
+    attempt=1
+    while :; do
+      if [ "$operation" = put ]; then
+        output=$(set -o pipefail || exit 1; printf '' | timeout -k 5 20 /system/bin/cmd settings put global "$k" 1 2>&1 | cat)
+      else
+        output=$(set -o pipefail || exit 1; printf '' | timeout -k 5 20 /system/bin/cmd settings get global "$k" 2>&1 | cat)
+      fi
+      rc=$?
+      printf '%s %s attempt=%s rc=%s\\n' "$k" "$operation" "$attempt" "$rc" >> "$D/adb-settings.txt" || exit 1
+      if [ -n "$output" ] && { [ "$rc" -ne 0 ] || [ "$operation" = put ]; }; then
+        printf '%s\\n' "$output" >> "$D/adb-settings.txt" || exit 1
+      fi
+      [ "$rc" -eq 124 ] && [ "$attempt" -lt 2 ] || break
+      attempt=$((attempt + 1))
+    done
+    printf '%s %s rc=%s\\n' "$k" "$operation" "$rc" >> "$D/adb-settings.txt" || exit 1
+    [ "$rc" -eq 0 ] || exit "$rc"
+    if [ "$operation" = get ] && [ "$output" != 1 ]; then
+      printf '%s readback mismatch rc=1\\n' "$k" >> "$D/adb-settings.txt"
+      exit 1
+    fi
+  done
 done
 setprop service.adb.tcp.port 5555
 sleep 5

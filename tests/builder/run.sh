@@ -206,10 +206,15 @@ if command -v git > /dev/null && [ -f "$ROOT/tools/release/make-public.sh" ] && 
     mkdir -p "$T/r/tools/minigbm"
     printf 'minigbm notices\n' > "$T/r/tools/minigbm/NOTICES.txt"
     cp "$ROOT/docs/images/kano-welcome.png" "$T/r/docs/images/kano-welcome.png"
+    # make-release.sh archives these public Ally patcher inputs explicitly.
+    for f in devices/rog-ally/step2/patch-adler-step2.py devices/rog-ally/step2/adler-manifest-step2.json devices/rog-ally/step3/patch-init-scalar.py devices/rog-ally/step4/patch-linker-scalar.py; do
+        mkdir -p "$T/r/$(dirname "$f")"
+        cp "$ROOT/$f" "$T/r/$f"
+    done
     cp "$ROOT/tools/release/png-ok.py" "$ROOT/tools/release/make-public.sh" "$ROOT/tools/release/make-release.sh" "$T/r/tools/release/"
     grep 'kano-welcome\.png$' "$ROOT/tools/release/published-images.sha256" > "$T/r/tools/release/published-images.sha256"
     printf 'NEVER_MATCH_THIS_PRIVATE_SENTINEL\n' > "$T/r/tools/release/private-patterns.txt"
-    git -C "$T/r" add README.md LICENSE base builder install profiles docs tests tools/mesa tools/minigbm/NOTICES.txt tools/release/png-ok.py tools/release/published-images.sha256
+    git -C "$T/r" add README.md LICENSE base builder install profiles docs tests devices/rog-ally tools/mesa tools/minigbm/NOTICES.txt tools/release/png-ok.py tools/release/published-images.sha256
     git -C "$T/r" commit -q -m good
     C_GOOD=$(git -C "$T/r" rev-parse HEAD)
     printf '%064d  docs/images/kano-welcome.png\n' 0 > "$T/r/tools/release/published-images.sha256"
@@ -814,6 +819,7 @@ PY
 
 # builder/camera/build-libcamera.sh (the opt-in camera overlay): argument and toolchain guards (nothing fetched or built)
 expect "camera overlay integrity, expected delta and CMake wrap" 0 "^OK$" -- python3 "$ROOT/tests/builder/camera-test.py"
+expect "camera diagnostics patch application" 0 "^OK$" -- python3 "$ROOT/tests/builder/camera-patch-application-test.py"
 expect "build-libcamera.sh requires a work directory" 1 "usage: build-libcamera.sh" -- bash "$ROOT/builder/camera/build-libcamera.sh"
 expect "build-libcamera.sh refuses a missing NDK" 2 "NDK clang not found|CMake not found" -- env NDK="$T/no-ndk" CMAKE="$T/no-cmake" bash "$ROOT/builder/camera/build-libcamera.sh" "$T/cam"
 expect "build-libcamera.sh pins every download" 0 "^4$" -- sh -c "grep -cE '^fetch https://' '$ROOT/builder/camera/build-libcamera.sh'"

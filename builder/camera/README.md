@@ -34,3 +34,5 @@ python3 tests/builder/camera-thumbnail-test.py --source /path/to/libcamera-v0.7.
 The JPEG check requires an installed host libjpeg and `pkg-config`. It exercises the extracted encoder methods with padded NV12 input, real JPEG decoding, output canaries and capacity boundaries. The native-buffer check exercises extracted methods with backend stubs, including descriptor shortages, closed descriptors, duplication failures and ownership cleanup. Neither test downloads dependencies. They do not exercise the complete BLOB postprocessor or a real Android mapper.
 
 The thumbnail check compiles extracted methods with buffer stubs and requires a host compiler with AddressSanitizer and UndefinedBehaviorSanitizer support. It checks padded NV12 input, scaling, invalid reconfiguration, dimensions and plane capacity. Sources and targets are limited to even dimensions of at most 8192 pixels per side.
+
+Patch `0011-config-diagnostics.patch` logs the failed stream configuration (including color space, stride, frame size and buffer count) and the NV12 color-space rejection values. It changes diagnostics only; it has not been tested on KANO and does not establish a camera fix.

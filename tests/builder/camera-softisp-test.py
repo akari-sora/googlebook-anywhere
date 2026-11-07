@@ -14,6 +14,7 @@ CONFIGURE_H = r'''
 #include <memory>
 #include <new>
 #include <optional>
+#include <sstream>
 #include <tuple>
 #include <vector>
 #define HAVE_SOFTISP_LIBYUV 1
@@ -24,7 +25,7 @@ struct Size { unsigned width,height; };
 std::ostream &operator<<(std::ostream &o,Size){return o<<"size";}
 struct SizeRange{bool contains(Size s)const{return s.width<=1920 && s.height<=1080;}};
 std::ostream &operator<<(std::ostream &o,SizeRange){return o<<"range";}
-struct ColorSpace{int n;bool operator!=(ColorSpace c)const{return n!=c.n;} static const ColorSpace Sycc;};
+struct ColorSpace{int n;bool operator!=(ColorSpace c)const{return n!=c.n;} static const ColorSpace Sycc; const char *toString()const{return n==1 ? "sycc" : "other";} static const char *toString(const std::optional<ColorSpace>& c){return c ? c->toString() : "unset";}};
 const ColorSpace ColorSpace::Sycc{1};
 struct StreamConfiguration{PixelFormat pixelFormat; Size size; unsigned stride; std::optional<ColorSpace> colorSpace;};
 struct Rectangle{unsigned x,y,width,height; Rectangle()=default; Rectangle(Size s):x(0),y(0),width(s.width),height(s.height){} Size size()const{return {width,height};}};
@@ -57,7 +58,9 @@ int main(){
  out.size={0,480}; if(run()!=-EINVAL) return 3;
  out.size={640,480}; out.stride=640; if(run()!=0) return 4;
  out.stride=648; if(run()!=-EINVAL) return 5;
- out.stride=640; out.colorSpace=ColorSpace{2}; if(run()!=-EINVAL) return 6;
+ out.stride=640; out.colorSpace=ColorSpace{2};
+ std::ostringstream log; auto *saved=std::cerr.rdbuf(log.rdbuf()); int result=run(); std::cerr.rdbuf(saved);
+ if(result!=-EINVAL || log.str().find("actual=other required=sycc")==std::string::npos) return 6;
  out.pixelFormat=formats::XRGB8888; out.stride=2560; if(run()!=0) return 7;
  std::cout<<"PASS: actual configure rejects zero-layout odd/empty NV12, bad stride/color; valid NV12 and RGB accepted\n";
 }

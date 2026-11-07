@@ -60,9 +60,16 @@ if [ ! -d "$S" ]; then tar -C "$W" -xzf "$W/dl/libcamera-v0.7.2.tar.gz"; fi
 fetch https://patchwork.libcamera.org/patch/26682/mbox/ \
   17e2bcf995c8c188d9b62b6c3508f6958aaf524d70dcf3b9b210a6a33f574cdf ov2740-tuning.mbox
 if [ ! -f "$S/src/ipa/simple/data/ov2740.yaml" ]; then patch -d "$S" -p1 -N -s < "$W/dl/ov2740-tuning.mbox"; fi
+echo "d8dce0ef3693ccb3d432b780acae569a6d4d9b319aaf5a154a7493800d617848  $HERE/patches/0011-config-diagnostics.patch" | sha256sum -c --quiet
 for p in "$HERE"/patches/*.patch; do
   [ -f "$p" ] || continue
-  if patch -d "$S" -p1 -N --dry-run -s < "$p" > /dev/null 2>&1; then patch -d "$S" -p1 -N -s < "$p"; fi
+  if patch -d "$S" -p1 -N --dry-run -s < "$p" > /dev/null 2>&1; then
+    patch -d "$S" -p1 -N -s < "$p"
+  elif [ "${p##*/}" = 0011-config-diagnostics.patch ] &&
+       ! patch -d "$S" -p1 -R -f --dry-run -s < "$p" > /dev/null 2>&1; then
+    echo "error: 0011 camera diagnostics patch is incompatible" >&2
+    exit 1
+  fi
 done
 # libyuv (static, from the source the libcamera wrap downloads; built here because meson's cmake subproject cannot
 # drive the NDK toolchain)

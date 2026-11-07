@@ -375,7 +375,7 @@ class SharedMediumTest(unittest.TestCase):
         profiles = self.base / 'profiles'
         import shutil
         shutil.copytree(ROOT / 'profiles', profiles)
-        (profiles / 'rog-ally').mkdir()
+        (profiles / 'rog-ally').mkdir(exist_ok=True)
         (profiles / 'rog-ally/profile.toml').write_text(
             '[model]\nid = "rog-ally"\ndmi = {sys_vendor = "Fixture", product_name = "Fixture Ally"}\n')
         return profiles

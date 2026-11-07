@@ -44,14 +44,18 @@ class AdbSettings(unittest.TestCase):
         bindir = self.root / 'bin'
         bindir.mkdir()
         programs = {
-            'timeout': '#!/bin/sh\nshift\nexec "$@"\n',
+            'timeout': '#!/bin/sh\n[ "$1" != -k ] || shift 2\nshift\nexec "$@"\n',
             'fake-cmd': '''#!/bin/sh
 for fd in 0 1 2; do
   [ -p /dev/fd/$fd ] || { echo "non-pipe fd $fd" >&2; exit 88; }
 done
 printf '%s %s\\n' "$2" "$4" >> "$EVENTS"
 if [ "$FAIL_AT" = "$2:$4" ]; then
-  case "$MODE" in fail) echo "diagnostic failure" >&2; exit 42 ;; timeout) exit 124 ;; esac
+  case "$MODE" in
+    fail) echo "diagnostic failure" >&2; exit 42 ;;
+    timeout) exit 124 ;;
+    timeout_once) [ "$(grep -Fxc "$2 $4" "$EVENTS")" -ne 1 ] || exit 124 ;;
+  esac
 fi
 if [ "$2" = get ]; then
   if [ "$FAIL_AT" = "get:$4" ] && [ "$MODE" = mismatch ]; then echo 0; else echo 1; fi
@@ -94,6 +98,18 @@ fi
             self.assertIn(f'{key} put rc=0', log)
             self.assertIn(f'{key} get rc=0', log)
 
+    def test_first_timeout_is_retried_for_put_and_get(self):
+        for operation in ('put', 'get'):
+            for key in KEYS:
+                with self.subTest(operation=operation, key=key):
+                    self.events.unlink(missing_ok=True)
+                    rc, events, log = self.run_generated('timeout_once', f'{operation}:{key}')
+                    self.assertEqual(rc, 0)
+                    self.assertEqual(events.count(f'{operation} {key}'), 2)
+                    self.assertIn(f'{key} {operation} attempt=1 rc=124', log)
+                    self.assertIn(f'{key} {operation} attempt=2 rc=0', log)
+                    self.assertIn('setprop ctl.start adbd', events)
+
     def test_failures_never_start_adbd_and_record_failure(self):
         cases = [('fail', 'put', 42), ('timeout', 'put', 124),
                  ('fail', 'get', 42), ('timeout', 'get', 124), ('mismatch', 'get', 1)]
@@ -105,6 +121,9 @@ fi
                     self.assertEqual(rc, expected)
                     self.assertFalse(any(event.startswith('setprop ') for event in events), events)
                     self.assertIn(f'{key} {operation} rc={0 if mode == "mismatch" else expected}', log)
+                    self.assertEqual(events.count(f'{operation} {key}'), 2 if mode == 'timeout' else 1)
+                    if mode == 'timeout':
+                        self.assertIn(f'{key} {operation} attempt=2 rc=124', log)
                     if mode == 'fail':
                         self.assertIn('diagnostic failure', log)
                     if mode == 'mismatch':
