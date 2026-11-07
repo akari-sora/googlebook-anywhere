@@ -1,0 +1,28 @@
+# Source and signature provenance for the pinned pair in profile.toml.
+schema = 1
+
+[source]
+kind = "wireless-regdb"
+repository = "https://kernel.googlesource.com/pub/scm/linux/kernel/git/wens/wireless-regdb"
+tag = "master-2026-02-04"
+commit = "ea20dfa028cbb1b0e354efcdbcdbeec48308cb97"
+tag_object = "1554a406e0b6893c9e7774c2f71c63690e1a3568"
+
+[signature]
+kernel_certificate = "net/wireless/certs/wens.hex"
+certificate_der_sha256 = "eeb049594eb3a83e50bfb6782e7fdf9e96fbd5c2954a0bbb0931cd55321d0bcf"
+algorithm = "detached PKCS#7; openssl cms -verify with kernel certificate"
+
+[[firmware]]
+path = "regulatory.db"
+src = "regulatory.db"
+sha256 = "9d171281bfe7acc5d203007427f6075b704b7a48ff42ae25b9f490a0118fe7d2"
+bytes = 6308
+loaded_by = "vendor:lib/dev-modules/cfg80211.ko"
+
+[[firmware]]
+path = "regulatory.db.p7s"
+src = "regulatory.db.p7s"
+sha256 = "d1170298577027c2da346242627ff6cad09fbebaa96a6b2de07ada7c873dd337"
+bytes = 1085
+loaded_by = "vendor:lib/dev-modules/cfg80211.ko"

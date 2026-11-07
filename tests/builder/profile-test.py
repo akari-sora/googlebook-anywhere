@@ -477,7 +477,7 @@ attempt("an option with a space", sub('debug_drop = ["8250.nr_uarts=4"]', 'debug
 attempt("a firmware path with ..", sub('path = "i915/adlp_dmc.bin"', 'path = "../etc/passwd"'), "not a plain relative path")
 attempt("a short firmware SHA-256", sub('sha256 = "3516de2e', 'sha256 = "3516'), "64 lower-case hex")
 attempt("a duplicate firmware path", sub('path = "i915/adlp_guc_70.bin"', 'path = "i915/adlp_dmc.bin"'), "listed twice")
-attempt("an unknown firmware source", sub('from = "sof-bin"', 'from = "random"'), "linux-firmware or sof-bin")
+attempt("an unknown firmware source", sub('from = "sof-bin"', 'from = "random"'), "linux-firmware, sof-bin or wireless-regdb")
 attempt("an empty firmware requested_by",
         sub('path = "i915/adlp_dmc.bin"\n', 'path = "i915/adlp_dmc.bin"\nrequested_by = ""\n'),
         "requested_by: expected 'runtime: <non-empty single-line reason>'")

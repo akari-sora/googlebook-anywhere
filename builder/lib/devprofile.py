@@ -31,7 +31,7 @@ SCHEMA = {
     "cmdline": {"stock_drop": LSTR, "add": LSTR, "tail": LSTR, "debug_drop": LSTR, "quiet_drop": LSTR,
                 "pci_stub_ids": LSTR, "first_stage_drop": LSTR},
     "blacklist": {"modules": LSTR, "debug_add": LSTR, "quiet_add": LSTR, "allow": LSTR},
-    "firmware_sources": {"linux_firmware_tag": str, "sof_bin_url": str, "sof_bin_sha256": str},
+    "firmware_sources": {"linux_firmware_tag": str, "sof_bin_url": str, "sof_bin_sha256": str, "wireless_regdb_commit": str},
     "firmware": ("tables", {"path": str, "from": str, "src": str, "sha256": str, "requested_by": str, "loaded_by": str}),
     "firmware_check": {
         "optional": ("tables", {"module": str, "firmware": str, "reason": str}),
@@ -408,6 +408,8 @@ def load(profile_dir, safety_path=SAFETY):
         p = tomllib.load(f)
     if isinstance(p.get("model"), dict):
         p["model"].setdefault("android_model", "")
+    if isinstance(p.get("firmware_sources"), dict):
+        p["firmware_sources"].setdefault("wireless_regdb_commit", "")
     p.setdefault("firmware", [])       # [[firmware]] tables: a profile without device firmware simply has none
     if isinstance(p["firmware"], list):
         for i, fw in enumerate(p["firmware"]):
@@ -526,8 +528,8 @@ def load(profile_dir, safety_path=SAFETY):
             seen_rules.add(key)
     paths = set()
     for i, fw in enumerate(p["firmware"]):
-        if fw["from"] not in ("linux-firmware", "sof-bin"):
-            raise ProfileError(f"firmware[{i}].from must be linux-firmware or sof-bin")
+        if fw["from"] not in ("linux-firmware", "sof-bin", "wireless-regdb"):
+            raise ProfileError(f"firmware[{i}].from must be linux-firmware, sof-bin or wireless-regdb")
         for k in ("path", "src"):
             v = fw[k]
             if not re.fullmatch(r"[A-Za-z0-9._+-]+(/[A-Za-z0-9._+-]+)*", v) or ".." in v.split("/"):
@@ -551,6 +553,15 @@ def load(profile_dir, safety_path=SAFETY):
     if any(fw["from"] == "sof-bin" for fw in p["firmware"]) and not (
             fs["sof_bin_url"].startswith("https://") and re.fullmatch(r"[0-9a-f]{64}", fs["sof_bin_sha256"])):
         raise ProfileError("firmware_sources: sof-bin files need an https sof_bin_url and its sof_bin_sha256")
+    regdb = [fw for fw in p["firmware"] if fw["from"] == "wireless-regdb"]
+    if regdb:
+        if not re.fullmatch(r"[0-9a-f]{40}", fs["wireless_regdb_commit"]):
+            raise ProfileError("firmware_sources.wireless_regdb_commit: expected an exact 40-digit commit")
+        if {fw["path"] for fw in regdb} != {"regulatory.db", "regulatory.db.p7s"} or any(
+                fw["src"] != fw["path"] for fw in regdb):
+            raise ProfileError("wireless-regdb requires the exact regulatory.db and regulatory.db.p7s pair")
+    elif fs["wireless_regdb_commit"]:
+        raise ProfileError("wireless-regdb commit supplied without its signed pair")
     a = p["audio"]
     for k in ("card", "config_dir"):
         if a[k] and not re.fullmatch(r"[A-Za-z0-9._-]+", a[k]):

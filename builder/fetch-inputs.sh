@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Fetch the third-party inputs the builder needs besides the base image, each checked against a pinned SHA-256:
 #   <dir>/firmware   the profile's device firmware ([[firmware]] in profiles/<model>/profile.toml; RAM-loaded by the
-#                    drivers, nothing is flashed), laid out like /lib/firmware, from linux-firmware and sof-bin releases
+#                    drivers, nothing is flashed), laid out like /lib/firmware, from linux-firmware, sof-bin, and wireless-regdb releases
 #   <dir>/audio-src  the profile's ChromeOS audio configuration (its audio.sources list), from board-overlays
 # usage: builder/fetch-inputs.sh <dir> [profile dir]     then: export GBOS_INPUTS=<dir>
 set -euo pipefail
@@ -10,15 +10,18 @@ PROFILE=${2:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../profiles/kano" && pwd)}
 DEST="$OUTDIR/firmware"
 BO=https://chromium.googlesource.com/chromiumos/overlays/board-overlays
 LF=https://git.kernel.org/pub/scm/linux/kernel/git/firmware/linux-firmware.git/plain
-# the profile pins every file: <path in DEST> <linux-firmware|sof-bin> <path in the source> <sha256>
+REGDB=https://kernel.googlesource.com/pub/scm/linux/kernel/git/wens/wireless-regdb
+# the profile pins every file: <path in DEST> <linux-firmware|sof-bin|wireless-regdb> <path in the source> <sha256>
 DP="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/devprofile.py"
 python3 "$DP" check "$PROFILE" >/dev/null || exit 1
 FWLIST=$(python3 "$DP" firmware "$PROFILE")
 LF_TAG=$(python3 "$DP" get "$PROFILE" firmware_sources.linux_firmware_tag)
 SOF_URL=$(python3 "$DP" get "$PROFILE" firmware_sources.sof_bin_url)
 SOF_SHA=$(python3 "$DP" get "$PROFILE" firmware_sources.sof_bin_sha256)
+REGDB_COMMIT=$(python3 "$DP" get "$PROFILE" firmware_sources.wireless_regdb_commit)
 AUDIO_LIST=$(python3 "$DP" get "$PROFILE" audio.sources)
 LF_FILES=$(printf '%s\n' "$FWLIST" | awk '$2 == "linux-firmware" {print $1, $3, $4}')
+REGDB_FILES=$(printf '%s\n' "$FWLIST" | awk '$2 == "wireless-regdb" {print $1, $3, $4}')
 SOF_FILES=$(printf '%s\n' "$FWLIST" | awk '$2 == "sof-bin" {print $1, $3, $4}')
 sha() { sha256sum "$1" | cut -d' ' -f1; }
 mkdir -p "$DEST"
@@ -29,6 +32,13 @@ echo "$LF_FILES" | while read -r dst src want; do
     curl -fsSL --retry 3 --max-time 300 -o "$TMP/f" "$LF/$src?h=$LF_TAG"
     [ "$(sha "$TMP/f")" = "$want" ] || { echo "sha256 mismatch: linux-firmware $LF_TAG $src"; exit 1; }
     mkdir -p "$(dirname "$DEST/$dst")"; mv "$TMP/f" "$DEST/$dst"; echo "ok $dst"
+done
+echo "$REGDB_FILES" | while read -r dst src want; do
+    [ -n "$dst" ] || continue
+    if [ -f "$DEST/$dst" ] && [ "$(sha "$DEST/$dst")" = "$want" ]; then echo "ok (cached) $dst"; continue; fi
+    curl -fsSL --retry 3 --max-time 120 "$REGDB/+/$REGDB_COMMIT/$src?format=TEXT" | base64 -d > "$TMP/regdb"
+    [ "$(sha "$TMP/regdb")" = "$want" ] || { echo "sha256 mismatch: wireless-regdb $REGDB_COMMIT $src"; exit 1; }
+    mkdir -p "$(dirname "$DEST/$dst")"; mv "$TMP/regdb" "$DEST/$dst"; echo "ok $dst"
 done
 if [ -n "$SOF_FILES" ]; then
 curl -fsSL --retry 3 --max-time 600 -o "$TMP/sof.tgz" "$SOF_URL"

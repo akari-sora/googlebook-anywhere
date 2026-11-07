@@ -264,6 +264,12 @@ while read -r path _from _src _sha; do
     fw "$path" "$TMP/fw/$path"
 done <<< "$FWLIST"
 mkdir -p "$TMP/fw"   # a profile without device firmware (profiles/generic-x86) has an empty list
+# Signed database bytes form one reviewed pair; firmware drift cannot replace either member.
+REGDB_CHECK=$(printf '%s\n' "$FWLIST" | awk '$2 == "wireless-regdb" {print $4 "  fw/" $1}')
+if [ -n "$REGDB_CHECK" ]; then
+    ( cd "$TMP" && printf '%s\n' "$REGDB_CHECK" | sha256sum -c ) \
+        || { echo "signed wireless-regdb pair differs from profile pins"; exit 1; }
+fi
 if [ -n "$FWLIST" ] && ! ( cd "$TMP" && printf '%s\n' "$FWLIST" | awk 'NF == 4 {print $4 "  fw/" $1}' | sha256sum -c )
 then
     [ "${GBOS_ALLOW_FIRMWARE_DRIFT:-}" = 1 ] || { echo "firmware differs from the tested versions (see above); set GBOS_ALLOW_FIRMWARE_DRIFT=1 to use it anyway"; exit 1; }

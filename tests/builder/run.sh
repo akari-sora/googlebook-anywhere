@@ -93,6 +93,7 @@ expect "devprofile decoder lifecycle (tests/builder/devprofile-decoder-lifecycle
 expect "Ally Adler APEX integration (tests/builder/ally-apex-integration-tests.py)" 0 "^OK$" -- python3 -B "$ROOT/tests/builder/ally-apex-integration-tests.py"
 expect "Ally Microdroid integration (tests/builder/ally-microdroid-integration-tests.py)" 0 "^OK( \\(skipped=[0-9]+\\))?$" -- python3 -B "$ROOT/tests/builder/ally-microdroid-integration-tests.py"
 expect "Ally Microdroid unit tests (tests/builder/ally-microdroid-tests.py)" 0 "^OK$" -- python3 -B "$ROOT/tests/builder/ally-microdroid-tests.py"
+expect "Ally signed regulatory database (tests/builder/ally-regdb-test.py)" 0 "^OK$" -- python3 -B "$ROOT/tests/builder/ally-regdb-test.py"
 expect "Ally module routing (tests/builder/ally-module-routing-tests.py)" 0 "^OK$" -- python3 -B "$ROOT/tests/builder/ally-module-routing-tests.py"
 expect "Ally vendor additions policy (tests/builder/ally-vendor-additions-policy-tests.py)" 0 "^OK$" -- python3 -B "$ROOT/tests/builder/ally-vendor-additions-policy-tests.py"
 if [ -f "$ROOT/devices/rog-ally/profile-draft/rog-ally/profile.toml" ] && [ -f "$ROOT/devices/rog-ally/step3/test-init-scalar.py" ] && [ -f "$ROOT/devices/rog-ally/step4/test-linker-scalar.py" ]; then
