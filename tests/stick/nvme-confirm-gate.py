@@ -21,7 +21,7 @@ Mutant copies insert those operations before the read, between the read and
 the comparison, and on the cancel branch, in both modes. Inspect stays
 allowed; it is not one of those operations. The repo file is left unchanged.
 """
-import hashlib, os, re, shutil, struct, subprocess, sys, tempfile
+import hashlib, os, re, shutil, signal, struct, subprocess, sys, tempfile
 from pathlib import Path
 
 sys.dont_write_bytecode = True
@@ -399,6 +399,8 @@ elif name == "mdir":
     sys.stdout.write("::/loader/entries/lapis-debug.conf\n::/loader/entries/lapis-quiet.conf\n")
 elif name == "systemctl":
     log("SYSTEMCTL " + " ".join(sys.argv[1:]))
+elif name == "sync":
+    log("SYNC_FIXTURE")
 elif name in ("udevadm", "partx", "blockdev", "lz4", "mmd", "mdel", "minfo"):
     pass
 else:
@@ -525,8 +527,10 @@ run() {
     export GBOS_ANSWERS="$fix/answers-$1"
     : > "$GBOS_TRACE"
     : > "$GBOS_SCREEN"
+    printf "CASE_START %s\n" "$1"
     bash "$2"
     echo $? > "$fix/rc-$1"
+    printf "CASE_END %s\n" "$1"
 }
 run install-wrong "$fix/installer.sh" "$fix/cmdline.install"
 run install-empty "$fix/installer.sh" "$fix/cmdline.install"
@@ -560,7 +564,7 @@ sys.exit(2)
 TOOLS = (
     "modprobe", "mount", "umount", "dd", "blkdiscard", "sgdisk", "lsblk", "findmnt",
     "udevadm", "partx", "blockdev", "mcopy", "mtype", "mdir", "mmd", "mdel", "minfo",
-    "lz4", "systemctl",
+    "lz4", "systemctl", "sync",
 )
 
 
@@ -696,8 +700,20 @@ def run_cases(work, host_bash):
     env["PYTHONUNBUFFERED"] = "1"
     env["PATH"] = str(work / "bin") + os.pathsep + env.get("PATH", "")
     if host_bash:
-        got = subprocess.run([host_bash, str(work / "run-cases.sh")], cwd=work, capture_output=True, text=True, env=env, timeout=900)
-        return got
+        proc = subprocess.Popen([host_bash, str(work / "run-cases.sh")], cwd=work,
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                                env=env, start_new_session=True)
+        try:
+            stdout, stderr = proc.communicate(timeout=900)
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            stdout, stderr = proc.communicate()
+            fail("case runner timed out after 900s; fixture process group killed\n"
+                 + stdout + stderr)
+        return subprocess.CompletedProcess(proc.args, proc.returncode, stdout, stderr)
     if not have_slim_image():
         fail("need bash >= 4.4 or a local python:3.13-slim image; not pulling and not installing packages")
     write_exe(work / "bin/zstd", ZSTD)
