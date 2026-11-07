@@ -895,6 +895,12 @@ def run_ifma_checks(check):
                   p["cpu_compat"] == {"patch_ifma": True, "patch_ally_bootstrap": False}
                   and ifma.enabled(p) is True)
 
+        # Exercise the stock IFMA-only path with the KANO profile. HX370 now
+        # explicitly opts into the separately tested read-only updater shim.
+        p = devprofile.load(ROOT / "profiles/kano")
+        check("IFMA-only fixture does not request the HX370 updater shim",
+              p["services"]["readonly_update_engine"] is False)
+
         kano_toml = (ROOT / "profiles/kano/profile.toml").read_text(encoding="utf-8")
         cc_block_re = re.compile(r"(?ms)^\[cpu_compat\]\n.*?(?=^\[hooks\])")
         no_cc_dir = base / "prof-default/kano"

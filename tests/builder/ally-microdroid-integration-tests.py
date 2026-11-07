@@ -474,7 +474,7 @@ class CacheClosureTests(unittest.TestCase):
         self.fixture = self.root / "repo"
         lib = self.fixture / "builder/lib"
         lib.mkdir(parents=True)
-        for name in ("ifma.py", "ally_microdroid.py", "rebuild.py", "container_alignment.py"):
+        for name in ("ifma.py", "ally_microdroid.py", "rebuild.py", "container_alignment.py", "readonly_update_engine.py"):
             (lib / name).symlink_to(ROOT / "builder/lib" / name)
         (lib / "devprofile.py").write_text(
             "import json,sys\n"
@@ -516,7 +516,17 @@ class CacheClosureTests(unittest.TestCase):
         if installer:
             self.assertLessEqual(end, text.index('IMG="$WORK/build/image/$IMAGE_NAME"'))
         else:
-            self.assertEqual(text[end:].splitlines()[0], 'mkdir -p "$GBOS_OUT"')
+            mkdir = text.index('mkdir -p "$GBOS_OUT"', end)
+            intervening = text[end:mkdir]
+            # Only the read-only shim preflight may precede output creation.
+            expected = (
+                'if [ "$(python3 "$HERE/lib/devprofile.py" get "$GBOS_PROFILE" services.readonly_update_engine)" = true ]; then\n'
+                "    python3 -B -c 'import sys; sys.path.insert(0, sys.argv[1]); import readonly_update_engine; readonly_update_engine.checked_shim()' \"$HERE/lib\" \\\n"
+                '        || die "read-only update engine binary missing or mismatched"\n'
+                'fi\n'
+            )
+            self.assertEqual(intervening, expected)
+            self.assertLess(end, mkdir)
         return text[start:end]
 
     def run_gate(self, installer, tool_mode, *, disabled=False):

@@ -1,11 +1,11 @@
-# Build-acceptance draft only; no Ally boot or image validation.
+# Experimental profile: candidate full image passed QEMU checks; physical Ally remains unvalidated.
 # SDHCI, UCSI and PMF dependencies are built but safety-blocked.
 # WMI/Armoury and downstream Ally HID are blocked pending runtime/source safety remediation.
 # modules.load/unblock remain empty: the immutable safety allowlist has no rog-ally rows.
 # AVX-VNNI remediation is separate; patch_ifma alone does not make Zen 4 bootable.
 # Round 2: Phoenix SMU 13.0.4 has no init_microcode callback; no separate smu_*.bin pin applies.
 # The signed regulatory database is pinned below; wireless-regdb.toml records upstream signature provenance.
-# Image packing, boot and hardware operation remain unverified.
+# Candidate image and QEMU boot checked; physical boot and hardware operation remain unverified.
 schema = 1
 kmods = ["gbos_efifb"]
 
