@@ -51,6 +51,9 @@ class Integration(unittest.TestCase):
             raw = json.dumps({'schema': 1, 'payloads': payloads}).encode()
             (root / 'catalog.json').write_bytes(raw)
             digest = hashlib.sha256(raw).hexdigest()
+            expected = [m.preview(str(root), 'catalog.json', digest, profile)
+                        for profile in ('amd-hx370', 'kano')]
+            self.assertEqual(m.preview_all(str(root), 'catalog.json', digest), expected)
             for profile in ('kano', 'amd-hx370'):
                 target = root / (profile + '.img')
                 before = hashlib.sha256(target.read_bytes()).hexdigest()

@@ -123,9 +123,9 @@ def shared_release(root, catalog_path, expected, profile, tmp, bounded_fat=False
             binding.close()
 
 
-def preview(root, catalog_path, expected, profile, target=None):
-    """Return plain facts only; no reader or Release outlives catalog ownership."""
-    with catalog.validate(root, catalog_path, expected) as verified, tempfile.TemporaryDirectory(prefix='gbos-preview-') as tmp:
+def _preview_verified(root, verified, profile, target=None):
+    """Preview against descriptors owned by the caller's validated catalog."""
+    with tempfile.TemporaryDirectory(prefix='gbos-preview-') as tmp:
         items = [p for p in verified.payloads if p['profile'] == profile]
         if len(items) != 1:
             raise ValueError('profile absent')
@@ -189,6 +189,18 @@ def preview(root, catalog_path, expected, profile, target=None):
                 'hardware': 'NOT_VERIFIED', 'boot_policy': 'NOT_VERIFIED', 'avb': 'NOT_VERIFIED',
                 'source_immutable': False}
 
+
+
+def preview(root, catalog_path, expected, profile, target=None):
+    """Return plain facts only; no reader or Release outlives catalog ownership."""
+    with catalog.validate(root, catalog_path, expected) as verified:
+        return _preview_verified(root, verified, profile, target)
+
+
+def preview_all(root, catalog_path, expected):
+    """Preview each profile under one validated catalog; no partial result."""
+    with catalog.validate(root, catalog_path, expected) as verified:
+        return [_preview_verified(root, verified, profile) for profile in sorted(verified.descriptors)]
 
 
 def _observed_profile(dmi_root):
@@ -926,11 +938,17 @@ def main():
     p.add_argument('--root', required=True)
     p.add_argument('--catalog', required=True)
     p.add_argument('--sha256', required=True)
-    p.add_argument('--profile', required=True, choices=sorted(catalog.PROFILES))
+    selection = p.add_mutually_exclusive_group(required=True)
+    selection.add_argument('--profile', choices=sorted(catalog.PROFILES))
+    selection.add_argument('--all-profiles', action='store_true')
     p.add_argument('--synthetic-installed-image', help='optional regular file, max 128 MiB; no device')
     a = p.parse_args()
+    if a.all_profiles and a.synthetic_installed_image:
+        p.error('--synthetic-installed-image requires --profile')
     try:
-        print(json.dumps(preview(a.root, a.catalog, a.sha256, a.profile, a.synthetic_installed_image), sort_keys=True))
+        result = preview_all(a.root, a.catalog, a.sha256) if a.all_profiles else preview(
+            a.root, a.catalog, a.sha256, a.profile, a.synthetic_installed_image)
+        print(json.dumps(result, sort_keys=True))
         return 0
     except (OSError, ValueError, TypeError, KeyError, UnicodeError, RuntimeError, update.Refuse) as exc:
         print(json.dumps({'result': 'REFUSED', 'reason': str(exc), 'write_allowed': False}, sort_keys=True))

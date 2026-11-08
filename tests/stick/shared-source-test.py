@@ -167,6 +167,87 @@ class Tests(unittest.TestCase):
             with self.subTest(identity=identity), self.assertRaisesRegex(ValueError, 'not uniquely'):
                 m.plan_observed_image(str(self.root), 'catalog.json', self.sha, str(target), dmi)
 
+    def test_batch_validates_once_and_rechecks_each_profile(self):
+        content = b'ally payload' * 40
+        (self.root / 'rog-ally.img').write_bytes(content)
+        self.items.append({'profile': 'rog-ally', 'build_id': '16658739',
+                           'image': {'path': 'rog-ally.img', 'size': len(content),
+                                     'sha256': hashlib.sha256(content).hexdigest()},
+                           'boot_entries': ['lapis-debug.conf', 'lapis-quiet.conf'],
+                           'hardware_validation': 'unvalidated'})
+        self.save()
+        single = {x['profile']: self.run_preview(x['profile']) for x in self.items}
+        with patch.object(m.catalog, 'validate', wraps=m.catalog.validate) as validate, \
+             patch.object(m.catalog, 'verify_file', wraps=m.catalog.verify_file) as verify:
+            result = m.preview_all(str(self.root), 'catalog.json', self.sha)
+        self.assertEqual(validate.call_count, 1)
+        self.assertEqual([x['profile'] for x in result], sorted(single))
+        self.assertEqual(result, [single[x] for x in sorted(single)])
+        paths = [c.args[1] for c in verify.call_args_list]
+        self.assertEqual(paths.count('catalog.json'), 1)
+        for item in self.items:
+            self.assertEqual(paths.count(item['image']['path']), 2)
+        for call in self.parser.call_args_list[-3:]:
+            with self.assertRaises(OSError):
+                call.args[0].pread(0, 1)
+
+    def test_batch_fails_closed_on_later_profile_change(self):
+        original = self.parser.side_effect
+        calls = []
+        def changed(reader, *args, **kwargs):
+            calls.append(reader)
+            if len(calls) == 2:
+                path = self.root / 'kano.img'
+                path.write_bytes(b'changed')
+            return FakeRelease()
+        self.parser.side_effect = changed
+        with self.assertRaises(ValueError):
+            m.preview_all(str(self.root), 'catalog.json', self.sha)
+        self.assertEqual(len(calls), 2)
+        for reader in calls:
+            with self.assertRaises(OSError):
+                reader.pread(0, 1)
+        self.parser.side_effect = original
+
+    def test_batch_refuses_replaced_path_and_bad_entries(self):
+        for failure in ('replace', 'entries'):
+            with self.subTest(failure=failure):
+                original = self.root / 'amd-hx370.img'
+                data = original.read_bytes()
+                def parse(reader, *args, **kwargs):
+                    if failure == 'replace':
+                        original.rename(self.root / 'held.img')
+                        original.write_bytes(data)
+                        return FakeRelease()
+                    bad = FakeRelease()
+                    bad.esp = type('BadESP', (), {'ls': lambda self, path: ['wrong.conf']})()
+                    return bad
+                self.parser.side_effect = parse
+                with self.assertRaises(ValueError):
+                    m.preview_all(str(self.root), 'catalog.json', self.sha)
+                if failure == 'replace':
+                    original.unlink()
+                    (self.root / 'held.img').rename(original)
+        self.parser.side_effect = None
+
+    def test_batch_cli_emits_no_partial_success_on_failure(self):
+        base = ['shared-source.py', '--root', str(self.root), '--catalog', 'catalog.json',
+                '--sha256', self.sha, '--all-profiles']
+        with patch('sys.argv', base), patch('sys.stdout', new_callable=io.StringIO) as out, \
+             patch.object(m, '_preview_verified', side_effect=[{'result': 'PREVIEW_OK'}, ValueError('bad')]):
+            self.assertEqual(m.main(), 2)
+        self.assertEqual(json.loads(out.getvalue())['result'], 'REFUSED')
+        self.assertNotIn('PREVIEW_OK', out.getvalue())
+
+    def test_batch_cli_rejects_incompatible_options(self):
+        base = ['shared-source.py', '--root', str(self.root), '--catalog', 'catalog.json', '--sha256', self.sha]
+        for extra in (['--all-profiles', '--profile', 'kano'],
+                      ['--all-profiles', '--synthetic-installed-image', '/tmp/example']):
+            with self.subTest(extra=extra), patch('sys.argv', base + extra), \
+                 patch('sys.stderr', new_callable=io.StringIO), self.assertRaises(SystemExit) as result:
+                m.main()
+            self.assertEqual(result.exception.code, 2)
+
     def test_both_profiles_and_lifetime(self):
         for profile in ('kano', 'amd-hx370'):
             result = self.run_preview(profile)

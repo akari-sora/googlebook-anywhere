@@ -90,6 +90,10 @@ build 的十進位數字，`boot_entries` 解釋為 ESP `loader/entries` 下
 `--synthetic-installed-image` 僅供最多 128 MiB 的合成一般檔案，會先複製到
 私有暫存檔再呼叫既有相容性檢查；沒有安裝、更新或復原入口。
 
+可用 `--all-profiles` 取代 `--profile PROFILE`，在同一次清單驗證期間依序預覽所有
+機型；每個映像預覽後仍完整重算雜湊並檢查路徑，任何一項失敗都不輸出部分成功。
+此選項不能與 `--synthetic-installed-image` 同時使用，也不證明來源日後不會改變。
+
 此工具需要 Linux 的 `O_PATH`、`/proc/self/fd` 和 mtools。它先以 `O_PATH`
 檢查輸入檔 inode 類型，再開啟一般檔案資料；描述符會維持到檢查結束。
 最後重查中繼資料、路徑及雜湊，可偵測觀察到的變動，但不保證檔案在
