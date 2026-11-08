@@ -875,12 +875,21 @@ print("kano-services.rc:", (tree / "etc/init/kano-services.rc").read_text())
 (tree / "etc/kano-adb.sh").write_text("""#!/system/bin/sh
 # KANO: install the harness adb key and start adbd on TCP 5555 (see /vendor/etc/init/kano-adb.rc).
 D=/data/kano-diag
+# Fixed fields only: never forward command output, keys or account data.
+marker() { /system/bin/log -p e -t KANO_ADB "step=$1 key=$2 attempt=$3 rc=$4" >/dev/null 2>&1 || :; }
 mkdir -p $D /data/misc/adb
+rc=$?; marker mkdir none 0 "$rc"
 cat /vendor/etc/kano-adb_keys > /data/misc/adb/adb_keys
+rc=$?; marker key_copy none 0 "$rc"
 chown system:shell /data/misc/adb/adb_keys
+rc=$?; marker key_chown none 0 "$rc"
 chmod 0640 /data/misc/adb/adb_keys
+rc=$?; marker key_chmod none 0 "$rc"
 restorecon /data/misc/adb/adb_keys
-: > "$D/adb-settings.txt" || exit 1
+rc=$?; marker key_restorecon none 0 "$rc"
+( : > "$D/adb-settings.txt" )
+rc=$?; marker open none 0 "$rc"
+[ "$rc" -eq 0 ] || exit 1
 # cmd passes stdio over Binder; keep all three descriptors as pipes.
 for k in development_settings_enabled adb_enabled; do
   for operation in put get; do
@@ -892,6 +901,7 @@ for k in development_settings_enabled adb_enabled; do
         output=$(set -o pipefail || exit 1; printf '' | timeout -k 5 20 /system/bin/cmd settings get global "$k" 2>&1 | cat)
       fi
       rc=$?
+      marker "$operation" "$k" "$attempt" "$rc"
       printf '%s %s attempt=%s rc=%s\\n' "$k" "$operation" "$attempt" "$rc" >> "$D/adb-settings.txt" || exit 1
       if [ -n "$output" ] && { [ "$rc" -ne 0 ] || [ "$operation" = put ]; }; then
         printf '%s\\n' "$output" >> "$D/adb-settings.txt" || exit 1
@@ -902,6 +912,7 @@ for k in development_settings_enabled adb_enabled; do
     printf '%s %s rc=%s\\n' "$k" "$operation" "$rc" >> "$D/adb-settings.txt" || exit 1
     [ "$rc" -eq 0 ] || exit "$rc"
     if [ "$operation" = get ] && [ "$output" != 1 ]; then
+      marker mismatch "$k" "$attempt" 1
       printf '%s readback mismatch rc=1\\n' "$k" >> "$D/adb-settings.txt"
       exit 1
     fi
