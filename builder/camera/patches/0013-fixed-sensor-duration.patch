@@ -1,0 +1,332 @@
+--- a/include/libcamera/ipa/soft.mojom
++++ b/include/libcamera/ipa/soft.mojom
+@@ -10,6 +10,8 @@
+ 
+ struct IPAConfigInfo {
+ 	libcamera.ControlInfoMap sensorControls;
++	libcamera.IPACameraSensorInfo sensorInfo;
++	bool sensorInfoUpdated;
+ };
+ 
+ interface IPASoftInterface {
+--- a/src/android/camera_capabilities.cpp
++++ b/src/android/camera_capabilities.cpp
+@@ -6,6 +6,7 @@
+  */
+ 
+ #include "camera_capabilities.h"
++#include "fixed_frame_rate.h"
+ 
+ #include <algorithm>
+ #include <array>
+@@ -668,6 +669,7 @@
+ 
+ 			int64_t minFrameDuration = frameDurations->second.min().get<int64_t>() * 1000;
+ 			int64_t maxFrameDuration = frameDurations->second.max().get<int64_t>() * 1000;
++			const bool fixedDuration = minFrameDuration == maxFrameDuration;
+ 
+ 			/*
+ 			 * Cap min frame duration to 30 FPS with 1% tolerance.
+@@ -690,7 +692,7 @@
+ 			 * to the in-development configuration API rework.
+ 			 */
+ 			int64_t minFrameDurationCap = 1e9 / 30.0;
+-			if (minFrameDuration < minFrameDurationCap) {
++			if (!fixedDuration && minFrameDuration < minFrameDurationCap) {
+ 				float tolerance =
+ 					(minFrameDurationCap - minFrameDuration) * 100.0 / minFrameDurationCap;
+ 
+@@ -707,8 +709,9 @@
+ 			 * frame duration accordingly: see
+ 			 * Camera2SurfaceViewTestCase.java:getSuitableFpsRangeForDuration()
+ 			 */
+-			minFrameDuration =
+-				1e9 / static_cast<unsigned int>(floor(1e9 / minFrameDuration + 0.05f));
++			if (!fixedDuration)
++				minFrameDuration =
++					1e9 / static_cast<unsigned int>(floor(1e9 / minFrameDuration + 0.05f));
+ 
+ 			streamConfigurations_.push_back({
+ 				res, androidFormat, minFrameDuration, maxFrameDuration,
+@@ -1346,7 +1349,8 @@
+ 		 * in the metadata documentation.
+ 		 */
+ 		unsigned int fps =
+-			static_cast<unsigned int>(floor(1e9 / entry.minFrameDurationNsec));
++			nominalMaxFps(entry.minFrameDurationNsec,
++				      entry.minFrameDurationNsec == entry.maxFrameDurationNsec);
+ 
+ 		if (entry.androidFormat != HAL_PIXEL_FORMAT_BLOB && fps < 30)
+ 			continue;
+@@ -1393,7 +1397,11 @@
+ 	 * as the camera service expects the camera maximum frame duration to be
+ 	 * smaller than 10^9 / minFps.
+ 	 */
+-	int32_t minFps = std::ceil(1e9 / maxFrameDuration_);
++	bool fixedMaxDuration = std::any_of(streamConfigurations_.begin(), streamConfigurations_.end(),
++		[max = maxFrameDuration_](const Camera3StreamConfiguration &entry) {
++			return entry.minFrameDurationNsec == max && entry.maxFrameDurationNsec == max;
++		});
++	int32_t minFps = nominalMinFps(maxFrameDuration_, maxYUVFps, fixedMaxDuration);
+ 	int32_t availableAeFpsTarget[] = {
+ 		minFps, maxYUVFps, maxYUVFps, maxYUVFps,
+ 	};
+--- /dev/null
++++ b/src/android/fixed_frame_rate.h
+@@ -0,0 +1,20 @@
++/* SPDX-License-Identifier: LGPL-2.1-or-later */
++#pragma once
++
++#include <cmath>
++#include <cstdint>
++
++/* Match the HAL/CTS nominal-integer tolerance without changing durations. */
++inline unsigned int nominalMaxFps(int64_t minimumNs, bool fixed)
++{
++	return static_cast<unsigned int>(std::floor(1e9 / minimumNs + (fixed ? 0.05 : 0.0)));
++}
++
++inline int32_t nominalMinFps(int64_t maximumNs, int32_t maxFps, bool fixedMaximum)
++{
++	const double fps = 1e9 / maximumNs;
++	int32_t minimum = std::ceil(fps);
++	if (fixedMaximum && maxFps > 0 && minimum > maxFps && fps <= maxFps + 0.05)
++		minimum = maxFps;
++	return minimum;
++}
+--- a/src/ipa/simple/soft_simple.cpp
++++ b/src/ipa/simple/soft_simple.cpp
+@@ -202,6 +202,8 @@
+ int IPASoftSimple::configure(const IPAConfigInfo &configInfo)
+ {
+ 	sensorInfoMap_ = configInfo.sensorControls;
++	if (configInfo.sensorInfoUpdated)
++		context_.sensorInfo = configInfo.sensorInfo;
+ 
+ 	const ControlInfo &exposureInfo = sensorInfoMap_.find(V4L2_CID_EXPOSURE)->second;
+ 	const ControlInfo &gainInfo = sensorInfoMap_.find(V4L2_CID_ANALOGUE_GAIN)->second;
+--- /dev/null
++++ b/src/libcamera/pipeline/simple/fixed_frame_duration.h
+@@ -0,0 +1,48 @@
++/* SPDX-License-Identifier: LGPL-2.1-or-later */
++#pragma once
++
++#include <algorithm>
++#include <cstdint>
++#include <limits>
++
++namespace libcamera {
++
++/* Integer arithmetic retains the sensor's fractional frame period. */
++inline bool frameDuration(int64_t width, int64_t height, int64_t hblank,
++                          int64_t pixelRate, int64_t vblank, int64_t *duration)
++{
++	if (!duration || width <= 0 || height <= 0 || hblank < 0 ||
++	    vblank < 0 || pixelRate <= 0 || width > UINT32_MAX || height > UINT32_MAX ||
++	    hblank > INT32_MAX || vblank > INT32_MAX)
++		return false;
++	__int128 clocks = (__int128(width) + hblank) * (__int128(height) + vblank);
++	__int128 us = (clocks * 1000000 + pixelRate / 2) / pixelRate;
++	if (us <= 0 || us > std::numeric_limits<int64_t>::max())
++		return false;
++	*duration = static_cast<int64_t>(us);
++	return true;
++}
++
++inline bool fixedFrameTiming(int64_t width, int64_t height, int64_t hblank,
++                             int64_t pixelRate, int64_t minimum, int64_t maximum,
++                             uint64_t step, int32_t *vblank, int64_t *duration)
++{
++	if (!vblank || !duration || width <= 0 || height <= 0 || hblank < 0 ||
++	    pixelRate <= 0 || width > UINT32_MAX || height > UINT32_MAX ||
++	    hblank > INT32_MAX || minimum < 0 || maximum < minimum ||
++	    maximum > std::numeric_limits<int32_t>::max() || !step ||
++	    step > static_cast<uint64_t>(std::numeric_limits<int64_t>::max()))
++		return false;
++	__int128 lines = __int128(pixelRate) / (30 * (__int128(width) + hblank));
++	__int128 limit = lines - height;
++	if (limit < minimum)
++		return false;
++	int64_t upper = limit > maximum ? maximum : static_cast<int64_t>(limit);
++	int64_t selected = minimum + (upper - minimum) / static_cast<int64_t>(step) * static_cast<int64_t>(step);
++	if (!frameDuration(width, height, hblank, pixelRate, selected, duration))
++		return false;
++	*vblank = static_cast<int32_t>(selected);
++	return true;
++}
++
++} /* namespace libcamera */
+--- a/src/libcamera/pipeline/simple/simple.cpp
++++ b/src/libcamera/pipeline/simple/simple.cpp
+@@ -22,6 +22,8 @@
+ #include <vector>
+ 
+ #include <linux/media-bus-format.h>
++
++#include "fixed_frame_duration.h"
+ 
+ #include <libcamera/base/log.h>
+ 
+@@ -356,6 +358,10 @@
+ 	};
+ 	std::queue<RequestOutputs> conversionQueue_;
+ 	bool useConversion_;
++	int64_t fixedFrameDuration_ = 0;
++	int32_t fixedVblank_ = -1;
++	int configureFixedFrameDuration();
++	int verifyFixedFrameDuration();
+ 
+ 	std::unique_ptr<Converter> converter_;
+ 	std::unique_ptr<SoftwareIsp> swIsp_;
+@@ -939,9 +945,15 @@
+ 		}
+ 	}
+ 
+-	if (request)
++	if (request) {
+ 		request->_d()->metadata().set(controls::SensorTimestamp,
+ 					      buffer->metadata().timestamp);
++		if (fixedFrameDuration_) {
++			request->_d()->metadata().set(controls::FrameDuration, fixedFrameDuration_);
++			request->_d()->metadata().set(controls::FrameDurationLimits,
++				{ fixedFrameDuration_, fixedFrameDuration_ });
++		}
++	}
+ 
+ 	/*
+ 	 * Queue the captured and the request buffer to the converter or Software
+@@ -1497,6 +1509,74 @@
+ 	return config;
+ }
+ 
++int SimpleCameraData::configureFixedFrameDuration()
++{
++	fixedFrameDuration_ = 0;
++	fixedVblank_ = -1;
++	if (!swIsp_ || sensor_->model() != "ov2740")
++		return 0;
++
++	V4L2Subdevice *dev = sensor_->device();
++	dev->updateControlInfo();
++	const auto *info = dev->controlInfo(V4L2_CID_VBLANK);
++	if (!info || info->type != V4L2_CTRL_TYPE_INTEGER ||
++	    (info->flags & (V4L2_CTRL_FLAG_DISABLED | V4L2_CTRL_FLAG_READ_ONLY |
++			    V4L2_CTRL_FLAG_INACTIVE | V4L2_CTRL_FLAG_GRABBED)))
++		return -ENOTSUP;
++
++	IPACameraSensorInfo sensorInfo{};
++	if (sensor_->sensorInfo(&sensorInfo))
++		return -ENOTSUP;
++	static constexpr uint32_t ids[] = { V4L2_CID_HBLANK, V4L2_CID_PIXEL_RATE, V4L2_CID_VBLANK };
++	ControlList values = sensor_->getControls(ids);
++	if (values.empty())
++		return -ENOTSUP;
++	int32_t hblank = values.get(V4L2_CID_HBLANK).get<int32_t>();
++	int64_t pixelRate = values.get(V4L2_CID_PIXEL_RATE).get<int64_t>();
++	int32_t vblank;
++	int64_t duration;
++	if (!fixedFrameTiming(sensorInfo.outputSize.width, sensorInfo.outputSize.height,
++			      hblank, pixelRate, info->minimum, info->maximum, info->step,
++			      &vblank, &duration))
++		return -ENOTSUP;
++	ControlList set(sensor_->controls());
++	set.set(V4L2_CID_VBLANK, vblank);
++	if (sensor_->setControls(&set))
++		return -EIO;
++	fixedVblank_ = vblank;
++	fixedFrameDuration_ = duration;
++	if (verifyFixedFrameDuration()) {
++		fixedFrameDuration_ = 0;
++		return -EIO;
++	}
++	dev->updateControlInfo();
++	ControlInfoMap::Map map;
++	for (const auto &control : controlInfo_)
++		map.emplace(control.first, control.second);
++	map[&controls::FrameDurationLimits] = ControlInfo(duration, duration, duration);
++	controlInfo_ = ControlInfoMap(std::move(map), controls::controls);
++	return 0;
++}
++
++int SimpleCameraData::verifyFixedFrameDuration()
++{
++	if (!fixedFrameDuration_)
++		return 0;
++	static constexpr uint32_t ids[] = { V4L2_CID_HBLANK, V4L2_CID_PIXEL_RATE, V4L2_CID_VBLANK };
++	ControlList values = sensor_->getControls(ids);
++	IPACameraSensorInfo info{};
++	if (values.empty() || sensor_->sensorInfo(&info))
++		return -EIO;
++	int64_t duration;
++	if (values.get(V4L2_CID_VBLANK).get<int32_t>() != fixedVblank_ ||
++	    !frameDuration(info.outputSize.width, info.outputSize.height,
++			   values.get(V4L2_CID_HBLANK).get<int32_t>(),
++			   values.get(V4L2_CID_PIXEL_RATE).get<int64_t>(),
++			   fixedVblank_, &duration) || duration != fixedFrameDuration_)
++		return -EIO;
++	return 0;
++}
++
+ int SimplePipelineHandler::configure(Camera *camera, CameraConfiguration *c)
+ {
+ 	SimpleCameraConfiguration *config =
+@@ -1573,6 +1653,12 @@
+ 			<< ", got " << captureFormat.planes[0].bpl;
+ 	}
+ 
++	ret = data->configureFixedFrameDuration();
++	if (ret) {
++		LOG(SimplePipeline, Error) << "Fixed frame timing unavailable";
++		return ret;
++	}
++
+ 	/* Configure the converter if needed. */
+ 	std::vector<std::reference_wrapper<const StreamConfiguration>> outputCfgs;
+ 	data->useConversion_ = config->needConversion();
+@@ -1603,8 +1689,19 @@
+ 	if (data->converter_) {
+ 		return data->converter_->configure(inputCfg, outputCfgs);
+ 	} else {
+-		ipa::soft::IPAConfigInfo configInfo;
++		ipa::soft::IPAConfigInfo configInfo{};
+ 		configInfo.sensorControls = data->sensor_->controls();
++		configInfo.sensorInfoUpdated = data->fixedFrameDuration_ != 0;
++		if (configInfo.sensorInfoUpdated) {
++			if (data->sensor_->sensorInfo(&configInfo.sensorInfo))
++				return -EINVAL;
++			static constexpr uint32_t hblankId[] = { V4L2_CID_HBLANK };
++			ControlList hblank = data->sensor_->getControls(hblankId);
++			if (hblank.empty())
++				return -EINVAL;
++			configInfo.sensorInfo.minLineLength = configInfo.sensorInfo.outputSize.width +
++				hblank.get(V4L2_CID_HBLANK).get<int32_t>();
++		}
+ 		return data->swIsp_->configure(inputCfg, outputCfgs, configInfo);
+ 	}
+ }
+@@ -1640,6 +1737,12 @@
+ 			<< "Failed to acquire pipeline, entity "
+ 			<< pad->entity()->name() << " in use";
+ 		return -EBUSY;
++	}
++
++	ret = data->verifyFixedFrameDuration();
++	if (ret) {
++		releasePipeline(data);
++		return ret;
+ 	}
+ 
+ 	if (data->useConversion_ && !data->rawStream_) {
+@@ -1677,6 +1780,12 @@
+ 
+ 	ret = video->streamOn();
+ 	if (ret < 0) {
++		stop(camera);
++		return ret;
++	}
++
++	ret = data->verifyFixedFrameDuration();
++	if (ret) {
+ 		stop(camera);
+ 		return ret;
+ 	}

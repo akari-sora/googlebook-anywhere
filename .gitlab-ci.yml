@@ -95,7 +95,7 @@ builder:
         compare_to: refs/heads/main
   script:
     # profile-test compiles the YV12 helper; camera-test applies the pinned libyuv wrap patch.
-    - apt-get install -y -qq --no-install-recommends gcc libc6-dev patch > /dev/null
+    - apt-get install -y -qq --no-install-recommends gcc g++ libc6-dev patch > /dev/null
     # Docker is root; the report and autooff tests assume a normal user (root may follow its own symlinks and read mode 000).
     - useradd -m tester && chown -R tester:tester "$CI_PROJECT_DIR"
     - runuser -u tester -- bash tests/builder/run.sh
