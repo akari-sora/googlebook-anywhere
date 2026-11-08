@@ -6,7 +6,7 @@ Android gralloc import still requires reliable format, stride, plane and access 
 
 Patch `0007-jpeg-bounds-and-stride.patch` bounds the libjpeg destination, checks JPEG BLOB trailer capacity, and uses the configured source stride. Patch `0008-native-buffer-safety.patch` rejects missing plane descriptors and invalid capacities, and handles descriptor duplication failures without terminating the HAL. These patches passed a full Android NDK build. They do not establish correct Android buffer import, camera enumeration, preview or photo capture. Patch `0009-thumbnail-stride.patch` uses the configured NV12 stride for thumbnails, clears stale output on invalid input, and bounds geometry and plane access. Its host ASan/UBSan checks and full NDK build passed; actual Android buffer mapping remains unverified.
 
-Patch `0010-camera-init-diagnostics.patch` reports the failing initialization stage, return value and, when available, stream format and size. It preserves the existing return values and release paths and does not log images. The patched source passed a full Android NDK build; the resulting HAL contains the diagnostic messages. It has not been tested on the KANO. The current USB still reports zero cameras, and this patch adds diagnostics rather than a camera fix.
+Patch `0010-camera-init-diagnostics.patch` reports the failing initialization stage, return value and, when available, stream format and size. It preserves the existing return values and release paths and does not log images. The patched source passed a full Android NDK build; the resulting HAL contains the diagnostic messages. It was exercised on KANO; camera initialization failed and this patch adds diagnostics rather than a camera fix.
 
 ## Focused host tests
 
@@ -35,4 +35,6 @@ The JPEG check requires an installed host libjpeg and `pkg-config`. It exercises
 
 The thumbnail check compiles extracted methods with buffer stubs and requires a host compiler with AddressSanitizer and UndefinedBehaviorSanitizer support. It checks padded NV12 input, scaling, invalid reconfiguration, dimensions and plane capacity. Sources and targets are limited to even dimensions of at most 8192 pixels per side.
 
-Patch `0011-config-diagnostics.patch` logs the failed stream configuration (including color space, stride, frame size and buffer count) and the NV12 color-space rejection values. It changes diagnostics only; it has not been tested on KANO and does not establish a camera fix.
+Patch `0011-config-diagnostics.patch` logs the failed stream configuration (including color space, stride, frame size and buffer count) and the NV12 color-space rejection values. It changes diagnostics only. On KANO 0011 it reported NV12 320x240 rejected with RAW/Linear/Rec601/Full instead of sYCC; it does not itself fix the camera.
+
+Patch `0012-camera-probe-colorspace.patch` clears stale color space when Android HAL probes a different pixel format, so pipeline validation can select an appropriate default. The CPU NV12 sYCC guard remains intact. The full Android NDK build and independent readback of all eight output files passed on 2026-11-08. Preview and capture remain unverified.

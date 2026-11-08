@@ -65,9 +65,13 @@ for p in "$HERE"/patches/*.patch; do
   [ -f "$p" ] || continue
   if patch -d "$S" -p1 -N --dry-run -s < "$p" > /dev/null 2>&1; then
     patch -d "$S" -p1 -N -s < "$p"
-  elif [ "${p##*/}" = 0011-config-diagnostics.patch ] &&
+  elif { [ "${p##*/}" = 0011-config-diagnostics.patch ] || [ "${p##*/}" = 0012-camera-probe-colorspace.patch ]; } &&
        ! patch -d "$S" -p1 -R -f --dry-run -s < "$p" > /dev/null 2>&1; then
-    echo "error: 0011 camera diagnostics patch is incompatible" >&2
+    if [ "${p##*/}" = 0011-config-diagnostics.patch ]; then
+      echo "error: 0011 camera diagnostics patch is incompatible" >&2
+    else
+      echo "error: 0012 camera colorspace patch is incompatible" >&2
+    fi
     exit 1
   fi
 done

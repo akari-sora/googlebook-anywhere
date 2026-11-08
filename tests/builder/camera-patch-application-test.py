@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Exercise the actual 0011 patch loop on fresh, applied and incompatible inputs."""
+"""Exercise the actual pinned patch loop on fresh, applied and incompatible inputs."""
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -32,14 +33,18 @@ class PatchApplication(unittest.TestCase):
         end = text.index('\n# libyuv (static', start)
         loop = text[start:end]
         with tempfile.TemporaryDirectory() as temp:
-            source = Path(temp)
+            source = Path(temp) / 'source'
+            source.mkdir()
+            builder = Path(temp) / 'builder'
+            (builder / 'patches').mkdir(parents=True)
+            shutil.copy2(PATCH, builder / 'patches' / PATCH.name)
             for name, lines in original_files().items():
                 target = source / name
                 target.parent.mkdir(parents=True, exist_ok=True)
                 target.write_text(''.join(lines))
             def run():
                 return subprocess.run(['bash', '-e', '-c', loop],
-                    env={'HERE': str(ROOT / 'builder/camera'), 'S': str(source), 'PATH': '/usr/bin:/bin'},
+                    env={'HERE': str(builder), 'S': str(source), 'PATH': '/usr/bin:/bin'},
                     capture_output=True, text=True)
             fresh = run()
             self.assertEqual(fresh.returncode, 0, fresh.stderr)
@@ -56,6 +61,40 @@ class PatchApplication(unittest.TestCase):
             bad = run()
             self.assertNotEqual(bad.returncode, 0)
             self.assertIn('0011 camera diagnostics patch is incompatible', bad.stderr)
+
+    def test_colorspace_forward_reverse_and_refusal(self):
+        patch = ROOT / 'builder/camera/patches/0012-camera-probe-colorspace.patch'
+        text = SCRIPT.read_text()
+        start = text.index('for p in "$HERE"/patches/*.patch; do')
+        loop = text[start:text.index('\n# libyuv (static', start)]
+        with tempfile.TemporaryDirectory() as temp:
+            source = Path(temp) / 'source'
+            target = source / 'src/android/camera_capabilities.cpp'
+            target.parent.mkdir(parents=True)
+            original = ''.join(line[1:] for line in patch.read_text().splitlines(keepends=True)
+                               if line.startswith((' ', '-')) and not line.startswith('--- '))
+            target.write_text(original)
+            builder = Path(temp) / 'builder'
+            (builder / 'patches').mkdir(parents=True)
+            shutil.copy2(patch, builder / 'patches' / patch.name)
+            def run():
+                return subprocess.run(['bash', '-e', '-c', loop],
+                    env={'HERE': str(builder), 'S': str(source), 'PATH': '/usr/bin:/bin'},
+                    capture_output=True, text=True)
+            fresh = run()
+            self.assertEqual(fresh.returncode, 0, fresh.stderr)
+            content = target.read_bytes()
+            applied = run()
+            self.assertEqual(applied.returncode, 0, applied.stderr)
+            self.assertEqual(content, target.read_bytes())
+            target.write_text(target.read_text().replace('cfg.colorSpace.reset();', 'broken();', 1))
+            partial = run()
+            self.assertNotEqual(partial.returncode, 0)
+            self.assertIn('0012 camera colorspace patch is incompatible', partial.stderr)
+            target.write_text('incompatible source\n')
+            bad = run()
+            self.assertNotEqual(bad.returncode, 0)
+            self.assertIn('0012 camera colorspace patch is incompatible', bad.stderr)
 
 
 if __name__ == '__main__':

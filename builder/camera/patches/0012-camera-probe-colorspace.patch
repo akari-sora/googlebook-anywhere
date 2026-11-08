@@ -1,0 +1,20 @@
+--- a/src/android/camera_capabilities.cpp
++++ b/src/android/camera_capabilities.cpp
+@@ -442,6 +442,8 @@
+ 	StreamConfiguration &cfg = cameraConfig->at(0);
+ 
+ 	for (const Size &res : resolutions) {
++		if (cfg.pixelFormat != pixelFormat)
++			cfg.colorSpace.reset();
+ 		cfg.pixelFormat = pixelFormat;
+ 		cfg.size = res;
+ 
+@@ -591,6 +593,8 @@
+ 			 * handlers will report the StreamFormats list of
+ 			 * supported formats.
+ 			 */
++			if (cfg.pixelFormat != pixelFormat)
++				cfg.colorSpace.reset();
+ 			cfg.pixelFormat = pixelFormat;
+ 
+ 			CameraConfiguration::Status status = cameraConfig->validate();
