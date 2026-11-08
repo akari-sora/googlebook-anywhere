@@ -824,6 +824,7 @@ PY
 expect "camera overlay integrity, expected delta and CMake wrap" 0 "^OK$" -- python3 "$ROOT/tests/builder/camera-test.py"
 expect "camera diagnostics patch application" 0 "^OK$" -- python3 "$ROOT/tests/builder/camera-patch-application-test.py"
 expect "camera fixed-duration patch and timing" 0 "^OK$" -- python3 "$ROOT/tests/builder/camera-fixed-duration-test.py"
+expect "camera HAL buffer defaults and patch guards" 0 "^HAL probe simulation PASS$" -- python3 "$ROOT/tests/builder/camera-buffer-probe-test.py"
 expect "build-libcamera.sh requires a work directory" 1 "usage: build-libcamera.sh" -- bash "$ROOT/builder/camera/build-libcamera.sh"
 expect "build-libcamera.sh refuses a missing NDK" 2 "NDK clang not found|CMake not found" -- env NDK="$T/no-ndk" CMAKE="$T/no-cmake" bash "$ROOT/builder/camera/build-libcamera.sh" "$T/cam"
 expect "build-libcamera.sh pins every download" 0 "^4$" -- sh -c "grep -cE '^fetch https://' '$ROOT/builder/camera/build-libcamera.sh'"

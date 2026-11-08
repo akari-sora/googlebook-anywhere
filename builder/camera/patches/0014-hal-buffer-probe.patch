@@ -1,0 +1,31 @@
+--- a/src/android/camera_device.cpp
++++ b/src/android/camera_device.cpp
+@@ -705,6 +705,28 @@
+ 	}
+ 
+ 	sortCamera3StreamConfigs(streamConfigs, jpegStream);
++
++	/* Resolve unspecified buffer counts in a separate configuration.  Keep
++	 * the requested geometry and formats intact for the real validation. */
++	auto probe = camera_->generateConfiguration();
++	if (probe) {
++		for (const auto &streamConfig : streamConfigs)
++			probe->addConfiguration(streamConfig.config);
++
++		if (probe->validate() == CameraConfiguration::Adjusted &&
++		    probe->size() == streamConfigs.size()) {
++			bool countsAvailable = true;
++			for (unsigned int i = 0; i < probe->size(); ++i)
++				countsAvailable &= (*probe)[i].bufferCount != 0;
++			if (countsAvailable) {
++				for (unsigned int i = 0; i < probe->size(); ++i) {
++					if (!streamConfigs[i].config.bufferCount)
++						streamConfigs[i].config.bufferCount = (*probe)[i].bufferCount;
++				}
++			}
++		}
++	}
++
+ 	for (const auto &streamConfig : streamConfigs) {
+ 		config->addConfiguration(streamConfig.config);
+ 
