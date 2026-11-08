@@ -349,6 +349,12 @@ sudo python3 install/stick/universal-stick.py \
   --out NEW_DIAGNOSTIC_IMAGE
 ```
 
+預設使用此原始碼樹的 `profiles/`。不同映像使用不同版本的機型設定時，可用
+`--profiles-root PROFILE_DIR` 指定同一棵設定樹，該目錄需包含所選機型的
+`<機型>/profile.toml`。機型規則、建置紀錄的設定雜湊與實際封裝的檔案均使用
+這棵樹；紀錄的雜湊須與檔案位元組完全相同，註解差異也會拒絕。這個參數不改變
+診斷映像的用途與實機、安裝和復原未驗收的限制。
+
 輸出只能是原本不存在的普通檔案，旁邊會留下 `.not-self-tested`。工具從實際
 資料大小計算容量，`--max-bytes` 可指定上限；兩份各約 19 GB 的資料，加上
 維護系統與檔案系統後已超過 32 GB。建置期間另需放置資料副本、分割區映像

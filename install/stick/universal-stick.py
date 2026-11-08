@@ -161,7 +161,10 @@ def make_entry(root_guid):
             commandline(root_guid) + '\n').encode()
 
 
-def setup_root(root, catalog_sha, data_guid, records=None, profiles=BASE_PROFILES):
+def setup_root(root, catalog_sha, data_guid, records=None, profiles=BASE_PROFILES,
+               profiles_root=None):
+    if profiles_root is None:
+        profiles_root = PROFILES_ROOT
     # Unselected optional profiles must not leak from the supplied maintenance root:
     # the detector reads every present optional profile, including stale rules.
     for profile in DETECT.OPTIONAL_PROFILE_IDS:
@@ -180,7 +183,7 @@ def setup_root(root, catalog_sha, data_guid, records=None, profiles=BASE_PROFILE
         write_new(app.parent / name, (HERE.parent / name).read_bytes())
     for profile in profiles:
         target = safe_dir(root, 'opt/googlebook/profiles/' + profile)
-        write_new(target / 'profile.toml', (PROFILES_ROOT / profile / 'profile.toml').read_bytes())
+        write_new(target / 'profile.toml', (profiles_root / profile / 'profile.toml').read_bytes())
     config = safe_dir(root, 'etc/gbos-universal')
     write_new(config / 'catalog.sha256', (catalog_sha + '\n').encode())
     if records:
@@ -391,8 +394,10 @@ def build(args):
     need(all(tools.values()), 'missing filesystem tools')
     root = Path(args.root).absolute()
     xboot = Path(args.xbootldr).absolute()
+    profiles_root = Path(getattr(args, 'profiles_root', None) or PROFILES_ROOT).absolute()
+    need(profiles_root.is_dir() and not profiles_root.is_symlink(), 'profiles root must be a real directory')
     resolved_out = out.resolve()
-    for source_dir in (root, xboot, Path(args.bundle).absolute()):
+    for source_dir in (root, xboot, Path(args.bundle).absolute(), profiles_root):
         source = source_dir.resolve()
         need(resolved_out != source and source not in resolved_out.parents,
              'output cannot be inside an input directory')
@@ -408,11 +413,16 @@ def build(args):
     with CAT.validate(args.bundle, 'catalog.json', args.catalog_sha256) as verified:
         profiles = tuple(p for p in (*BASE_PROFILES, 'rog-ally') if p in verified.descriptors)
         need(set(BASE_PROFILES).issubset(profiles), 'both base profiles required')
+        for profile in profiles:
+            directory = profiles_root / profile
+            file = directory / 'profile.toml'
+            need(directory.is_dir() and not directory.is_symlink() and
+                 file.is_file() and not file.is_symlink(), 'profile must be a real file')
         need(not any(record_args['rog-ally']) or 'rog-ally' in profiles,
              'Ally record requires Ally payload')
         if 'rog-ally' in profiles:
             need(all(all(record_args[p]) for p in profiles), 'Ally requires all build records and pins')
-            rules = DETECT.load_rules(PROFILES_ROOT)
+            rules = DETECT.load_rules(profiles_root)
             need({p for p, _ in rules} == set(profiles) and all(rule for _, rule in rules),
                  'Ally requires configured model rules for every profile')
         records = {}
@@ -422,7 +432,7 @@ def build(args):
                 raw, record = RECORD.read_pinned(path, pin)
                 image = item['image']
                 profile = item['profile']
-                profile_raw = (PROFILES_ROOT / profile / 'profile.toml').read_bytes()
+                profile_raw = (profiles_root / profile / 'profile.toml').read_bytes()
                 need(record['selftest'] == 'passed' and record['profile'] == profile and
                      record['declared_build_id'] == item['build_id'] and
                      record['profile_sha256'] == hashlib.sha256(profile_raw).hexdigest() and
@@ -459,7 +469,7 @@ def build(args):
             with CAT.validate(str(data_dir), 'catalog.json', args.catalog_sha256):
                 pass
             rg, dg, eg, disk_guid = uuid.uuid4(), uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
-            setup_root(stage, args.catalog_sha256, dg, records, profiles)
+            setup_root(stage, args.catalog_sha256, dg, records, profiles, profiles_root)
             if 'rog-ally' in profiles:
                 rules = DETECT.load_rules(stage / 'opt/googlebook/profiles')
                 need({p for p, _ in rules} == set(profiles) and all(rule for _, rule in rules),
@@ -580,6 +590,8 @@ def main():
                 'bundle', 'catalog-sha256', 'out'):
         parser.add_argument('--' + arg, required=True)
     parser.add_argument('--max-bytes', type=int)
+    parser.add_argument('--profiles-root', type=Path,
+                        help='profile tree used by the recorded images (default: repository profiles)')
     for profile in ('kano', 'hx370', 'rog-ally'):
         parser.add_argument('--' + profile + '-build-record')
         parser.add_argument('--' + profile + '-build-record-sha256')

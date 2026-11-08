@@ -338,13 +338,14 @@ class SharedMediumTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 d.health()
 
-    def make_records(self):
+    def make_records(self, profiles_root=None):
+        profiles_root = profiles_root or u.PROFILES_ROOT
         payloads = json.loads(self.raw)['payloads']
         result = {}
         for item in payloads:
             profile, image = item['profile'], item['image']
             record = {'schema': 1, 'profile': profile,
-                      'profile_sha256': sha((u.PROFILES_ROOT / profile / 'profile.toml').read_bytes()),
+                      'profile_sha256': sha((profiles_root / profile / 'profile.toml').read_bytes()),
                       'declared_build_id': item['build_id'], 'build_id_basis': 'selected_pins',
                       'image': {'basename': Path(image['path']).name, 'size': image['size'], 'sha256': image['sha256']},
                       'selftest': 'passed', 'not_run': [],
@@ -385,6 +386,46 @@ class SharedMediumTest(unittest.TestCase):
         with mock.patch.object(u, 'PROFILES_ROOT', profiles):
             self.record_fixture = self.make_records()
             self.test_regular_file_assembly_with_simulated_fs_tools()
+
+    def test_custom_profile_tree_drives_rules_records_and_staged_bytes(self):
+        profiles = self.add_synthetic_ally()
+        kano = profiles / 'kano/profile.toml'
+        kano.write_bytes(kano.read_bytes() + b'\n# custom candidate bytes\n')
+        self.args.profiles_root = str(profiles)
+        self.record_fixture = self.make_records(profiles)
+        self.expected_profiles = {p: (profiles / p / 'profile.toml').read_bytes()
+                                  for p in self.record_fixture}
+        with mock.patch.object(u.DETECT, 'load_rules', wraps=u.DETECT.load_rules) as load_rules:
+            self.test_regular_file_assembly_with_simulated_fs_tools()
+        self.assertEqual(load_rules.call_args_list[0].args[0], profiles)
+        self.assertEqual(len(load_rules.call_args_list), 2)
+        self.assertEqual(load_rules.call_args_list[1].args[0].name, 'profiles')
+
+    def test_custom_profile_tree_requires_exact_recorded_bytes(self):
+        profiles = self.add_synthetic_ally()
+        self.args.profiles_root = str(profiles)
+        self.make_records(profiles)
+        kano = profiles / 'kano/profile.toml'
+        kano.write_bytes(kano.read_bytes() + b'\n# only a comment still changes the pin\n')
+        with (mock.patch.object(u.sys, 'platform', 'linux'),
+              mock.patch.object(u.os, 'geteuid', return_value=0),
+              mock.patch.object(u.shutil, 'which', side_effect=lambda name: '/usr/bin/' + name),
+              mock.patch.object(u.shutil, 'copytree') as copy):
+            with self.assertRaisesRegex(ValueError, 'build record mismatch'):
+                u.build(self.args)
+        copy.assert_not_called()
+        self.assertFalse(Path(self.args.out).exists())
+
+    def test_profiles_root_argument_and_invalid_root(self):
+        help_text = subprocess.run([sys.executable, str(ROOT / 'install/stick/universal-stick.py'), '--help'],
+                                   check=True, capture_output=True, text=True).stdout
+        self.assertIn('--profiles-root', help_text)
+        self.args.profiles_root = str(self.base / 'missing')
+        with (mock.patch.object(u.sys, 'platform', 'linux'), mock.patch.object(u.os, 'geteuid', return_value=0),
+              mock.patch.object(u.shutil, 'which', side_effect=lambda name: '/usr/bin/' + name)):
+            with self.assertRaisesRegex(ValueError, 'profiles root must be a real directory'):
+                u.build(self.args)
+        self.assertFalse(Path(self.args.out).exists())
 
     def test_three_profiles_require_all_records_and_configured_ally(self):
         profiles = self.add_synthetic_ally()
@@ -470,6 +511,7 @@ class SharedMediumTest(unittest.TestCase):
         mtools_files = {}
         mkfs_contents = {}
         staged_records = {}
+        staged_profiles = {}
         real_run = subprocess.run
         def fake_run(args, **kwargs):
             argv = list(map(str, args))
@@ -484,6 +526,7 @@ class SharedMediumTest(unittest.TestCase):
                 if image.name == 'root.img' and hasattr(self, 'record_fixture'):
                     for profile in self.record_fixture:
                         staged_records[profile] = (root / 'etc/gbos-universal/build-records' / (profile + '.json')).read_bytes()
+                        staged_profiles[profile] = (root / 'opt/googlebook/profiles' / profile / 'profile.toml').read_bytes()
                 mkfs_contents[image.name] = sorted(str(p.relative_to(root)) for p in root.rglob('*'))
                 with image.open('r+b') as f:
                     f.write(b'fake ext4 image')
@@ -512,6 +555,8 @@ class SharedMediumTest(unittest.TestCase):
                          + (2 if hasattr(self, 'record_fixture') and 'rog-ally' in self.record_fixture else 0))
         if hasattr(self, 'record_fixture'):
             self.assertEqual(staged_records, {p: values[1] for p, values in self.record_fixture.items()})
+        if hasattr(self, 'expected_profiles'):
+            self.assertEqual(staged_profiles, self.expected_profiles)
         expected_readback = {'etc/systemd/system/gbos-universal-menu.service',
                              'opt/googlebook/install/gbos-update.py', 'opt/googlebook/install/gbos-fresh.py'}
         expected_readback.update('opt/googlebook/install/stick/' + name for name in
