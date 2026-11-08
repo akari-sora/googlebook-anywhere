@@ -26,3 +26,5 @@ python3 -B tests/builder/noota/run.py
 The test compiles the shipped source against local mock headers and times out
 after 30 seconds. If `CXX` (or `c++` by default) is unavailable, it exits 77
 and reports `SKIP`; this is not a passing lifecycle test or device validation.
+
+QEMU Binder callback lifecycle probe and build instructions: [Android test](../../tests/builder/noota/android/README.md).

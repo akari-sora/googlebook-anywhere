@@ -984,6 +984,7 @@ else
     bad "read-only update engine Binder lifecycle (rc=$noota_rc)"
     printf '%s\n' "$noota_out"
 fi
+expect "Android Binder probe build and log parser (host only)" 0 "^OK$" -- python3 -B -m unittest discover -s "$ROOT/tests/builder/noota/android" -p 'test_*.py'
 expect "read-only update engine integration" 0 "^OK$" -- python3 -B "$ROOT/tests/builder/readonly-update-engine-test.py"
 expect "gbos-no-ota rc fixture and QEMU log checks" 0 "^NO-OTA OK$" -- python3 "$ROOT/tests/builder/no-ota-test.py"
 expect "image.py autooff log checks" 0 "^AUTOOFF LOG OK$" -- python3 - "$ROOT/builder/image.py" << 'PY'
