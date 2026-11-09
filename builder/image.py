@@ -371,6 +371,11 @@ released = ec_released(EC_FEATURES)
 assert released <= set(PROF["blacklist"]["modules"]) and not released & set(EC_NEVER), released
 base_debug, base_quiet = list(debug), list(quiet)
 normal, debug, quiet = ec_variant_entries(normal, debug, quiet, EC_FEATURES)
+for entry_name, options in (("debug", debug), ("quiet", quiet)):
+    try:
+        devprofile.validate_module_blacklist(options, entry_name)
+    except devprofile.ProfileError as exc:
+        sys.exit(str(exc))
 def entry(title, o): return f"title {title}\nlinux /kernel.efi\ninitrd /initrd.img\noptions {' '.join(o)}\n"
 SERIAL = devprofile.SERIAL
 STUB_OPT = "pci-stub.ids=" + ",".join(PROF["cmdline"]["pci_stub_ids"])

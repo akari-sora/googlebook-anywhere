@@ -12,10 +12,10 @@ Googlebook（lapis）映像本來是給另一台機器用的，裡面帶著那�
 1. **移除 vendor 分割區裡已知的更新程式與燒錄工具**：fwupd（含 LVFS 設定與離線 cab）、flashrom、libflashrom、futility、
    futility-executor、ectool、crossystem、`firmware/ap-ec-fw.zip`。build 時刪除，刪除清單（`removed.txt`）逐項比對。
    這份韌體工具移除清單的範圍只有 vendor；未對 system、system_ext、product 與其他 APEX 做完整韌體寫入工具稽核。啟用 `patch_ifma` 時，另會精確修改 system、system_ext 與指定 APEX 的 IFMA 目標並掃描殘留編碼（見 HOW-IT-WORKS.md）；這不是韌體寫入能力稽核。真正的兜底是下一層的核心封鎖。
-2. **核心模組封鎖（`module_blacklist=`）**：TPM（tpm、tpm_tis*、tpm_tis_i2c_cr50）、EC 傳輸與核心（cros_ec、cros_ec_lpcs、
+2. **核心模組封鎖政策（`module_blacklist=`，須由核心成功解析才生效）**：TPM（tpm、tpm_tis*、tpm_tis_i2c_cr50）、EC 傳輸與核心（cros_ec、cros_ec_lpcs、
    cros_ec_dev、cros_ec_chardev、cros_ec_spi/i2c/ishtp、cros_ec_sysfs、cros_ec_vbc、cros_ec_debugfs …，共 30 多個）、
    SPI flash（spi_intel、spi_intel_pci、mtd、spi_nor、spidev）、gsmi、chromeos_acpi、nvram、i2c_dev、at24、thunderbolt。
-   只放行 `cros_ec_proto`（純函式庫）給 ACPI 鍵盤背光驅動用。KANO 的預設映像是 `GBOS_EC=typec`（變數沒設定時就是這個）：放行 `cros_ec`、`cros_ec_lpcs`、`cros_ec_dev`、`cros_ec_typec`、`cros_usbpd_notify`，所以有已註冊的 cros_ec 通道，送得出下面稽核過的 EC 指令。「沒有 EC 裝置、送不出 EC 指令」只適用於 `GBOS_EC=none`、把 `GBOS_EC` 設成空字串，以及其他機型的預設映像。
+   只放行 `cros_ec_proto`（純函式庫）給 ACPI 鍵盤背光驅動用。KANO 的預設映像是 `GBOS_EC=typec`（變數沒設定時就是這個）：放行 `cros_ec`、`cros_ec_lpcs`、`cros_ec_dev`、`cros_ec_typec`、`cros_usbpd_notify`，所以有已註冊的 cros_ec 通道，送得出下面稽核過的 EC 指令。`GBOS_EC=none`、把 `GBOS_EC` 設成空字串，以及其他機型的預設政策，設計上不放行 EC 裝置；能否成立仍須核對核心接受政策及實際裝置狀態。
    實驗選項 `GBOS_EC=drain`（只能單獨這個值，不能和功能並列）只解除 `cros_ec` 與 `cros_ec_lpcs`，並使用本來就放行的 `cros_ec_proto`。
    drain 仍封鎖 `cros_ec_dev`、`cros_ec_keyb`、`cros_ec_chardev`、`cros_ec_sysfs`、`cros_ec_debugfs` 以及其他 consumers／transports。
    drain 會建立 transport/core 裝置並消費 MKBP 佇列，所以「沒有 EC 裝置、送不出 EC 指令」的保證不適用於它。它不是預設，也還沒有實機驗收。
@@ -23,6 +23,7 @@ Googlebook（lapis）映像本來是給另一台機器用的，裡面帶著那�
    原映像的 `spi-intel.writeable=1` 也拿掉了。清單在機型設定（`profiles/kano/profile.toml`）；全專案一定要封鎖的模組與參數在
    `profiles/_safety.toml`（`blacklist.required` 就是上面這整份 57 個模組，每個機型都一樣），機型設定只能加、不能減（`builder/lib/devprofile.py` 拒絕），`builder/image.py` 再對每個開機選項逐一檢查，並確認 ESP 上只有 quiet 與 serial-debug 兩個選項
    （base ESP 原本那個沒有封鎖的 `lapis.conf` 會被刪掉）。
+   **2026-11-09 已知問題：** Ally 第六版候選的 81 項、1039 bytes 黑名單，在使用相同核心的隔離 QEMU 測試遭核心以 `string parameter too long` 拒絕，五個選定模組仍載入。該候選不能視為具備有效的核心模組黑名單。建置程式已加入最終開機項目的單一參數與 1024-byte 上限檢查，超限即停止；這不會修復既有映像，修正版核心／映像與實機驗證仍待完成。不得刪除必要封鎖項目來繞過檢查。
 3. **`efi=noruntime`**：Linux 不能呼叫 EFI runtime services，所以 OS 寫不了 EFI 變數，也送不出 capsule 更新。
    `efi=noruntime` 不約束核心自己的 EFI stub（stub 在 `ExitBootServices` 之前就結束）。自建核心閘門拒絕會在 stub 裡寫 NV 變數的選項。
 4. **裝置節點**：實機上沒有 `/dev/mem`、`/dev/port`、`/dev/mtd*`、`/dev/spidev*`。
@@ -48,7 +49,7 @@ Googlebook（lapis）映像本來是給另一台機器用的，裡面帶著那�
 
 9. **profile `[modules]` early-boot modprobe**（`profiles/_safety.toml` 的 `[modules]`，檢查在 `builder/lib/devprofile.py`）：機型可以列出要在 `early-boot` 同步 `exec` 的 `modprobe`。命令是 `/vendor/bin/modprobe --dirname=<vendor 或 dev 目錄> <名字>`，沒有 `-b`。kano 與 generic-x86 沒有 allowlist 列，它們的 `kano-hw.rc` 開頭不因這層而改變。這層的限度：
    - 名字必須在該 profile id 的 allowlist 上。`blacklist.required`、該 profile 的 `blacklist.modules`／`debug_add`／`quiet_add` 都不能進。`_NEVER_SHIP_KO`（`msr`、`efivarfs`、`capsule_loader`、`ec_sys`、`acpi_dbg`、`acpi_configfs`）也不能進。儲存／韌體更新類用的是 kconfig 閘門已經對上的模組名，不是新的萬用字元：`KCONFIG_INITCALL_BLACKLIST` 的 `nvme` 與 `mei_me`，SDHCI／MTD／SPI flash（控制器、SPI-NOR、spidev）／Thunderbolt／TPM／CCP 在 `KCONFIG_BUILTIN_MODULE` 裡的名字，以及 SATA 的 `libata`、`ahci`、`ahci_platform`、`libahci`。
-   - `unblock` 只能點 stock `modules.blocklist` 上的模組。名單只有 `STOCK_MODULES_BLOCKLIST` 一處（目前 `snd_hda_intel`；出貨的 `vendor_dlkm` `lib/modules/modules.blocklist` 是一行 `blocklist snd_hda_intel`，這個 builder 不重寫該分割區）。`load` 不能點這些名字。省略 `-b` 只跳過那份 userspace 檔；**核心命令列的 `module_blacklist=` 仍然生效**，依賴模組也算。
+   - `unblock` 只能點 stock `modules.blocklist` 上的模組。名單只有 `STOCK_MODULES_BLOCKLIST` 一處（目前 `snd_hda_intel`；出貨的 `vendor_dlkm` `lib/modules/modules.blocklist` 是一行 `blocklist snd_hda_intel`，這個 builder 不重寫該分割區）。`load` 不能點這些名字。省略 `-b` 只跳過那份 userspace 檔；核心命令列的 `module_blacklist=` 仍須由核心成功解析，生效時也涵蓋依賴模組；參數存在本身不能證明生效。
    - 依賴順序不看列是 `vendor` 還是 `dev`：allowlist 裡較早的每一列都必須先被選到，所以 `bluetooth` 在 `btusb` 前面。同一張表內照 allowlist 順序；所有 `load` 行都在 `unblock` 行之前輸出（codec 先於 `snd_hda_intel`）。`exec` 會等這次 `modprobe` 結束。模組 probe 之後的 codec／韌體路徑是非同步的，這不表示裝置已經綁定。
    - 這層只把模組載入排進 early-boot。喇叭、Wi-Fi、藍牙是否可用，以實機紀錄為準。
 
@@ -180,7 +181,7 @@ overlay 裡的自動亮度、power_profile 等設定也會一起消失。
   `LoaderSystemToken`。
 - **韌體設定寫入類驅動（已知限制）**：`CONFIG_HP_BIOSCFG`、`CONFIG_THINK_LMI`、`CONFIG_DELL_WMI_SYSMAN`、`CONFIG_ASUS_WMI` 設成 `=y` 時，閘門目前不拒絕。它們可以經 WMI／SMM 寫 BIOS 設定，和已經拒絕的 `DEVPORT`／`X86_MSR` 是同一類、需要 root 的能力。原廠 lapis 與釘選的 step-1 都不編這些驅動。這四個驅動的 `.ko` 若出現在 `modules/`，basename 不在閘門的對照表裡，同樣不拒絕。這是文件化的限制，不是安全尾已經擋住的項目。
 - **具備 `CAP_SYS_RAWIO` 的特權 root 程序與 x86 I/O port 指令**：原廠 lapis 與 Track 2 自建核心皆關閉 `CONFIG_DEVMEM`、`CONFIG_DEVPORT`、`CONFIG_PROC_KCORE`、`CONFIG_X86_MSR`、`CONFIG_ACPI_CUSTOM_METHOD`，因此 `/dev/mem`、`/dev/port`、`/proc/kcore`、`/dev/cpu/*/msr` 等裝置與 procfs 節點完全不存在；然而 x86_64 PCI／傳統驅動需要 `CONFIG_HAS_IOPORT=y`，且核心維持 `CONFIG_X86_IOPL_IOPERM=y`，因此具備 `CAP_SYS_RAWIO` 的 root 程序理論上仍可呼叫 `ioperm(2)`／`iopl(2)` 直接執行 CPU I/O port 指令。這個安全模型旨在移除了燒錄工具與裝置驅動後防止系統服務誤寫韌體，並非針對已取得 `CAP_SYS_RAWIO` 的惡意 root 程式碼提供核心層隔離。
-- **其他 SD/MMC 主控制器**：`amd-hx370` 等 profile 封鎖 `sdhci_pci` 與 `sdhci_acpi`，且 `check-kconfig` 拒絕這兩個驅動的 built-in 設定；這只涵蓋使用這兩種驅動的控制器，不能涵蓋所有 PCI／ACPI 讀卡機。HX370 的 Realtek RTS525A 使用 `rtsx` 驅動家族，現有 SDHCI 規則不能證明它被遮蔽。已歸檔 HX370 v0.3.0 映像的核心未編入 RTSX PCI 讀卡機驅動；新核心候選已編入並通過靜態檢查，尚未整合映像或實機驗證。該候選可能讓插入的卡對 Android 可見，既有 SDHCI 黑名單不能代替 RTSX 隔離；共用維護核心的支援與實機裝置可見性仍待驗證；其他控制器或 `generic-x86` 的內建儲存也可能對 Android 可見。
+- **其他 SD/MMC 主控制器**：`amd-hx370` 等 profile 將 `sdhci_pci` 與 `sdhci_acpi` 列入黑名單，實際封鎖仍須驗證，且 `check-kconfig` 拒絕這兩個驅動的 built-in 設定；這只涵蓋使用這兩種驅動的控制器，不能涵蓋所有 PCI／ACPI 讀卡機。HX370 的 Realtek RTS525A 使用 `rtsx` 驅動家族，現有 SDHCI 規則不能證明它被遮蔽。已歸檔 HX370 v0.3.0 映像的核心未編入 RTSX PCI 讀卡機驅動；新核心候選已編入並通過靜態檢查，尚未整合映像或實機驗證。該候選可能讓插入的卡對 Android 可見，既有 SDHCI 黑名單不能代替 RTSX 隔離；共用維護核心的支援與實機裝置可見性仍待驗證；其他控制器或 `generic-x86` 的內建儲存也可能對 Android 可見。
 - **i2c-hid 裝置的韌體**：觸控板、觸控螢幕的韌體理論上可以由 root 透過 hidraw 更新。vendor 裡唯一的更新程式（fwupd 與
   Elan 的 cab）已移除，但核心層沒有封鎖 hidraw。
 - **指紋 MCU（FPMCU）的燒錄路徑**：vendor 的 `com.android.hardware.fingerprint.crosfp` APEX 沒有移除（指紋功能要用它），

@@ -765,6 +765,21 @@ def cmdline_within_limit(n):
     return n <= X86_BOOT_CMDLINE_MAX - CMDLINE_HEADROOM
 
 
+# Linux param_set_charp rejects values over 1024 bytes (before assigning them).
+MODULE_BLACKLIST_VALUE_MAX = 1024
+
+
+def validate_module_blacklist(opts, entry):
+    """Require one effective kernel blacklist whose UTF-8 value fits charp."""
+    values = [o.split("=", 1)[1] for o in opts if o.startswith("module_blacklist=")]
+    if len(values) != 1:
+        raise ProfileError(f"{entry}: expected exactly one module_blacklist= parameter")
+    size = len(values[0].encode("utf-8"))
+    if size > MODULE_BLACKLIST_VALUE_MAX:
+        raise ProfileError(f"{entry}: module_blacklist value is {size} bytes; kernel limit is "
+                           f"{MODULE_BLACKLIST_VALUE_MAX} bytes")
+
+
 def make_entries(prof, vendor_cmdline):
     """The options of the serial-debug and quiet entries, and the "normal" options (no pci-stub and no serial-debug
     extras; no entry uses them since the plain entry was dropped, guards() reads its module_blacklist), as token lists."""

@@ -19,9 +19,9 @@ Installs Google's official **Googlebook OS** (lapis, the desktop edition of Andr
 | Hardware tested (limited) | One KANO: an Alder Lake-P K0 engineering sample with iGPU `8086:46a6`; camera and sleep/power acceptance remain open |
 | Other KANO models | 12th-gen CP714-1WN and 13th-gen CP714-2WN/Zydron (i3/i5/i7): their iGPU IDs and the 13th-gen audio firmware have been added; they should work, **not yet tested on hardware** |
 | Minimum CPU | Intel 12th gen or AMD Zen 5 and newer; ROG Ally Zen 4 uses an experimental compatibility patch, while other older CPUs are expected not to boot ([docs/COMPATIBILITY.en.md](docs/COMPATIBILITY.en.md) "Minimum CPU") |
-| Other x86-64 computers | Experimental `generic-x86`, `amd-hx370` and `rog-ally`; candidate images have been tested in QEMU, but hardware acceptance remains open |
+| Other x86-64 computers | Experimental `generic-x86`, `amd-hx370` and `rog-ally`; hardware acceptance is incomplete. The Ally candidate also has a kernel blacklist length failure; see [the safety notes](docs/SAFETY.md). |
 | How to install | Build the image yourself (about 10–30 minutes, plus a 7.7 GB download and 80 GB of disk) → write it to a USB stick and boot; to install to the internal disk, use the "installer stick" |
-| Safety | Known firmware updaters are removed, and the kernel paths to the EC/TPM/SPI are blocked; see [docs/SAFETY.md](docs/SAFETY.md) (Chinese) |
+| Safety | Known firmware updaters are removed; kernel blocking policies require verification. The Ally candidate has a known blacklist failure; see [the safety notes](docs/SAFETY.md). |
 
 <details>
 <summary>Original description (full description of models and iGPU IDs)</summary>

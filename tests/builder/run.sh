@@ -61,6 +61,7 @@ expect "build.sh requires GBOS_INPUTS" 2 "GBOS_INPUTS" -- env -u GBOS_INPUTS -u 
 mkdir -p "$T/badprof/badprof"; sed '/^image_name = /d' "$ROOT/profiles/kano/profile.toml" > "$T/badprof/badprof/profile.toml"
 expect "build.sh refuses an invalid device profile" 2 "missing key image_name" -- "${B[@]}" GBOS_OUT="$T/o4" GBOS_PROFILE="$T/badprof/badprof" bash "$ROOT/builder/build.sh"
 [ ! -e "$T/o4" ] && ok "build.sh wrote nothing for the invalid profile" || bad "build.sh created GBOS_OUT for an invalid profile"
+expect "module blacklist kernel parameter limit" 0 "^OK$" -- python3 -B "$ROOT/tests/builder/module-blacklist-length-test.py"
 expect "device profile loader (tests/builder/profile-test.py)" 0 "profile tests: [0-9]+ passed, 0 failed" -- python3 "$ROOT/tests/builder/profile-test.py"
 expect "diagnostic-only model detector (tests/stick/detect-model-test.py)" 0 "^OK$" -- python3 "$ROOT/tests/stick/detect-model-test.py"
 expect "offline common-media catalog" 0 "^OK$" -- python3 "$ROOT/tests/stick/catalog-test.py"
