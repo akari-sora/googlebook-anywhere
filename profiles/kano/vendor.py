@@ -374,6 +374,26 @@ def ec(ctx, features):
         print("EC buttons: usr/keylayout/cros_ec_buttons.kl (volume keys only)")
 
 
+# The camera HAL's private minigbm BLOB dimension query is supported only for
+# this checked pair from lapis 16658739. Runtime ELF build IDs select the ABI;
+# these full-file hashes bind that selector to the vendor image at build time.
+CAMERA_GRALLOC_SHA256 = {
+    "lib64/hw/gralloc.minigbm.so": "2cad4a73763f7d27ad7e1861b53b9ec04b14729ec4febac80547835ad575a42e",
+    "lib64/libminigbm_gralloc.so": "d48536951fd0e9643e71a5c8843e90833ce3e212e182782185470e2fbbfad673",
+}
+
+
+def verify_camera_gralloc(tree):
+    """Check both sides of the private ABI before installing a camera overlay."""
+    import hashlib
+    for rel, expected in CAMERA_GRALLOC_SHA256.items():
+        path = tree / rel
+        if path.is_symlink() or not path.is_file():
+            raise SystemExit(f"camera gralloc ABI: missing or non-regular file: {rel}")
+        if hashlib.sha256(path.read_bytes()).hexdigest() != expected:
+            raise SystemExit(f"camera gralloc ABI: unsupported vendor binary: {rel}")
+
+
 def camera(ctx, overlay):
     """The built-in camera (GBOS_CAMERA_OVERLAY = the out/vendor directory of builder/camera/build-libcamera.sh): upstream
     libcamera (simple pipeline + SoftISP on the CPU) and its Android camera3 HAL as camera.kano.so. lapis' own HAL
@@ -382,6 +402,7 @@ def camera(ctx, overlay):
     is replaced. Every file is checked against the overlay's SHA256SUMS first."""
     import hashlib
     tree, vmap = ctx.tree, ctx.vmap
+    verify_camera_gralloc(tree)
     policy = tree / "etc/selinux/vendor_sepolicy.cil"
     rule = "(allow hal_camera_default udmabuf_device (chr_file (open read write ioctl)))"
     if policy.is_symlink() or not policy.is_file():

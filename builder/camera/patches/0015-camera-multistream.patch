@@ -1,0 +1,1009 @@
+--- a/src/android/camera_device.cpp
++++ b/src/android/camera_device.cpp
+@@ -9,6 +9,7 @@
+ 
+ #include <algorithm>
+ #include <fstream>
++#include <fcntl.h>
+ #include <set>
+ #include <sys/mman.h>
+ #include <unistd.h>
+@@ -63,6 +64,47 @@
+  * 2.) The configuration for JPEG request.
+  * 3.) Others. Larger resolutions and different formats are put earlier.
+  */
++/*
++ * A CPU SoftISP only produces one native output.  When the JPEG source is
++ * the largest NV12 configuration, use that internal frame as the source for
++ * all smaller NV12 streams.  Leave other combinations untouched.
++ */
++bool consolidateJpegNv12(std::vector<Camera3StreamConfig> &configs,
++                         const camera3_stream_t *jpeg)
++{
++	if (!jpeg || configs.size() < 2)
++		return false;
++	auto source = std::find_if(configs.begin(), configs.end(),
++		[jpeg](const Camera3StreamConfig &c) {
++			return c.streams.size() == 1 &&
++			       c.streams[0].stream == jpeg &&
++			       c.streams[0].type == CameraStream::Type::Internal;
++		});
++	if (source == configs.end() || source->config.pixelFormat != formats::NV12)
++		return false;
++	const Size sourceSize = source->config.size;
++	for (const auto &c : configs) {
++		if (c.config.pixelFormat != formats::NV12 ||
++		    c.config.size.width > sourceSize.width ||
++		    c.config.size.height > sourceSize.height)
++			return false;
++	}
++	Camera3StreamConfig result = *source;
++	result.streams[0].stream->usage |= GRALLOC_USAGE_HW_CAMERA_WRITE |
++					    GRALLOC_USAGE_SW_READ_OFTEN;
++	for (const auto &c : configs) {
++		if (&c == &*source)
++			continue;
++		for (const auto &entry : c.streams) {
++			entry.stream->usage |= GRALLOC_USAGE_SW_WRITE_OFTEN;
++			result.streams.push_back({ entry.stream, CameraStream::Type::Mapped });
++		}
++	}
++	configs.clear();
++	configs.push_back(std::move(result));
++	return true;
++}
++
+ void sortCamera3StreamConfigs(std::vector<Camera3StreamConfig> &unsortedConfigs,
+ 			      const camera3_stream_t *jpegStream)
+ {
+@@ -417,17 +459,29 @@
+ 
+ void CameraDevice::flush()
+ {
++	bool cameraRunning;
+ 	{
+ 		MutexLocker stateLock(stateMutex_);
+-		if (state_ != State::Running)
++		if (state_ != State::Running && !captureRequestsInProgress_)
+ 			return;
+ 
++		cameraRunning = state_ == State::Running;
+ 		state_ = State::Flushing;
+ 	}
+ 
+-	camera_->stop();
++	if (cameraRunning)
++		camera_->stop();
++
++	/* Cancel queued post-processing and wait for every callback to finish. */
++	for (auto &stream : streams_)
++		stream.flush();
++	for (auto &stream : streams_)
++		stream.waitFlush();
+ 
+ 	MutexLocker stateLock(stateMutex_);
++	captureRequestsFinished_.wait(stateLock, [&]() LIBCAMERA_TSA_REQUIRES(stateMutex_) {
++		return captureRequestsInProgress_ == 0;
++	});
+ 	state_ = State::Stopped;
+ }
+ 
+@@ -437,6 +491,10 @@
+ 
+ 	camera_->stop();
+ 
++	/* Workers hold raw descriptor pointers; join them before clearing it. */
++	for (auto &stream : streams_)
++		stream.stopWorker();
++
+ 	{
+ 		MutexLocker descriptorsLock(descriptorsMutex_);
+ 		descriptors_ = {};
+@@ -704,6 +762,7 @@
+ 		streamConfigs[index].streams.push_back({ jpegStream, type });
+ 	}
+ 
++	consolidateJpegNv12(streamConfigs, jpegStream);
+ 	sortCamera3StreamConfigs(streamConfigs, jpegStream);
+ 
+ 	/* Resolve unspecified buffer counts in a separate configuration.  Keep
+@@ -745,7 +804,7 @@
+ 			 * be used when constructing the subsequent mapped
+ 			 * streams.
+ 			 */
+-			if (stream.type == CameraStream::Type::Direct)
++			if (stream.type != CameraStream::Type::Mapped)
+ 				sourceStream = &streams_.back();
+ 		}
+ 	}
+@@ -896,8 +955,15 @@
+ {
+ 	notifyError(descriptor->frameNumber_, nullptr, CAMERA3_MSG_ERROR_REQUEST);
+ 
+-	for (auto &buffer : descriptor->buffers_)
++	for (auto &buffer : descriptor->buffers_) {
++		/* A request aborted before queueing still owns the acquire fence. */
++		if (buffer.frameBuffer) {
++			std::unique_ptr<Fence> fence = buffer.frameBuffer->releaseFence();
++			if (fence)
++				buffer.fence = fence->release();
++		}
+ 		buffer.status = Camera3RequestDescriptor::Status::Error;
++	}
+ 
+ 	descriptor->status_ = Camera3RequestDescriptor::Status::Error;
+ }
+@@ -965,10 +1031,26 @@
+ 	}
+ 
+ 	return true;
++}
++
++CameraDevice::CaptureRequestGuard::CaptureRequestGuard(CameraDevice *device)
++	: device_(device)
++{
++	MutexLocker stateLock(device_->stateMutex_);
++	startedDuringFlush_ = device_->state_ == State::Flushing;
++	++device_->captureRequestsInProgress_;
+ }
+ 
++CameraDevice::CaptureRequestGuard::~CaptureRequestGuard()
++{
++	MutexLocker stateLock(device_->stateMutex_);
++	if (!--device_->captureRequestsInProgress_)
++		device_->captureRequestsFinished_.notify_one();
++}
++
+ int CameraDevice::processCaptureRequest(camera3_capture_request_t *camera3Request)
+ {
++	CaptureRequestGuard captureGuard(this);
+ 	if (!isValidRequest(camera3Request))
+ 		return -EINVAL;
+ 
+@@ -979,7 +1061,23 @@
+ 	 */
+ 	auto descriptor = std::make_unique<Camera3RequestDescriptor>(camera_.get(),
+ 								     camera3Request);
++	/* Once accepted, report processing failures via a result and return 0. */
++	auto failRequest = [&](int error) {
++		LOG(HAL, Error) << "Capture request failed before queueing: " << error;
++		descriptor->accepted_ = true;
++		Camera3RequestDescriptor *rawDescriptor = descriptor.get();
++		{
++			MutexLocker descriptorsLock(descriptorsMutex_);
++			descriptors_.push(std::move(descriptor));
++		}
++		abortRequest(rawDescriptor);
++		completeDescriptor(rawDescriptor);
++		return 0;
++	};
+ 
++	if (!descriptor->request_)
++		return failRequest(-ENOMEM);
++
+ 	/*
+ 	 * \todo The Android request model is incremental, settings passed in
+ 	 * previous requests are to be effective until overridden explicitly in
+@@ -1039,7 +1137,15 @@
+ 						  cameraStream->configuration().pixelFormat,
+ 						  cameraStream->configuration().size);
+ 			frameBuffer = buffer.frameBuffer.get();
+-			acquireFence = std::move(buffer.fence);
++			if (buffer.fence.isValid()) {
++				int duplicated = fcntl(buffer.fence.get(), F_DUPFD_CLOEXEC, 0);
++				if (duplicated < 0) {
++					int error = -errno;
++					lock.unlock();
++					return failRequest(error);
++				}
++				acquireFence = UniqueFD(duplicated);
++			}
+ 			LOG(HAL, Debug) << ss.str() << " (direct)";
+ 			break;
+ 
+@@ -1052,7 +1158,10 @@
+ 			 * once it has been processed.
+ 			 */
+ 			frameBuffer = cameraStream->getBuffer();
+-			buffer.internalBuffer = frameBuffer;
++			buffer.internalBuffer = std::shared_ptr<FrameBuffer>(
++				frameBuffer, [cameraStream](FrameBuffer *p) {
++					if (p) cameraStream->putBuffer(p);
++				});
+ 			LOG(HAL, Debug) << ss.str() << " (internal)";
+ 
+ 			descriptor->pendingStreamsToProcess_.insert(
+@@ -1062,12 +1171,17 @@
+ 
+ 		if (!frameBuffer) {
+ 			LOG(HAL, Error) << "Failed to create frame buffer";
+-			return -ENOMEM;
++			lock.unlock();
++			return failRequest(-ENOMEM);
+ 		}
+ 
+ 		auto fence = std::make_unique<Fence>(std::move(acquireFence));
+-		descriptor->request_->addBuffer(cameraStream->stream(),
++		int addRet = descriptor->request_->addBuffer(cameraStream->stream(),
+ 						frameBuffer, std::move(fence));
++		if (addRet) {
++			lock.unlock();
++			return failRequest(addRet);
++		}
+ 
+ 		requestedStreams.insert(cameraStream);
+ 	}
+@@ -1108,10 +1222,22 @@
+ 		 * for this stream.
+ 		 */
+ 		FrameBuffer *frameBuffer = cameraStream->getBuffer();
+-		buffer.internalBuffer = frameBuffer;
++		buffer.internalBuffer = std::shared_ptr<FrameBuffer>(
++				frameBuffer, [cameraStream](FrameBuffer *p) {
++					if (p) cameraStream->putBuffer(p);
++				});
+ 
+-		descriptor->request_->addBuffer(sourceStream->stream(),
++		if (!frameBuffer) {
++			LOG(HAL, Error) << "Failed to allocate source frame buffer";
++			lock.unlock();
++			return failRequest(-ENOMEM);
++		}
++		int addRet = descriptor->request_->addBuffer(sourceStream->stream(),
+ 						frameBuffer);
++		if (addRet) {
++			lock.unlock();
++			return failRequest(addRet);
++		}
+ 
+ 		requestedStreams.insert(sourceStream);
+ 	}
+@@ -1131,7 +1257,8 @@
+ 	 */
+ 	MutexLocker stateLock(stateMutex_);
+ 
+-	if (state_ == State::Flushing) {
++	if (state_ == State::Flushing || captureGuard.startedDuringFlush()) {
++		descriptor->accepted_ = true;
+ 		Camera3RequestDescriptor *rawDescriptor = descriptor.get();
+ 		{
+ 			MutexLocker descriptorsLock(descriptorsMutex_);
+@@ -1149,20 +1276,32 @@
+ 		ret = camera_->start();
+ 		if (ret) {
+ 			LOG(HAL, Error) << "Failed to start camera";
+-			return ret;
++			return failRequest(ret);
+ 		}
+ 
+ 		state_ = State::Running;
+ 	}
+ 
+ 	Request *request = descriptor->request_.get();
++	Camera3RequestDescriptor *rawDescriptor = descriptor.get();
++	descriptor->accepted_ = true;
++	/* Direct buffers use a duplicate in libcamera; close accepted originals. */
++	for (auto &buffer : descriptor->buffers_) {
++		if (buffer.stream->type() == CameraStream::Type::Direct)
++			buffer.fence.reset();
++	}
+ 
+ 	{
+ 		MutexLocker descriptorsLock(descriptorsMutex_);
+ 		descriptors_.push(std::move(descriptor));
+ 	}
+ 
+-	camera_->queueRequest(request);
++	ret = camera_->queueRequest(request);
++	if (ret) {
++		LOG(HAL, Error) << "Failed to queue camera request: " << ret;
++		abortRequest(rawDescriptor);
++		completeDescriptor(rawDescriptor);
++	}
+ 
+ 	return 0;
+ }
+@@ -1261,8 +1400,8 @@
+ 		Camera3RequestDescriptor::StreamBuffer *buffer = iter->second;
+ 
+ 		FrameBuffer *src = request->findBuffer(stream->stream());
+-		if (!src) {
+-			LOG(HAL, Error) << "Failed to find a source stream buffer";
++		if (!src || src->metadata().status != FrameMetadata::FrameSuccess) {
++			LOG(HAL, Error) << "Source stream buffer missing or failed";
+ 			setBufferStatus(*buffer, Camera3RequestDescriptor::Status::Error);
+ 			iter = descriptor->pendingStreamsToProcess_.erase(iter);
+ 			continue;
+@@ -1276,12 +1415,6 @@
+ 			setBufferStatus(*buffer, Camera3RequestDescriptor::Status::Error);
+ 			descriptor->pendingStreamsToProcess_.erase(stream);
+ 
+-			/*
+-			 * If the framebuffer is internal to CameraStream return
+-			 * it back now that we're done processing it.
+-			 */
+-			if (buffer->internalBuffer)
+-				stream->putBuffer(buffer->internalBuffer);
+ 		}
+ 	}
+ 
+@@ -1376,9 +1509,6 @@
+ 			    streamBuffer.stream->camera3Stream(),
+ 			    CAMERA3_MSG_ERROR_BUFFER);
+ 
+-		/* Also set error status on entire request descriptor. */
+-		streamBuffer.request->status_ =
+-			Camera3RequestDescriptor::Status::Error;
+ 	}
+ }
+ 
+@@ -1398,20 +1528,14 @@
+ void CameraDevice::streamProcessingComplete(Camera3RequestDescriptor::StreamBuffer *streamBuffer,
+ 					    Camera3RequestDescriptor::Status status)
+ {
+-	setBufferStatus(*streamBuffer, status);
++	Camera3RequestDescriptor *request = streamBuffer->request;
+ 
+-	/*
+-	 * If the framebuffer is internal to CameraStream return it back now
+-	 * that we're done processing it.
+-	 */
+-	if (streamBuffer->internalBuffer)
+-		streamBuffer->stream->putBuffer(streamBuffer->internalBuffer);
+-
+-	Camera3RequestDescriptor *request = streamBuffer->request;
++	/* Release any gralloc CPU lock before returning the buffer to Android. */
++	streamBuffer->dstBuffer.reset();
+ 
+ 	{
+ 		MutexLocker locker(request->streamsProcessMutex_);
+-
++		setBufferStatus(*streamBuffer, status);
+ 		request->pendingStreamsToProcess_.erase(streamBuffer->stream);
+ 		if (!request->pendingStreamsToProcess_.empty())
+ 			return;
+--- a/src/android/camera_device.h
++++ b/src/android/camera_device.h
+@@ -18,6 +18,7 @@
+ #include <libcamera/base/log.h>
+ #include <libcamera/base/message.h>
+ #include <libcamera/base/mutex.h>
++#include <libcamera/base/thread.h>
+ 
+ #include <libcamera/camera.h>
+ #include <libcamera/framebuffer.h>
+@@ -82,6 +83,18 @@
+ 		Running,
+ 	};
+ 
++	class CaptureRequestGuard
++	{
++	public:
++		explicit CaptureRequestGuard(CameraDevice *device);
++		~CaptureRequestGuard();
++		bool startedDuringFlush() const { return startedDuringFlush_; }
++
++	private:
++		CameraDevice *device_;
++		bool startedDuringFlush_;
++	};
++
+ 	void stop() LIBCAMERA_TSA_EXCLUDES(stateMutex_);
+ 
+ 	std::unique_ptr<HALFrameBuffer>
+@@ -107,6 +120,8 @@
+ 
+ 	libcamera::Mutex stateMutex_; /* Protects access to the camera state. */
+ 	State state_ LIBCAMERA_TSA_GUARDED_BY(stateMutex_);
++	unsigned int captureRequestsInProgress_ LIBCAMERA_TSA_GUARDED_BY(stateMutex_) = 0;
++	libcamera::ConditionVariable captureRequestsFinished_;
+ 
+ 	std::shared_ptr<libcamera::Camera> camera_;
+ 	std::unique_ptr<libcamera::CameraConfiguration> config_;
+--- a/src/android/camera_stream.cpp
++++ b/src/android/camera_stream.cpp
+@@ -14,6 +14,7 @@
+ #include <unistd.h>
+ 
+ #include <libcamera/formats.h>
++#include "libcamera/internal/formats.h"
+ 
+ #include "jpeg/post_processor_jpeg.h"
+ #include "yuv/post_processor_yuv.h"
+@@ -64,6 +65,7 @@
+ 
+ CameraStream::~CameraStream()
+ {
++	stopWorker();
+ 	/*
+ 	 * Manually delete buffers and then the allocator to make sure buffers
+ 	 * are released while the allocator is still valid.
+@@ -182,12 +184,15 @@
+ 		streamBuffer->fence.reset();
+ 	}
+ 
+-	const StreamConfiguration &output = configuration();
++	const PixelFormat outputFormat =
++		cameraDevice_->capabilities()->toPixelFormat(camera3Stream_->format);
++	const Size outputSize{ camera3Stream_->width, camera3Stream_->height };
+ 	streamBuffer->dstBuffer = std::make_unique<CameraBuffer>(
+-		*streamBuffer->camera3Buffer, output.pixelFormat, output.size,
+-		PROT_READ | PROT_WRITE);
++		*streamBuffer->camera3Buffer, outputFormat, outputSize,
++		PROT_WRITE, outputFormat == formats::NV12);
+ 	if (!streamBuffer->dstBuffer->isValid()) {
+ 		LOG(HAL, Error) << "Failed to create destination buffer";
++		streamBuffer->dstBuffer.reset();
+ 		return -EINVAL;
+ 	}
+ 
+@@ -196,6 +201,11 @@
+ 	return 0;
+ }
+ 
++void CameraStream::stopWorker()
++{
++	worker_.reset();
++}
++
+ void CameraStream::flush()
+ {
+ 	if (!postProcessor_)
+@@ -204,6 +214,12 @@
+ 	worker_->flush();
+ }
+ 
++void CameraStream::waitFlush()
++{
++	if (worker_)
++		worker_->waitFlush();
++}
++
+ FrameBuffer *CameraStream::getBuffer()
+ {
+ 	if (!allocator_)
+@@ -223,7 +239,20 @@
+ 		 */
+ 		auto frameBuffer = allocator_->allocate(HAL_PIXEL_FORMAT_YCBCR_420_888,
+ 							configuration().size,
+-							camera3Stream_->usage);
++							camera3Stream_->usage | GRALLOC_USAGE_SW_READ_OFTEN);
++		if (!frameBuffer)
++			return nullptr;
++
++		/* The processor and pipeline use the configured input stride. */
++		const StreamConfiguration &cfg = configuration();
++		const PixelFormatInfo &info = PixelFormatInfo::info(formats::NV12);
++		const auto &planes = frameBuffer->planes();
++		if (planes.size() != 2 ||
++		    planes[0].length != info.planeSize(cfg.size.height, 0, cfg.stride) ||
++		    planes[1].length != info.planeSize(cfg.size.height, 1, cfg.stride)) {
++			LOG(HAL, Error) << "Allocated source stride does not match configuration";
++			return nullptr;
++		}
+ 		allocatedBuffers_.push_back(std::move(frameBuffer));
+ 		buffers_.emplace_back(allocatedBuffers_.back().get());
+ 	}
+@@ -339,3 +368,9 @@
+ 
+ 	cv_.notify_one();
+ }
++
++void CameraStream::PostProcessorWorker::waitFlush()
++{
++	wait();
++	start();
++}
+--- a/src/android/camera_stream.h
++++ b/src/android/camera_stream.h
+@@ -131,6 +131,8 @@
+ 	libcamera::FrameBuffer *getBuffer();
+ 	void putBuffer(libcamera::FrameBuffer *buffer);
+ 	void flush();
++	void waitFlush();
++	void stopWorker();
+ 
+ private:
+ 	class PostProcessorWorker : public libcamera::Thread
+@@ -148,6 +150,7 @@
+ 		void start();
+ 		void queueRequest(Camera3RequestDescriptor::StreamBuffer *request);
+ 		void flush();
++		void waitFlush();
+ 
+ 	protected:
+ 		void run() override;
+--- a/src/android/camera_request.cpp
++++ b/src/android/camera_request.cpp
+@@ -138,7 +138,14 @@
+ 	request_ = camera->createRequest(reinterpret_cast<uint64_t>(this));
+ }
+ 
+-Camera3RequestDescriptor::~Camera3RequestDescriptor() = default;
++Camera3RequestDescriptor::~Camera3RequestDescriptor()
++{
++	if (!accepted_) {
++		/* A rejected request leaves its original acquire fences with Android. */
++		for (auto &buffer : buffers_)
++			(void)buffer.fence.release();
++	}
++}
+ 
+ /**
+  * \struct Camera3RequestDescriptor::StreamBuffer
+--- a/src/android/camera_request.h
++++ b/src/android/camera_request.h
+@@ -48,7 +48,8 @@
+ 		std::unique_ptr<HALFrameBuffer> frameBuffer;
+ 		libcamera::UniqueFD fence;
+ 		Status status = Status::Success;
+-		libcamera::FrameBuffer *internalBuffer = nullptr;
++		/* Kept until every processor of this request has finished. */
++		std::shared_ptr<libcamera::FrameBuffer> internalBuffer;
+ 		const libcamera::FrameBuffer *srcBuffer = nullptr;
+ 		std::unique_ptr<CameraBuffer> dstBuffer;
+ 		Camera3RequestDescriptor *request;
+@@ -76,6 +77,8 @@
+ 	std::unique_ptr<libcamera::Request> request_;
+ 	std::unique_ptr<CameraMetadata> resultMetadata_;
+ 
++	/* False until Camera HAL accepts ownership of the acquire fences. */
++	bool accepted_ = false;
+ 	bool complete_ = false;
+ 	Status status_ = Status::Success;
+ 
+--- a/src/android/camera_buffer.h
++++ b/src/android/camera_buffer.h
+@@ -21,7 +21,8 @@
+ public:
+ 	CameraBuffer(buffer_handle_t camera3Buffer,
+ 		     libcamera::PixelFormat pixelFormat,
+-		     const libcamera::Size &size, int flags);
++		     const libcamera::Size &size, int flags,
++		     bool requireYuvLayout = false);
+ 	~CameraBuffer();
+ 
+ 	bool isValid() const;
+@@ -41,10 +42,11 @@
+ #define PUBLIC_CAMERA_BUFFER_IMPLEMENTATION				\
+ CameraBuffer::CameraBuffer(buffer_handle_t camera3Buffer,		\
+ 			   libcamera::PixelFormat pixelFormat,		\
+-			   const libcamera::Size &size, int flags)	\
++			   const libcamera::Size &size, int flags,	\
++			   bool requireYuvLayout)		\
+ 	: Extensible(std::make_unique<Private>(this, camera3Buffer,	\
+ 					       pixelFormat, size,	\
+-					       flags))			\
++					       flags, requireYuvLayout))			\
+ {									\
+ }									\
+ CameraBuffer::~CameraBuffer()						\
+--- a/src/android/mm/generic_camera_buffer.cpp
++++ b/src/android/mm/generic_camera_buffer.cpp
+@@ -8,12 +8,19 @@
+ #include "../camera_buffer.h"
+ 
+ #include <cstdint>
++#include <cstring>
++#include <dlfcn.h>
++#include <elf.h>
++#include <link.h>
++#include <climits>
+ #include <limits>
+ 
++#include <hardware/gralloc.h>
+ #include <sys/mman.h>
+ #include <unistd.h>
+ 
+ #include <libcamera/base/log.h>
++#include <libcamera/formats.h>
+ 
+ #include "libcamera/internal/formats.h"
+ #include "libcamera/internal/mapped_framebuffer.h"
+@@ -22,6 +29,106 @@
+ 
+ LOG_DECLARE_CATEGORY(HAL)
+ 
++namespace {
++/* GNU build IDs identify the exact ABI supported below, not file authenticity. */
++struct BuildIdMatch {
++	uintptr_t address;
++	const uint8_t *expected;
++	size_t expectedLength;
++	bool matched = false;
++};
++
++int matchLoadedBuildId(dl_phdr_info *info, size_t, void *data)
++{
++	auto *query = static_cast<BuildIdMatch *>(data);
++	bool contains = false;
++	for (ElfW(Half) i = 0; i < info->dlpi_phnum; ++i) {
++		const auto &ph = info->dlpi_phdr[i];
++		const uintptr_t base = info->dlpi_addr + ph.p_vaddr;
++		if (ph.p_vaddr <= UINTPTR_MAX - info->dlpi_addr &&
++		    ph.p_type == PT_LOAD && query->address >= base &&
++		    query->address - base < ph.p_memsz)
++			contains = true;
++	}
++	if (!contains)
++		return 0;
++	for (ElfW(Half) i = 0; i < info->dlpi_phnum; ++i) {
++		const auto &ph = info->dlpi_phdr[i];
++		if (ph.p_type != PT_NOTE || ph.p_memsz > 65536 ||
++		    ph.p_vaddr > UINTPTR_MAX - info->dlpi_addr)
++			continue;
++		const uintptr_t note = info->dlpi_addr + ph.p_vaddr;
++		bool readable = false;
++		for (ElfW(Half) j = 0; j < info->dlpi_phnum; ++j) {
++			const auto &load = info->dlpi_phdr[j];
++			if (load.p_type != PT_LOAD || !(load.p_flags & PF_R) ||
++			    load.p_vaddr > UINTPTR_MAX - info->dlpi_addr)
++				continue;
++			const uintptr_t base = info->dlpi_addr + load.p_vaddr;
++			if (note >= base && note - base <= load.p_memsz &&
++			    ph.p_memsz <= load.p_memsz - (note - base))
++				readable = true;
++		}
++		if (!readable)
++			continue;
++		const auto *bytes = reinterpret_cast<const uint8_t *>(note);
++		size_t offset = 0, length = ph.p_memsz;
++		while (length - offset >= sizeof(ElfW(Nhdr))) {
++			ElfW(Nhdr) header;
++			memcpy(&header, bytes + offset, sizeof(header));
++			offset += sizeof(header);
++			if (header.n_namesz > length - offset || header.n_namesz > 65532 ||
++			    header.n_descsz > 65532)
++				break;
++			const size_t nameSize = (header.n_namesz + 3u) & ~3u;
++			const size_t descSize = (header.n_descsz + 3u) & ~3u;
++			if (nameSize > length - offset || descSize > length - offset - nameSize)
++				break;
++			if (header.n_type == NT_GNU_BUILD_ID && header.n_namesz == 4 &&
++			    !memcmp(bytes + offset, "GNU\0", 4) &&
++			    header.n_descsz == query->expectedLength &&
++			    !memcmp(bytes + offset + nameSize, query->expected, query->expectedLength)) {
++				query->matched = true;
++				return 1;
++			}
++			offset += nameSize + descSize;
++		}
++	}
++	return 1;
++}
++
++bool loadedBuildIdMatches(const void *address, const uint8_t *id, size_t length)
++{
++	if (!address)
++		return false;
++	BuildIdMatch query{ reinterpret_cast<uintptr_t>(address), id, length, false };
++	dl_iterate_phdr(matchLoadedBuildId, &query);
++	return query.matched;
++}
++
++bool knownKanoBlobGralloc(const gralloc_module_t *module)
++{
++	static const uint8_t moduleId[] = { 0xa7,0x7a,0x48,0xc3,0xae,0xbd,0x8d,0x34,
++		0x51,0x25,0xa6,0x34,0x2f,0x5d,0x91,0xa4 };
++	static const uint8_t dependencyId[] = { 0xb9,0x04,0xe9,0xa2,0x5a,0x7c,0xc0,0x74,
++		0x81,0x1f,0x53,0x71,0x5e,0x2f,0x38,0xff };
++	if (!module || !module->common.id || !module->common.name || !module->common.dso ||
++	    strcmp(module->common.id, GRALLOC_HARDWARE_MODULE_ID) ||
++	    strcmp(module->common.name, "CrOS Gralloc") ||
++	    module->common.module_api_version < GRALLOC_MODULE_API_VERSION_0_2 ||
++	    !module->perform || !module->registerBuffer || !module->unregisterBuffer ||
++	    !module->lock || !module->unlock)
++		return false;
++	Dl_info owner{};
++	if (!dladdr(reinterpret_cast<const void *>(module->perform), &owner))
++		return false;
++	void *convert = dlsym(module->common.dso, "_Z27cros_gralloc_convert_handlePK13native_handle");
++	return loadedBuildIdMatches(module, moduleId, sizeof(moduleId)) &&
++	       loadedBuildIdMatches(reinterpret_cast<const void *>(module->perform), moduleId, sizeof(moduleId)) &&
++	       loadedBuildIdMatches(convert, dependencyId, sizeof(dependencyId));
++}
++} /* namespace */
++
+ class CameraBuffer::Private : public Extensible::Private,
+ 			      public MappedBuffer
+ {
+@@ -29,7 +136,7 @@
+ 
+ public:
+ 	Private(CameraBuffer *cameraBuffer, buffer_handle_t camera3Buffer,
+-		PixelFormat pixelFormat, const Size &size, int flags);
++		PixelFormat pixelFormat, const Size &size, int flags, bool requireYuvLayout);
+ 	~Private();
+ 
+ 	unsigned int numPlanes() const;
+@@ -55,13 +162,18 @@
+ 	int flags_;
+ 	off_t bufferLength_;
+ 	bool mapped_;
++	const gralloc_module_t *gralloc_ = nullptr;
++	buffer_handle_t handle_ = nullptr;
++	bool registered_ = false;
++	bool grallocLocked_ = false;
++	size_t blobLength_ = 0;
+ 	std::vector<PlaneInfo> planeInfo_;
+ };
+ 
+ CameraBuffer::Private::Private([[maybe_unused]] CameraBuffer *cameraBuffer,
+ 			       buffer_handle_t camera3Buffer,
+ 			       PixelFormat pixelFormat,
+-			       const Size &size, int flags)
++			       const Size &size, int flags, bool requireYuvLayout)
+ 	: fd_(-1), flags_(flags), bufferLength_(-1), mapped_(false)
+ {
+ 	error_ = 0;
+@@ -104,6 +216,85 @@
+ 		return;
+ 	}
+ 
++	if (requireYuvLayout && pixelFormat == formats::NV12) {
++		const hw_module_t *module = nullptr;
++		int ret = hw_get_module(GRALLOC_HARDWARE_MODULE_ID, &module);
++		if (ret || !module) { error_ = ret ? ret : -EINVAL; return; }
++		gralloc_ = reinterpret_cast<const gralloc_module_t *>(module);
++		if (module->module_api_version < GRALLOC_MODULE_API_VERSION_0_2 ||
++		    !gralloc_->registerBuffer || !gralloc_->unregisterBuffer ||
++		    !gralloc_->lock_ycbcr || !gralloc_->unlock) { error_ = -ENOTSUP; return; }
++		handle_ = camera3Buffer;
++		ret = gralloc_->registerBuffer(gralloc_, handle_);
++		if (ret) { error_ = ret; return; }
++		registered_ = true;
++		android_ycbcr layout{};
++		int usage = (flags & PROT_READ ? GRALLOC_USAGE_SW_READ_OFTEN : 0) |
++			    (flags & PROT_WRITE ? GRALLOC_USAGE_SW_WRITE_OFTEN : 0);
++		ret = gralloc_->lock_ycbcr(gralloc_, handle_, usage, 0, 0,
++					    size.width, size.height, &layout);
++		if (ret) { error_ = ret; return; }
++		grallocLocked_ = true;
++		const uintptr_t y = reinterpret_cast<uintptr_t>(layout.y);
++		const uintptr_t cb = reinterpret_cast<uintptr_t>(layout.cb);
++		const uintptr_t cr = reinterpret_cast<uintptr_t>(layout.cr);
++		const uint64_t yLength = static_cast<uint64_t>(layout.ystride) * size.height;
++		const uint64_t uvLength = static_cast<uint64_t>(layout.cstride) * ((size.height + 1) / 2);
++		if (!y || !cb || cr != cb + 1 || layout.chroma_step != 2 ||
++		    layout.ystride < size.width || layout.cstride < size.width ||
++		    layout.ystride > UINT_MAX || layout.cstride > UINT_MAX ||
++		    yLength > UINT_MAX || uvLength > UINT_MAX || cb < y ||
++		    cb - y < yLength || cb - y > static_cast<uint64_t>(bufferLength_) ||
++		    uvLength > static_cast<uint64_t>(bufferLength_) - (cb - y) ||
++		    cb - y > UINT_MAX) {
++			error_ = -EINVAL;
++			return;
++		}
++		planeInfo_.push_back({ static_cast<unsigned int>(layout.ystride), 0,
++				       static_cast<unsigned int>(yLength) });
++		planeInfo_.push_back({ static_cast<unsigned int>(layout.cstride),
++				       static_cast<unsigned int>(cb - y),
++				       static_cast<unsigned int>(uvLength) });
++		planes_.emplace_back(static_cast<uint8_t *>(layout.y), yLength);
++		planes_.emplace_back(static_cast<uint8_t *>(layout.cb), uvLength);
++		mapped_ = true;
++		return;
++	}
++
++	if (pixelFormat == formats::MJPEG) {
++		const hw_module_t *module = nullptr;
++		int ret = hw_get_module(GRALLOC_HARDWARE_MODULE_ID, &module);
++		if (ret || !module) { error_ = ret ? ret : -EINVAL; return; }
++		gralloc_ = reinterpret_cast<const gralloc_module_t *>(module);
++		if (!knownKanoBlobGralloc(gralloc_)) { error_ = -ENOTSUP; return; }
++		handle_ = camera3Buffer;
++		ret = gralloc_->registerBuffer(gralloc_, handle_);
++		if (ret) { error_ = ret; return; }
++		registered_ = true;
++		int32_t format = 0;
++		uint32_t width = 0, height = 0;
++		ret = gralloc_->perform(gralloc_, 1, handle_, &format);
++		if (!ret)
++			ret = gralloc_->perform(gralloc_, 2, handle_, &width, &height);
++		if (ret || format != HAL_PIXEL_FORMAT_BLOB || height != 1 || !width || width > INT_MAX ||
++		    width > static_cast<uint64_t>(bufferLength_)) {
++			error_ = ret ? ret : -EINVAL;
++			return;
++		}
++		void *address = nullptr;
++		int usage = (flags & PROT_READ ? GRALLOC_USAGE_SW_READ_OFTEN : 0) |
++			    (flags & PROT_WRITE ? GRALLOC_USAGE_SW_WRITE_OFTEN : 0);
++		ret = gralloc_->lock(gralloc_, handle_, usage, 0, 0, width, 1, &address);
++		if (ret) { error_ = ret; return; }
++		grallocLocked_ = true;
++		if (!address) { error_ = -EINVAL; return; }
++		blobLength_ = width;
++		planeInfo_.push_back({ width, 0, width });
++		planes_.emplace_back(static_cast<uint8_t *>(address), width);
++		mapped_ = true;
++		return;
++	}
++
+ 	const unsigned int numPlanes = info.numPlanes();
+ 	planeInfo_.resize(numPlanes);
+ 
+@@ -132,6 +323,10 @@
+ 
+ CameraBuffer::Private::~Private()
+ {
++	if (grallocLocked_)
++		gralloc_->unlock(gralloc_, handle_);
++	if (registered_)
++		gralloc_->unregisterBuffer(gralloc_, handle_);
+ }
+ 
+ unsigned int CameraBuffer::Private::numPlanes() const
+@@ -177,7 +372,7 @@
+ {
+ 	ASSERT(bufferLength_ >= 0);
+ 
+-	return std::min<unsigned int>(bufferLength_, maxJpegBufferSize);
++	return blobLength_ <= maxJpegBufferSize ? blobLength_ : 0;
+ }
+ 
+ void CameraBuffer::Private::map()
+--- a/src/android/mm/generic_frame_buffer_allocator.cpp
++++ b/src/android/mm/generic_frame_buffer_allocator.cpp
+@@ -6,6 +6,8 @@
+  */
+ 
+ #include <dlfcn.h>
++#include <unistd.h>
++#include <cstdint>
+ #include <memory>
+ #include <vector>
+ 
+@@ -124,6 +126,47 @@
+ 		return nullptr;
+ 	}
+ 
++	if (handle->numFds != 1 || handle->data[0] < 0) {
++		LOG(HAL, Error) << "Unsupported source buffer descriptors";
++		allocDevice_->free(allocDevice_, handle);
++		return nullptr;
++	}
++
++	/* Verify that the flexible Android allocation actually is contiguous NV12. */
++	if (halPixelFormat == HAL_PIXEL_FORMAT_YCBCR_420_888) {
++		const auto *module = reinterpret_cast<const gralloc_module_t *>(hardwareModule_);
++		android_ycbcr layout{};
++		if (hardwareModule_->module_api_version < GRALLOC_MODULE_API_VERSION_0_2 ||
++		    !module->lock_ycbcr || !module->unlock) {
++			allocDevice_->free(allocDevice_, handle);
++			return nullptr;
++		}
++		ret = module->lock_ycbcr(module, handle, GRALLOC_USAGE_SW_READ_OFTEN,
++					 0, 0, size.width, size.height, &layout);
++		if (ret) {
++			allocDevice_->free(allocDevice_, handle);
++			return nullptr;
++		}
++		const uintptr_t y = reinterpret_cast<uintptr_t>(layout.y);
++		const uintptr_t cb = reinterpret_cast<uintptr_t>(layout.cb);
++		const uintptr_t cr = reinterpret_cast<uintptr_t>(layout.cr);
++		const off_t length = lseek(handle->data[0], 0, SEEK_END);
++		const uint64_t required = stride > 0
++			? static_cast<uint64_t>(stride) * (size.height + (size.height + 1) / 2)
++			: 0;
++		bool supported = stride > 0 && y && cb && cb > y && cr == cb + 1 &&
++				 layout.chroma_step == 2 && layout.ystride == static_cast<size_t>(stride) &&
++				 layout.cstride == static_cast<size_t>(stride) &&
++				 cb - y == static_cast<uint64_t>(stride) * size.height &&
++				 length >= 0 && required <= static_cast<uint64_t>(length);
++		ret = module->unlock(module, handle);
++		if (!supported || ret) {
++			LOG(HAL, Error) << "Unsupported source buffer layout";
++			allocDevice_->free(allocDevice_, handle);
++			return nullptr;
++		}
++	}
++
+ 	/* This code assumes the planes are mapped consecutively. */
+ 	const libcamera::PixelFormat pixelFormat =
+ 		cameraDevice_->capabilities()->toPixelFormat(halPixelFormat);
+--- a/src/android/mm/cros_camera_buffer.cpp
++++ b/src/android/mm/cros_camera_buffer.cpp
+@@ -22,7 +22,7 @@
+ public:
+ 	Private(CameraBuffer *cameraBuffer, buffer_handle_t camera3Buffer,
+ 		PixelFormat pixelFormat, const Size &size,
+-		int flags);
++		int flags, bool requireYuvLayout);
+ 	~Private();
+ 
+ 	bool isValid() const { return registered_; }
+@@ -55,7 +55,7 @@
+ 			       buffer_handle_t camera3Buffer,
+ 			       [[maybe_unused]] PixelFormat pixelFormat,
+ 			       [[maybe_unused]] const Size &size,
+-			       [[maybe_unused]] int flags)
++			       [[maybe_unused]] int flags, [[maybe_unused]] bool requireYuvLayout)
+ 	: handle_(camera3Buffer), numPlanes_(0), mapped_(false),
+ 	  registered_(false)
+ {
+--- a/src/android/yuv/post_processor_yuv.cpp
++++ b/src/android/yuv/post_processor_yuv.cpp
+@@ -7,6 +7,8 @@
+ 
+ #include "post_processor_yuv.h"
+ 
++#include <cstdint>
++
+ #include <libyuv/scale.h>
+ 
+ #include <libcamera/base/log.h>
+@@ -25,6 +27,13 @@
+ int PostProcessorYuv::configure(const StreamConfiguration &inCfg,
+ 				const StreamConfiguration &outCfg)
+ {
++	if (!inCfg.size.width || !inCfg.size.height || !outCfg.size.width ||
++	    !outCfg.size.height || ((inCfg.size.width | inCfg.size.height |
++	    outCfg.size.width | outCfg.size.height) & 1)) {
++		LOG(YUV, Error) << "NV12 requires non-zero even dimensions";
++		return -EINVAL;
++	}
++
+ 	if (inCfg.pixelFormat != outCfg.pixelFormat) {
+ 		LOG(YUV, Error) << "Pixel format conversion is not supported"
+ 				<< " (from " << inCfg.pixelFormat
+@@ -66,15 +75,34 @@
+ 		return;
+ 	}
+ 
+-	int ret = libyuv::NV12Scale(sourceMapped.planes()[0].data(),
++	/* Center crop to the destination aspect ratio, aligned for NV12. */
++	unsigned int cropWidth = sourceSize_.width;
++	unsigned int cropHeight = sourceSize_.height;
++	if (static_cast<uint64_t>(cropWidth) * destinationSize_.height >
++	    static_cast<uint64_t>(cropHeight) * destinationSize_.width)
++		cropWidth = (static_cast<uint64_t>(cropHeight) * destinationSize_.width /
++			     destinationSize_.height) & ~1u;
++	else
++		cropHeight = (static_cast<uint64_t>(cropWidth) * destinationSize_.height /
++			      destinationSize_.width) & ~1u;
++	if (!cropWidth || !cropHeight) {
++		processComplete.emit(streamBuffer, PostProcessor::Status::Error);
++		return;
++	}
++	const unsigned int left = ((sourceSize_.width - cropWidth) / 2) & ~1u;
++	const unsigned int top = ((sourceSize_.height - cropHeight) / 2) & ~1u;
++
++	int ret = libyuv::NV12Scale(sourceMapped.planes()[0].data() +
++				    top * sourceStride_[0] + left,
+ 				    sourceStride_[0],
+-				    sourceMapped.planes()[1].data(),
++				    sourceMapped.planes()[1].data() +
++				    (top / 2) * sourceStride_[1] + left,
+ 				    sourceStride_[1],
+-				    sourceSize_.width, sourceSize_.height,
++				    cropWidth, cropHeight,
+ 				    destination->plane(0).data(),
+-				    destinationStride_[0],
++				    destination->stride(0),
+ 				    destination->plane(1).data(),
+-				    destinationStride_[1],
++				    destination->stride(1),
+ 				    destinationSize_.width,
+ 				    destinationSize_.height,
+ 				    libyuv::FilterMode::kFilterBilinear);
+@@ -112,15 +140,11 @@
+ 			<< sourceLength_[1] << "}";
+ 		return false;
+ 	}
+-	if (destination.plane(0).size() < destinationLength_[0] ||
+-	    destination.plane(1).size() < destinationLength_[1]) {
+-		LOG(YUV, Error)
+-			<< "The destination planes lengths are too small, actual size: {"
+-			<< destination.plane(0).size() << ", "
+-			<< destination.plane(1).size()
+-			<< "}, expected size: {"
+-			<< sourceLength_[0] << ", "
+-			<< sourceLength_[1] << "}";
++	if (destination.stride(0) < destinationSize_.width ||
++	    destination.stride(1) < destinationSize_.width ||
++	    static_cast<uint64_t>(destination.stride(0)) * destinationSize_.height > destination.plane(0).size() ||
++	    static_cast<uint64_t>(destination.stride(1)) * ((destinationSize_.height + 1) / 2) > destination.plane(1).size()) {
++		LOG(YUV, Error) << "Invalid destination stride or plane size";
+ 		return false;
+ 	}
+ 

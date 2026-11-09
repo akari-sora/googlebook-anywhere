@@ -9,6 +9,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -29,6 +30,16 @@ class CameraTest(unittest.TestCase):
         self.tree.mkdir()
         self.overlay.mkdir(parents=True)
         self.vmap = {}
+        fixture_pins = {}
+        for rel in hooks.CAMERA_GRALLOC_SHA256:
+            data = ("fixture:" + rel).encode()
+            path = self.tree / rel
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(data)
+            fixture_pins[rel] = hashlib.sha256(data).hexdigest()
+        self.pin_patch = mock.patch.dict(hooks.CAMERA_GRALLOC_SHA256, fixture_pins, clear=True)
+        self.pin_patch.start()
+        self.addCleanup(self.pin_patch.stop)
         for rel, content, label in (
             ("lib64/libcamera", None, "vendor_file"),
             ("lib64/libcamera_internal.so", b"stock-lib", "same_process_hal_file"),
@@ -81,6 +92,33 @@ class CameraTest(unittest.TestCase):
             self.assertEqual(self.vmap[rel]["selinux"], "u:object_r:same_process_hal_file:s0")
         self.assertEqual(self.vmap["etc/libcamera/camera_hal.yaml"]["selinux"],
                          "u:object_r:vendor_configs_file:s0")
+
+    def test_each_gralloc_binary_must_match_before_vendor_mutation(self):
+        for rel in hooks.CAMERA_GRALLOC_SHA256:
+            with self.subTest(rel=rel):
+                path = self.tree / rel
+                original = path.read_bytes()
+                path.write_bytes(original + b"changed")
+                with self.assertRaisesRegex(SystemExit, "unsupported vendor binary"):
+                    self.run_hook()
+                self.assertFalse((self.tree / "lib64/hw/camera.kano.so").exists())
+                self.assertEqual((self.tree / "etc/selinux/vendor_sepolicy.cil").read_bytes(),
+                                 b";; stock policy\n")
+                path.write_bytes(original)
+
+    def test_gralloc_symlink_and_missing_dependency_refused(self):
+        rel = "lib64/libminigbm_gralloc.so"
+        path = self.tree / rel
+        saved = path.read_bytes()
+        path.unlink()
+        with self.assertRaisesRegex(SystemExit, "missing or non-regular"):
+            self.run_hook()
+        target = self.work / "external-gralloc.so"
+        target.write_bytes(saved)
+        path.symlink_to(target)
+        with self.assertRaisesRegex(SystemExit, "missing or non-regular"):
+            self.run_hook()
+        self.assertFalse((self.tree / "lib64/hw/camera.kano.so").exists())
 
     def test_policy_missing_or_already_present_refused_before_copy(self):
         policy = self.tree / "etc/selinux/vendor_sepolicy.cil"

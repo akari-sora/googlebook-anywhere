@@ -63,11 +63,12 @@ if [ ! -f "$S/src/ipa/simple/data/ov2740.yaml" ]; then patch -d "$S" -p1 -N -s <
 echo "d8dce0ef3693ccb3d432b780acae569a6d4d9b319aaf5a154a7493800d617848  $HERE/patches/0011-config-diagnostics.patch" | sha256sum -c --quiet
 echo "35ba3c3fa732b5b9c097ca22298d25c81f3e858a37f41fe649f56a5c47b551e1  $HERE/patches/0013-fixed-sensor-duration.patch" | sha256sum -c --quiet
 echo "dd9e21314f09d884ae392d5ecf31528e5d9b6c020e9f74f030ae08e5a239a3ef  $HERE/patches/0014-hal-buffer-probe.patch" | sha256sum -c --quiet
+echo "fb193c605c4ff1b929ef808ccfa7400b8a787d5c6c252da789522968f72b6dac  $HERE/patches/0015-camera-multistream.patch" | sha256sum -c --quiet
 for p in "$HERE"/patches/*.patch; do
   [ -f "$p" ] || continue
   if patch -d "$S" -p1 -N --dry-run -s < "$p" > /dev/null 2>&1; then
     patch -d "$S" -p1 -N -s < "$p"
-  elif { [ "${p##*/}" = 0011-config-diagnostics.patch ] || [ "${p##*/}" = 0012-camera-probe-colorspace.patch ] || [ "${p##*/}" = 0013-fixed-sensor-duration.patch ] || [ "${p##*/}" = 0014-hal-buffer-probe.patch ]; } &&
+  elif { [ "${p##*/}" = 0011-config-diagnostics.patch ] || [ "${p##*/}" = 0012-camera-probe-colorspace.patch ] || [ "${p##*/}" = 0013-fixed-sensor-duration.patch ] || [ "${p##*/}" = 0014-hal-buffer-probe.patch ] || [ "${p##*/}" = 0015-camera-multistream.patch ]; } &&
        ! patch -d "$S" -p1 -R -f --dry-run -s < "$p" > /dev/null 2>&1; then
     if [ "${p##*/}" = 0011-config-diagnostics.patch ]; then
       echo "error: 0011 camera diagnostics patch is incompatible" >&2
@@ -75,8 +76,10 @@ for p in "$HERE"/patches/*.patch; do
       echo "error: 0012 camera colorspace patch is incompatible" >&2
     elif [ "${p##*/}" = 0013-fixed-sensor-duration.patch ]; then
       echo "error: 0013 fixed sensor duration patch is incompatible" >&2
-    else
+    elif [ "${p##*/}" = 0014-hal-buffer-probe.patch ]; then
       echo "error: 0014 HAL buffer probe patch is incompatible" >&2
+    else
+      echo "error: 0015 camera multistream patch is incompatible" >&2
     fi
     exit 1
   fi

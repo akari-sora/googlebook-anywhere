@@ -18,8 +18,8 @@ Installs Google's official **Googlebook OS** (lapis, the desktop edition of Andr
 |---|---|
 | Hardware tested (limited) | One KANO: an Alder Lake-P K0 engineering sample with iGPU `8086:46a6`; camera and sleep/power acceptance remain open |
 | Other KANO models | 12th-gen CP714-1WN and 13th-gen CP714-2WN/Zydron (i3/i5/i7): their iGPU IDs and the 13th-gen audio firmware have been added; they should work, **not yet tested on hardware** |
-| Minimum CPU | Intel 12th gen or AMD Zen 5 and newer; older CPUs are expected not to boot ([docs/COMPATIBILITY.en.md](docs/COMPATIBILITY.en.md) "Minimum CPU") |
-| Other x86-64 computers | Experimental `generic-x86` and `amd-hx370`, verified only in QEMU |
+| Minimum CPU | Intel 12th gen or AMD Zen 5 and newer; ROG Ally Zen 4 uses an experimental compatibility patch, while other older CPUs are expected not to boot ([docs/COMPATIBILITY.en.md](docs/COMPATIBILITY.en.md) "Minimum CPU") |
+| Other x86-64 computers | Experimental `generic-x86`, `amd-hx370` and `rog-ally`; candidate images have been tested in QEMU, but hardware acceptance remains open |
 | How to install | Build the image yourself (about 10–30 minutes, plus a 7.7 GB download and 80 GB of disk) → write it to a USB stick and boot; to install to the internal disk, use the "installer stick" |
 | Safety | Known firmware updaters are removed, and the kernel paths to the EC/TPM/SPI are blocked; see [docs/SAFETY.md](docs/SAFETY.md) (Chinese) |
 
@@ -189,7 +189,7 @@ Before use, read [docs/SAFETY.md](docs/SAFETY.md) (Chinese), especially "Data sa
 
 ## Other x86-64 computers (experimental, v0.2)
 
-For x86-64 UEFI computers whose GPU has no driver in the Googlebook kernel (for example AMD), and for people who want to try it out first. The CPU must be Intel 12th gen or AMD Zen 5 and newer; older CPUs (Intel 11th gen and earlier, AMD Zen 4 and earlier) lack instructions that Googlebook uses directly and are expected not to boot (see [docs/COMPATIBILITY.en.md](docs/COMPATIBILITY.en.md) "Minimum CPU"). **It has only been verified by booting to the setup wizard in QEMU (`-cpu host`),
+For x86-64 UEFI computers whose GPU has no driver in the Googlebook kernel (for example AMD), and for people who want to try it out first. For the generic profile, the CPU must be Intel 12th gen or AMD Zen 5 and newer; older CPUs (Intel 11th gen and earlier, AMD Zen 4 and earlier) lack instructions that Googlebook uses directly and are expected not to boot (see [docs/COMPATIBILITY.en.md](docs/COMPATIBILITY.en.md) "Minimum CPU"). The separate ROG Ally profile uses an experimental compatibility patch for its Zen 4 CPU; it has not passed hardware acceptance. **The generic profile has only been verified by booting to the setup wizard in QEMU (`-cpu host`),
 and has not been booted on any physical PC yet**; the display relies on the firmware framebuffer and rendering is done on the CPU (no GPU acceleration), so it is slow, and the resolution is set by the firmware.
 
 1. **Check compatibility first (read-only)**: on the target computer, boot any Linux USB stick (for example an Ubuntu Live USB) and run

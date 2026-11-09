@@ -43,6 +43,22 @@ struct Handle { int version = 1; int numFds = 0; int numInts = 0; int data[4] = 
 using buffer_handle_t = const Handle *;
 using PixelFormat = int;
 struct Size { unsigned int width = 0, height = 0; };
+namespace formats { constexpr PixelFormat NV12=12, MJPEG=99; }
+constexpr int HAL_PIXEL_FORMAT_BLOB=0x21, GRALLOC_HARDWARE_MODULE_ID=1, GRALLOC_MODULE_API_VERSION_0_2=2;
+constexpr int GRALLOC_USAGE_SW_READ_OFTEN=1, GRALLOC_USAGE_SW_WRITE_OFTEN=2;
+struct hw_module_t { int module_api_version=2; };
+struct android_ycbcr { void *y=nullptr, *cb=nullptr, *cr=nullptr; size_t ystride=0, cstride=0, chroma_step=0; };
+struct gralloc_module_t : hw_module_t {
+ int (*registerBuffer)(const gralloc_module_t *,buffer_handle_t)=nullptr;
+ int (*unregisterBuffer)(const gralloc_module_t *,buffer_handle_t)=nullptr;
+ int (*lock_ycbcr)(const gralloc_module_t *,buffer_handle_t,int,int,int,unsigned,unsigned,android_ycbcr *)=nullptr;
+ int (*lock)(const gralloc_module_t *,buffer_handle_t,int,int,int,unsigned,unsigned,void **)=nullptr;
+ int (*unlock)(const gralloc_module_t *,buffer_handle_t)=nullptr;
+ int (*perform)(const gralloc_module_t *,int,...)=nullptr;
+};
+static int hw_get_module(int,const hw_module_t **) { return -ENOTSUP; }
+static bool knownKanoBlobGralloc(const gralloc_module_t *) { return false; }
+struct Span { Span(uint8_t *,uint64_t) {} };
 static off_t fakeLength = 0;
 static off_t fake_lseek(int, off_t, int) { return fakeLength; }
 #define lseek fake_lseek
@@ -73,8 +89,10 @@ class CameraBuffer::Private {
 public:
     struct PlaneInfo { unsigned int stride, offset, size; };
     int fd_, flags_; off_t bufferLength_; bool mapped_; int error_;
-    std::vector<PlaneInfo> planeInfo_;
-    Private(CameraBuffer *, buffer_handle_t, PixelFormat, const Size &, int);
+    const gralloc_module_t *gralloc_=nullptr; buffer_handle_t handle_=nullptr;
+    bool registered_=false, grallocLocked_=false; size_t blobLength_=0;
+    std::vector<PlaneInfo> planeInfo_; std::vector<Span> planes_;
+    Private(CameraBuffer *, buffer_handle_t, PixelFormat, const Size &, int, bool=false);
     bool isValid() const { return error_ == 0; }
 };
 static int failDupAt = 0, dupCalls = 0, firstDuplicatedFd = -1;
