@@ -24,6 +24,31 @@ class BlacklistLimit(unittest.TestCase):
         self.assertEqual(len(value.encode()), 1039)
         with self.assertRaisesRegex(devprofile.ProfileError, r'1039 bytes.*1024'):
             devprofile.validate_module_blacklist(['module_blacklist=' + value], 'debug')
+    def test_extended_only_exact_checked_ally_kernel(self):
+        profile = {'model': {'id': 'rog-ally'}}
+        checked = devprofile.CheckedConfig({})
+        checked.bzimage_sha256 = devprofile.ALLY_EXTENDED_BLACKLIST_KERNEL_SHA256
+        for n in (1024, 1025, 2048):
+            devprofile.validate_module_blacklist(['module_blacklist=' + 'a'*n], 'quiet', profile=profile, checked_kernel=checked)
+        with self.assertRaisesRegex(devprofile.ProfileError, '2049 bytes.*2048'):
+            devprofile.validate_module_blacklist(['module_blacklist=' + 'a'*2049], 'quiet', profile=profile, checked_kernel=checked)
+        for prof, kernel in (({'model': {'id': 'kano'}},checked), (profile,None), (profile,{})):
+            with self.assertRaisesRegex(devprofile.ProfileError, '1025 bytes.*1024'):
+                devprofile.validate_module_blacklist(['module_blacklist=' + 'a'*1025], 'quiet', profile=prof, checked_kernel=kernel)
+        checked.bzimage_sha256 = '0'*64
+        with self.assertRaises(devprofile.ProfileError):
+            devprofile.validate_module_blacklist(['module_blacklist=' + 'a'*1025], 'quiet', profile=profile, checked_kernel=checked)
+    def test_extended_rejects_duplicate_and_non_ascii_overflow(self):
+        checked=devprofile.CheckedConfig({}); checked.bzimage_sha256=devprofile.ALLY_EXTENDED_BLACKLIST_KERNEL_SHA256
+        kwargs={'profile':{'model':{'id':'rog-ally'}},'checked_kernel':checked}
+        devprofile.validate_module_blacklist(['module_blacklist='+'é'*1024], 'debug', **kwargs)
+        for opts in (['module_blacklist='+'é'*1025], ['module_blacklist=a','module_blacklist=b']):
+            with self.assertRaises(devprofile.ProfileError): devprofile.validate_module_blacklist(opts,'debug',**kwargs)
+    def test_image_uses_checked_kernel_and_preserves_later_binding(self):
+        text=(ROOT/'builder/image.py').read_text()
+        self.assertIn('profile=PROF, checked_kernel=initrd_checked_kernel',text)
+        self.assertIn('installed.bzimage_sha256 != initrd_checked_kernel.bzimage_sha256',text)
+
     def test_kano_drain_final_value_fits(self):
         profile = tomllib.loads((ROOT / 'profiles/kano/profile.toml').read_text())
         modules = profile['blacklist']['modules'] + profile['blacklist']['debug_add']

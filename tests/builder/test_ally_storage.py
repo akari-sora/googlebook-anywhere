@@ -5,7 +5,7 @@ SOURCE=pathlib.Path(__file__).parents[2]/'builder/image.py'
 class Tests(unittest.TestCase):
  def setUp(self):
   tree=ast.parse(SOURCE.read_text()); fn=next(x for x in tree.body if isinstance(x,ast.FunctionDef) and x.name=='ally_storage_module')
-  self.env={'Path':pathlib.Path,'hashlib':hashlib,'subprocess':subprocess,'sys':__import__('sys'),'__file__':str(SOURCE)};exec(compile(ast.Module(body=[fn],type_ignores=[]),str(SOURCE),'exec'),self.env)
+  self.env={'Path':pathlib.Path,'hashlib':hashlib,'subprocess':subprocess,'sys':__import__('sys'),'__file__':str(SOURCE),'devprofile':SimpleNamespace(ALLY_EXTENDED_BLACKLIST_KERNEL_SHA256='669c39abe46025d6f7d397839338630d62d7f5886501c2e9134027ad34f4d0d0')};exec(compile(ast.Module(body=[fn],type_ignores=[]),str(SOURCE),'exec'),self.env)
   self.f=self.env['ally_storage_module']; self.cfg={'CONFIG_USB_STORAGE':'m','CONFIG_SCSI':'y','CONFIG_BLK_DEV_SD':'y'};self.prof={'model':{'id':'rog-ally'}}
  def test_real_initrd_loop_inserts_module_and_guards_duplicates(self):
   from types import SimpleNamespace
@@ -55,4 +55,21 @@ class Tests(unittest.TestCase):
       with self.assertRaisesRegex(ValueError,'ABI'):self.f(self.prof,self.cfg,d)
     (p/'modules/modules.dep').write_text('usb-storage.ko: scsi_mod.ko\n')
     with self.assertRaisesRegex(ValueError,'dependencies'):self.f(self.prof,self.cfg,d)
+ def test_new_kernel_accepts_only_matching_new_module_and_abi(self):
+  class Checked(dict): pass
+  checked=Checked(self.cfg);checked.bzimage_sha256=self.env['devprofile'].ALLY_EXTENDED_BLACKLIST_KERNEL_SHA256
+  with tempfile.TemporaryDirectory() as d:
+   p=pathlib.Path(d);(p/'modules').mkdir()
+   for n,b in [('modules/usb-storage.ko',b'known'),('modules/modules.dep',b'usb-storage.ko:\n'),('Module.symvers',b'x')]: (p/n).write_bytes(b)
+   def fake_hash(sha):return SimpleNamespace(hexdigest=lambda:sha)
+   new='e7a3ef2749da3161b1f473994bc77fd39c6db9b663e14553a982f5d78c34dce3';old='f429104c8803c8156f8278d37b08147d11eb3f287b58320a10fda9bf286fffd4'
+   with patch.object(hashlib,'sha256',return_value=fake_hash(new)):
+    with patch.object(subprocess,'run',return_value=SimpleNamespace(returncode=1,stdout='FAIL the module exports symbols\n',stderr='')):self.assertEqual(self.f(self.prof,checked,d),b'known')
+    with patch.object(subprocess,'run',return_value=SimpleNamespace(returncode=1,stdout='FAIL wrong CRC\n',stderr='')):
+     with self.assertRaisesRegex(ValueError,'ABI'):self.f(self.prof,checked,d)
+    checked.bzimage_sha256='0'*64
+    with self.assertRaisesRegex(ValueError,'pin mismatch'):self.f(self.prof,checked,d)
+   checked.bzimage_sha256=self.env['devprofile'].ALLY_EXTENDED_BLACKLIST_KERNEL_SHA256
+   with patch.object(hashlib,'sha256',return_value=fake_hash(old)):
+    with self.assertRaisesRegex(ValueError,'pin mismatch'):self.f(self.prof,checked,d)
 if __name__=='__main__':unittest.main()

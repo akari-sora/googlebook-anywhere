@@ -1,0 +1,33 @@
+--- a/kernel/module/main.c
++++ b/kernel/module/main.c
+@@ -2915,8 +2915,29 @@
+ 	}
+ 	return false;
+ }
+-core_param(module_blacklist, module_blacklist, charp, 0400);
++/* Only this boot-time, read-only parameter needs more than charp's 1024-byte limit. */
++#define MODULE_BLACKLIST_MAX 2048
++static char module_blacklist_buf[MODULE_BLACKLIST_MAX + 1];
+ 
++static int param_set_module_blacklist(const char *val, const struct kernel_param *kp)
++{
++	size_t len = strnlen(val, MODULE_BLACKLIST_MAX + 1);
++
++	if (len > MODULE_BLACKLIST_MAX) {
++		pr_err("%s: string parameter too long\n", kp->name);
++		return -ENOSPC;
++	}
++	memcpy(module_blacklist_buf, val, len + 1);
++	*(char **)kp->arg = module_blacklist_buf;
++	return 0;
++}
++
++static const struct kernel_param_ops module_blacklist_param_ops = {
++	.set = param_set_module_blacklist,
++	.get = param_get_charp,
++};
++__core_param_cb(module_blacklist, &module_blacklist_param_ops, &module_blacklist, 0400);
++
+ static struct module *layout_and_allocate(struct load_info *info, int flags)
+ {
+ 	struct module *mod;

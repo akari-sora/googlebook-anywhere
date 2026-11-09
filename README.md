@@ -19,9 +19,9 @@
 | 實機驗證 | 只有一台 KANO：內顯 `8086:46a6` 的 Alder Lake-P K0 工程樣機 |
 | 其他 KANO 型號 | 12 代 CP714-1WN、13 代 CP714-2WN／Zydron（i3／i5／i7）已補齊內顯 ID 與 13 代音效韌體，應可用，**尚未實機測試** |
 | CPU 下限 | Intel 第 12 代或 AMD Zen 5 及更新；ROG Ally Zen 4 使用實驗性相容修補，其他較舊的 CPU 預期開不了機（[docs/COMPATIBILITY.md](docs/COMPATIBILITY.md)「CPU 最低需求」） |
-| 其他 x86-64 電腦 | 實驗性 `generic-x86`、`amd-hx370` 與 `rog-ally`；實機功能尚未驗收。Ally 候選另有核心拒絕過長黑名單的問題，見 [安全說明](docs/SAFETY.md) |
+| 其他 x86-64 電腦 | 實驗性 `generic-x86`、`amd-hx370` 與 `rog-ally`；實機功能尚未驗收。Ally 第六版映像的核心會拒絕過長黑名單；修正版核心已通過隔離 QEMU 對照，尚未重建映像，見 [安全說明](docs/SAFETY.md) |
 | 安裝方式 | 自己建映像（約 10～30 分鐘，另需 7.7 GB 下載、80 GB 磁碟）→ 寫入 USB 隨身碟開機；要裝到內建碟用「安裝碟」 |
-| 安全 | 已移除已知韌體更新程式；核心封鎖政策仍須驗證實際生效，Ally 候選有已知失效，見 [安全說明](docs/SAFETY.md) |
+| 安全 | 已移除已知韌體更新程式；核心封鎖政策仍須驗證實際生效，Ally 第六版映像有已知失效，見 [安全說明](docs/SAFETY.md) |
 
 <details>
 <summary>原始說明（機型與內顯 ID 的完整描述）</summary>

@@ -187,7 +187,10 @@ def ally_storage_module(prof, checked, kernel_dir):
     for path in (ko, dep, symvers):
         if path.is_symlink() or not path.is_file(): raise ValueError("missing Ally storage input: " + str(path))
     content = ko.read_bytes()
-    if hashlib.sha256(content).hexdigest() != "f429104c8803c8156f8278d37b08147d11eb3f287b58320a10fda9bf286fffd4":
+    storage_sha = "f429104c8803c8156f8278d37b08147d11eb3f287b58320a10fda9bf286fffd4"
+    if getattr(checked, "bzimage_sha256", None) == devprofile.ALLY_EXTENDED_BLACKLIST_KERNEL_SHA256:
+        storage_sha = "e7a3ef2749da3161b1f473994bc77fd39c6db9b663e14553a982f5d78c34dce3"
+    if hashlib.sha256(content).hexdigest() != storage_sha:
         raise ValueError("Ally storage module pin mismatch")
     lines = [x for x in dep.read_text().splitlines() if x.split(":", 1)[0] == "usb-storage.ko"]
     if lines != ["usb-storage.ko:"]:
@@ -373,7 +376,7 @@ base_debug, base_quiet = list(debug), list(quiet)
 normal, debug, quiet = ec_variant_entries(normal, debug, quiet, EC_FEATURES)
 for entry_name, options in (("debug", debug), ("quiet", quiet)):
     try:
-        devprofile.validate_module_blacklist(options, entry_name)
+        devprofile.validate_module_blacklist(options, entry_name, profile=PROF, checked_kernel=initrd_checked_kernel)
     except devprofile.ProfileError as exc:
         sys.exit(str(exc))
 def entry(title, o): return f"title {title}\nlinux /kernel.efi\ninitrd /initrd.img\noptions {' '.join(o)}\n"

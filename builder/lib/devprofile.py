@@ -767,17 +767,25 @@ def cmdline_within_limit(n):
 
 # Linux param_set_charp rejects values over 1024 bytes (before assigning them).
 MODULE_BLACKLIST_VALUE_MAX = 1024
+# Exact Ally bzImage validated in the QEMU policy/control comparison. This
+# does not grant a higher limit to any other kernel or device profile.
+ALLY_EXTENDED_BLACKLIST_KERNEL_SHA256 = "669c39abe46025d6f7d397839338630d62d7f5886501c2e9134027ad34f4d0d0"
 
 
-def validate_module_blacklist(opts, entry):
+def validate_module_blacklist(opts, entry, *, profile=None, checked_kernel=None):
     """Require one effective kernel blacklist whose UTF-8 value fits charp."""
     values = [o.split("=", 1)[1] for o in opts if o.startswith("module_blacklist=")]
     if len(values) != 1:
         raise ProfileError(f"{entry}: expected exactly one module_blacklist= parameter")
     size = len(values[0].encode("utf-8"))
-    if size > MODULE_BLACKLIST_VALUE_MAX:
+    limit = MODULE_BLACKLIST_VALUE_MAX
+    if (isinstance(profile, dict) and profile.get("model", {}).get("id") == "rog-ally" and
+            isinstance(checked_kernel, CheckedConfig) and
+            checked_kernel.bzimage_sha256 == ALLY_EXTENDED_BLACKLIST_KERNEL_SHA256):
+        limit = 2048
+    if size > limit:
         raise ProfileError(f"{entry}: module_blacklist value is {size} bytes; kernel limit is "
-                           f"{MODULE_BLACKLIST_VALUE_MAX} bytes")
+                           f"{limit} bytes")
 
 
 def make_entries(prof, vendor_cmdline):

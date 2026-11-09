@@ -23,7 +23,7 @@ Googlebook（lapis）映像本來是給另一台機器用的，裡面帶著那�
    原映像的 `spi-intel.writeable=1` 也拿掉了。清單在機型設定（`profiles/kano/profile.toml`）；全專案一定要封鎖的模組與參數在
    `profiles/_safety.toml`（`blacklist.required` 就是上面這整份 57 個模組，每個機型都一樣），機型設定只能加、不能減（`builder/lib/devprofile.py` 拒絕），`builder/image.py` 再對每個開機選項逐一檢查，並確認 ESP 上只有 quiet 與 serial-debug 兩個選項
    （base ESP 原本那個沒有封鎖的 `lapis.conf` 會被刪掉）。
-   **2026-11-09 已知問題：** Ally 第六版候選的 81 項、1039 bytes 黑名單，在使用相同核心的隔離 QEMU 測試遭核心以 `string parameter too long` 拒絕，五個選定模組仍載入。該候選不能視為具備有效的核心模組黑名單。建置程式已加入最終開機項目的單一參數與 1024-byte 上限檢查，超限即停止；這不會修復既有映像，修正版核心／映像與實機驗證仍待完成。不得刪除必要封鎖項目來繞過檢查。
+   **2026-11-09 已知問題：** Ally 第六版候選的 81 項、1039 bytes 黑名單，在使用相同核心的隔離 QEMU 測試遭核心以 `string parameter too long` 拒絕，五個選定模組仍載入。該候選不能視為具備有效的核心模組黑名單。建置程式會檢查最終開機項目的單一參數；一般核心上限為 1024 bytes。僅對經檢查且 SHA-256 精確匹配的 Ally 修正版核心，上限為 2048 bytes，仍須符合整條開機命令列限制。該核心在隔離 QEMU 對照中：無黑名單時 SDHCI PCI 模組可載入；加入完整黑名單後核心拒絕該模組，四個依賴仍載入。補丁與測試範圍見 [核心補丁紀錄](../tools/kernel/README.md)。舊映像不會因此修復；新 Android 映像尚未重建，實機仍未驗證。不得刪除必要封鎖項目來繞過檢查。
 3. **`efi=noruntime`**：Linux 不能呼叫 EFI runtime services，所以 OS 寫不了 EFI 變數，也送不出 capsule 更新。
    `efi=noruntime` 不約束核心自己的 EFI stub（stub 在 `ExitBootServices` 之前就結束）。自建核心閘門拒絕會在 stub 裡寫 NV 變數的選項。
 4. **裝置節點**：實機上沒有 `/dev/mem`、`/dev/port`、`/dev/mtd*`、`/dev/spidev*`。
