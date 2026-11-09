@@ -55,6 +55,26 @@ class AdditionPolicyTests(unittest.TestCase):
             return ifma.scan_rebuilt_tree(self.tree, "arbitrary display label", provenance=kwargs.pop("provenance", VENDOR),
                                           rebuilt_vendor_profile=profile, **kwargs)
 
+    def test_exact_alternate_accepts_both_and_rejects_unknown_or_pending(self):
+        old = self.specs[0]
+        target = self.tree / PATHS[0]
+        original = target.read_bytes()
+        alternate_data = original + b"new build"
+        alternate = dict(old, size=len(alternate_data), sha256=hashlib.sha256(alternate_data).hexdigest())
+        with self.configured(), mock.patch.object(ifma, "_ALLY_VENDOR_ALTERNATES", {old["sha256"]: (alternate,)}):
+            with ifma._ally_vendor_additions(self.tree, ALLY, provenance=VENDOR, root_kind="tree_file") as rows:
+                self.assertEqual(rows[0]["sha256"], old["sha256"])
+            target.write_bytes(alternate_data)
+            with ifma._ally_vendor_additions(self.tree, ALLY, provenance=VENDOR, root_kind="tree_file") as rows:
+                self.assertEqual(rows[0]["sha256"], alternate["sha256"])
+            target.write_bytes(alternate_data[:-1] + b"x")
+            with self.assertRaisesRegex(SystemExit, "SHA256"):
+                with ifma._ally_vendor_additions(self.tree, ALLY, provenance=VENDOR, root_kind="tree_file"): pass
+            target.write_bytes(alternate_data)
+            alternate["reason"] = "PENDING_ACTUAL_ANNOTATION"
+            with self.assertRaisesRegex(SystemExit, "evidence.*pending"):
+                with ifma._ally_vendor_additions(self.tree, ALLY, provenance=VENDOR, root_kind="tree_file"): pass
+
     def test_pending_evidence_gate_refuses_before_target_open(self):
         with mock.patch.object(ifma, "_ALLY_VENDOR_ADDITIONS_EVIDENCE_CONFIRMED", False), \
                 mock.patch.object(ifma.os, "open") as opened:

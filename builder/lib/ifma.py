@@ -352,6 +352,17 @@ _ALLY_VENDOR_ADDITIONS = (
 )
 
 
+# Alternate exact UAS build; neither its identity nor its raw hit generalizes.
+_ALLY_VENDOR_ALTERNATES = {
+    "baa8753eb65207405eeb1e5596192f9462dd6c9a52b72bfb8b81bf4ab96f0ac7": (
+        {"path": "lib/dev-modules/uas.ko", "size": 363880,
+         "sha256": "eb487f7042080b07fc5daab5020d5567b0bf3abdb1721c580f25a2bc025d0115",
+         "file_offset": 8168, "instruction": "vpmadd52luq",
+         "reason": "GNU 2.42 and LLVM 21 entry-anchored add/addq .text 0x1326..0x1329: candidate starts at 0x1328; no overlapping .text relocation"},
+    ),
+}
+
+
 def _vendor_addition_identity(info):
     # Ordinary scanner reads may update atime; all content/binding fields remain.
     return (info.st_dev, info.st_ino, info.st_mode, info.st_uid, info.st_gid,
@@ -423,10 +434,17 @@ def _ally_vendor_additions(tree, prof, *, provenance, root_kind):
                          getattr(os, "O_NOATIME", 0), dir_fd=parent)
             stack.callback(os.close, fd)
             info = os.fstat(fd)
-            if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_size != spec["size"]:
+            candidates = (spec,) + _ALLY_VENDOR_ALTERNATES.get(spec["sha256"], ())
+            sized = [row for row in candidates if row["size"] == info.st_size and row["path"] == spec["path"]]
+            if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or not sized:
                 raise SystemExit("Ally vendor addition target identity mismatch")
-            if _vendor_addition_hash(fd, spec["size"]) != spec["sha256"]:
+            digest = _vendor_addition_hash(fd, info.st_size)
+            matches = [row for row in sized if row["sha256"] == digest]
+            if len(matches) != 1:
                 raise SystemExit("Ally vendor addition SHA256 mismatch")
+            spec = matches[0]
+            if spec["reason"] == "PENDING_ACTUAL_ANNOTATION":
+                raise SystemExit("Ally vendor addition instruction-context evidence is pending")
             offset = spec["file_offset"]
             if type(offset) is not int or not 0 <= offset <= spec["size"] - 5:
                 raise SystemExit("Ally vendor addition candidate offset refused")
