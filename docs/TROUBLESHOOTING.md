@@ -40,6 +40,13 @@
 - **怎麼辦**：
   - **v0.3.0 加入停止服務的設定，已有一次實機停止狀態讀回。** vendor 帶 `etc/init/gbos-no-ota.rc`：在 `update_engine.rc` 啟用 `update_engine` 的同一個觸發條件（`ro.boot.slot_suffix=*`）之後，由 init 執行 `stop update_engine`。QEMU 已驗證 vendor action 有執行、`update_engine` 從未啟動；2026-10-29 KANO 保留資料更新後，在 uptime 65 分鐘時讀到 `stopped`，僅證明當時的服務狀態，見 [v0.3.0 驗收紀錄](VERIFICATION-v0.3.0.md)。
   - v0.3.0 映像已帶 `gbos-no-ota.rc`，但不能保證實機不再卡住。v0.2.3（含）以前：預設映像沒有 adb（只有建置時另外給公鑰才會開），不靠 adb 沒有已知解法。
+  - **v0.2.3 實機驗證的 adb 繞過法（ASUS CX34，issue #6，2026-11-12）。** 建置時以 `--adb-pubkey` 帶入公鑰，adb 會開在 port 5555；連上後執行以下指令可直接跳出迴圈到桌面，Play Services 與 Google 帳號登入不受影響（回報者實機驗證）：
+    ```sh
+    settings put global setup_wizard_has_run 1
+    settings put secure user_setup_complete 1
+    pm disable com.google.android.setupwizard
+    am start -c android.intent.category.HOME -a android.intent.action.MAIN
+    ```
   - 還沒有在實機上驗證（未實機測試）：`update_engine` 在裝置上完全不會執行、精靈之後會走完、GMS 怎麼反應。QEMU 沒有網路，也看不到 Google 實際提供更新的那一段。
 
 ### 首次設定時不想設定 PIN
