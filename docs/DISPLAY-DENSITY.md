@@ -45,9 +45,10 @@ with ChromeOS. 160 gives the same base as gbrunch, which sets `qemu.sf.lcd_densi
 180 for a 1920x1080 panel [B2]. The KANO profile covers both 1920x1200 and 2560x1600 SKUs, so it leaves `density`
 unset; no built-in profile changes its default display settings.
 
-The "ASUS CX34" in issues #3, #6, #8 and #13 is the Chromebook Vibe CX34 Flip (CX3401, 14" 1920x1200), not the
-Chromebook Plus CX34 (CX3402, 14" 1920x1080). Issue #13 reports `sw873dp w1396dp h873dp 220dpi` on it (873 * 220 / 160
-is about 1200 px, matching 1920x1200); whether Display size was at Default for that reading is not known yet.
+The "ASUS CX34" in issues #6, #8 and #13 is the Chromebook Vibe CX34 Flip (CX3401, 14" 1920x1200), not the
+Chromebook Plus CX34 (CX3402, 14" 1920x1080); #3 is probably the same model (its reporter wrote "cx43 vibe").
+Issue #13 reports `sw873dp w1396dp h873dp 220dpi` on it (873 * 220 / 160 is about 1200 px, matching 1920x1200); whether
+Display size was at Default for that reading is not known yet.
 
 ## Sources
 
