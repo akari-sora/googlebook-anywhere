@@ -45,6 +45,10 @@ with ChromeOS. 160 gives the same base as gbrunch, which sets `qemu.sf.lcd_densi
 180 for a 1920x1080 panel [B2]. The KANO profile covers both 1920x1200 and 2560x1600 SKUs, so it leaves `density`
 unset; no built-in profile changes its default display settings.
 
+The "ASUS CX34" in issues #3, #6, #8 and #13 is the Chromebook Vibe CX34 Flip (CX3401, 14" 1920x1200), not the
+Chromebook Plus CX34 (CX3402, 14" 1920x1080). Issue #13 reports `sw873dp w1396dp h873dp 220dpi` on it (873 * 220 / 160
+is about 1200 px, matching 1920x1200); whether Display size was at Default for that reading is not known yet.
+
 ## Sources
 
 - [A1] AOSP frameworks/base `core/java/android/util/DisplayMetrics.java`, https://android.googlesource.com/platform/frameworks/base
@@ -53,4 +57,4 @@ unset; no built-in profile changes its default display settings.
 - [A4] Chromium `ui/display/manager/display_change_observer.cc`, https://chromium.googlesource.com/chromium/src/+/refs/heads/main/ui/display/manager/display_change_observer.cc
 - [B1] https://github.com/danbyumagic/gbrunch (tools/package_compat_update_v6.py)
 - [B2] https://github.com/linuxkid473/gbos-x86 (README.md "Display size", usb/gbos.cfg)
-- Panels: Acer Chromebook Spin 714 CP714-1WN spec pages (1920x1200, 2560x1600), https://www.acer.com/us-en/chromebooks/acer-chromebook-spin-714-cp714-1wn ; ASUS CX3402 tech specs (1920x1080), https://www.asus.com/laptops/for-home/chromebook/asus-chromebook-plus-cx34-cx3402/techspec/
+- Panels: Acer Chromebook Spin 714 CP714-1WN spec pages (1920x1200, 2560x1600), https://www.acer.com/us-en/chromebooks/acer-chromebook-spin-714-cp714-1wn ; ASUS Chromebook Plus CX34 (CX3402) tech specs (1920x1080), https://www.asus.com/laptops/for-home/chromebook/asus-chromebook-plus-cx34-cx3402/techspec/ ; ASUS Chromebook Vibe CX34 Flip (CX3401) tech specs (1920x1200), https://www.asus.com/us/laptops/for-home/chromebook/asus-chromebook-vibe-cx34-flip-cx3401-12th-gen-intel/techspec/
