@@ -46,6 +46,13 @@ For firmware flashing, writing the USB, and safety trade-offs, see `FIRMWARE.md`
 - **What to do**:
   - **v0.3.0 adds a stop action, with one stopped-state readback on hardware.** Vendor carries `etc/init/gbos-no-ota.rc`: right after `update_engine.rc` enables `update_engine` on the same trigger (`ro.boot.slot_suffix=*`), init runs `stop update_engine`. QEMU verified that the vendor action ran and `update_engine` never started. After the 2026-10-29 KANO keep-data update, one readback at 65 minutes of uptime showed `stopped`; this establishes the service state at that time only. See the [v0.3.0 verification record](VERIFICATION-v0.3.0.md).
   - v0.3.0 images carry `gbos-no-ota.rc`, but this does not yet prove the loop is resolved on hardware. On v0.2.3 or older, the default image has no adb (adb exists only when the build was given a public key), with no known adb-less workaround.
+  - **adb bypass verified on hardware on v0.2.3 (ASUS CX34, issue #6, 2026-11-12).** Build with `--adb-pubkey` to add a public key, and adb listens on port 5555. After connecting, the following commands leave the loop and go straight to the desktop; Play Services and Google account sign-in are not affected (verified on hardware by the reporter):
+    ```sh
+    settings put global setup_wizard_has_run 1
+    settings put secure user_setup_complete 1
+    pm disable com.google.android.setupwizard
+    am start -c android.intent.category.HOME -a android.intent.action.MAIN
+    ```
   - Not verified on hardware: that `update_engine` never runs at all on a device, that the wizard then finishes, and how GMS reacts. QEMU has no network, so it cannot show Google actually offering an update.
 
 ### Skip the PIN during first setup
