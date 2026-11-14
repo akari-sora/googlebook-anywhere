@@ -47,6 +47,7 @@ v0.3.0 的 16658739 pins 與 Microdroid IFMA pins 不代表實機驗收；該版
 | 其他 ADL-P/U KANO SKU | i5-1240P / i7-1255U / i7-1280P | `8086:46a6` / `8086:46a8` | 推論：`46a6` 可用、`46a8` 黑畫面 | 未實機測試 |
 | CP714-2WN-320J / -3184 等 | i3-1315U | `8086:a7a9`（平台候選 `8086:a7ac`、`8086:a7ad`，KANO 對照未確認） | 推論：黑畫面 | 預期可運作，未實機測試；音效未實機測試 |
 | CP714-2W-56B2 / -5596 等 | i5-1335U / i5-1345U | `8086:a7a1`（平台候選 `8086:a721`，KANO 對照未確認） | 推論：黑畫面 | 預期可運作，未實機測試；音效未實機測試 |
+| CP714-2W-5682（**使用者回報，維護者未驗證**，[#11](https://gitlab.com/aa22396584/googlebook-anywhere/-/issues/11)） | 13 代 i5（確切型號未回報） | 未回報 | — | **使用者回報，維護者未驗證**：原廠 Google 韌體 + MrChromebox RW_LEGACY（未刷 Full ROM），寫入保護開啟；v0.3.0 從 USB-C 的 USB SSD 開機可用；HDMI 外接螢幕可用（重新開機後）；v0.3.0 要在建置時手動設 `GBOS_EC=typec`，USB-C 外接螢幕與 dock 才能用（[#12](https://gitlab.com/aa22396584/googlebook-anywhere/-/issues/12)）；main 自 [!2](https://gitlab.com/aa22396584/googlebook-anywhere/-/merge_requests/2) 起 KANO 預設 `typec`，尚未發版（v0.3.1 不含）；耳機孔未測試 |
 | CP714-2W-732F / -71M6 等 | i7-1355U / i7-1365U vPro | `8086:a7a1`（平台候選 `8086:a721`，KANO 對照未確認） | 推論：黑畫面 | 預期可運作，未實機測試；音效未實機測試 |
 
 ### 為什麼 v0.2.0 只有一台能用？
